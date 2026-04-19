@@ -4,9 +4,9 @@ import BeamSearch, {
   type BeamSearchConfig,
   type BeamSearchContext,
   type BeamNode,
-} from '../replanner/BeamSearch.js';
-import StateEvolver from '../replanner/StateEvolver.js';
-import { MutationOperators, type MutationResult } from '../replanner/MutationOperators.js';
+} from '../replanner/BeamSearch';
+import StateEvolver from '../replanner/StateEvolver';
+import { MutationOperators, type MutationResult } from '../replanner/MutationOperators';
 import type {
   TripSlot,
   TripState,

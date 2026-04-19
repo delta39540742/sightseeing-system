@@ -1,5 +1,5 @@
 import type { TripSlot, Place } from '@app/types';
-import type { StateEvolver, ReplanContext } from './StateEvolver.js';
+import type { StateEvolver, ReplanContext } from './StateEvolver';
 
 // ---------------------------------------------------------------------------
 // Public types

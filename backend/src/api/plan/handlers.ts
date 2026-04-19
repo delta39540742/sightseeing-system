@@ -1,8 +1,6 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../../lib/prisma';
 
 export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply) {
   try {

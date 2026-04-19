@@ -1,6 +1,6 @@
 import type { TripSlot, TripState, ObjectiveWeights } from '@app/types';
-import type { StateEvolver, ReplanContext, WeatherSnapshot } from './StateEvolver.js';
-import type { MutationOperators, MutationResult } from './MutationOperators.js';
+import type { StateEvolver, ReplanContext, WeatherSnapshot } from './StateEvolver';
+import type { MutationOperators, MutationResult } from './MutationOperators';
 
 // ---------------------------------------------------------------------------
 // Configuration

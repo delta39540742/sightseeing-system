@@ -17,14 +17,14 @@ import type {
   TripEvent,
   TripStatus,
 } from '@app/types';
-import type { StateEvolver } from '../../replanner/StateEvolver.js';
+import type { StateEvolver } from '../../replanner/StateEvolver';
 import type {
   ObjectiveScorer,
   BeamSearch,
   BeamSearchContext,
-} from '../../replanner/BeamSearch.js';
-import type { CausalTraceBuilder, CausalTrace } from '../../replanner/CausalTraceBuilder.js';
-import type { ProposalStore } from '../../replanner/ProposalStore.js';
+} from '../../replanner/BeamSearch';
+import type { CausalTraceBuilder, CausalTrace } from '../../replanner/CausalTraceBuilder';
+import type { ProposalStore } from '../../replanner/ProposalStore';
 
 // ---------------------------------------------------------------------------
 // Public types

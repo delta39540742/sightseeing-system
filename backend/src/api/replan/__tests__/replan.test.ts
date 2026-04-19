@@ -9,8 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import type { ReplanDeps } from '../handlers.js';
-import { replanPlugin } from '../routes.js';
+import type { ReplanDeps } from '../handlers';
+import { replanPlugin } from '../routes';
 import type { TripSlot } from '@app/types';
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import StateEvolver, {
   type EvolveContext,
   type ReplanContext,
   type WeatherSnapshot,
-} from '../replanner/StateEvolver.js';
+} from '../replanner/StateEvolver';
 import type { TripState, TripSlot, Place, UserPreference } from '@app/types';
 
 // ---------------------------------------------------------------------------

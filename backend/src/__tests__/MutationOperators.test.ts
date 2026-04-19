@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MutationOperators } from '../replanner/MutationOperators.js';
-import StateEvolver, { type ReplanContext } from '../replanner/StateEvolver.js';
+import { MutationOperators } from '../replanner/MutationOperators';
+import StateEvolver, { type ReplanContext } from '../replanner/StateEvolver';
 import type { TripSlot, Place, TripState, UserPreference, PlaceTag } from '@app/types';
 
 // ---------------------------------------------------------------------------
