@@ -1,30 +1,26 @@
-import { Router } from 'express';
+import type { FastifyInstance } from 'fastify';
 import { InternalEventBus } from '../events/eventBus';
 
-const router = Router();
+export async function internalEventsPlugin(fastify: FastifyInstance): Promise<void> {
+  // POST /api/internal/events
+  fastify.post('/', async (request, reply) => {
+    try {
+      const { event_type, payload } = request.body as Record<string, any>;
 
-// POST /api/internal/events
-// Receive events from other modules (e.g. Module 5 - Heavy Rain, Traffic)
-router.post('/', (req, res) => {
-  try {
-    const { event_type, payload } = req.body;
-    
-    if (!event_type) {
-      return res.status(400).json({ success: false, error: 'Missing event_type' });
+      if (!event_type) {
+        return reply.status(400).send({ success: false, error: 'Missing event_type' });
+      }
+
+      console.log(`[EventBus API] Pushing event: ${event_type}`);
+      InternalEventBus.publish(event_type, payload || {});
+
+      return reply.status(200).send({
+        success: true,
+        message: `Emitted event: ${event_type}`,
+      });
+    } catch (error) {
+      console.error('Error handling internal event:', error);
+      return reply.status(500).send({ success: false, error: 'Internal server error' });
     }
-
-    // Emit event back into system event bus
-    console.log(`[EventBus API] Pushing event: ${event_type}`);
-    InternalEventBus.publish(event_type, payload || {});
-
-    res.status(200).json({ 
-      success: true, 
-      message: `Emitted event: ${event_type}`
-    });
-  } catch (error) {
-    console.error('Error handling internal event:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-export default router;
+  });
+}

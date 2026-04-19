@@ -11,7 +11,7 @@
  */
 
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
-import type { ReplanDeps } from './handlers.js';
+import type { ReplanDeps, ReplanBody, RejectBody, TripParams, ProposalParams } from './handlers.js';
 import {
   makeReplanHandler,
   makeAcceptHandler,
@@ -59,16 +59,6 @@ const rejectBodySchema = {
   additionalProperties: false,
 } as const;
 
-// Common error response shapes for OpenAPI / Fastify schema
-const errorSchema = {
-  type: 'object',
-  properties: {
-    error: { type: 'string' },
-    message: { type: 'string' },
-    details: { type: 'object' },
-  },
-} as const;
-
 // ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
@@ -90,59 +80,35 @@ export async function replanPlugin(
   const { deps } = options;
 
   // ── POST /api/trips/:tripId/replan ──────────────────────────────────────
-  fastify.post<{
-    Params: { tripId: string };
-    Body: { triggeredByEventId?: string; replanScope: string };
-  }>(
+  fastify.post<{ Params: TripParams; Body: ReplanBody }>(
     '/trips/:tripId/replan',
     {
       schema: {
         params: tripParamsSchema,
         body: replanBodySchema,
-        response: {
-          201: { $ref: 'ReplanProposal#' },
-          404: errorSchema,
-          409: errorSchema,
-          422: errorSchema,
-        },
       },
     },
     makeReplanHandler(deps),
   );
 
   // ── POST /api/trips/:tripId/replan/:proposalId/accept ───────────────────
-  fastify.post<{
-    Params: { tripId: string; proposalId: string };
-  }>(
+  fastify.post<{ Params: ProposalParams }>(
     '/trips/:tripId/replan/:proposalId/accept',
     {
       schema: {
         params: proposalParamsSchema,
-        response: {
-          200: { $ref: 'Trip#' },
-          404: errorSchema,
-          409: errorSchema,
-        },
       },
     },
     makeAcceptHandler(deps),
   );
 
   // ── POST /api/trips/:tripId/replan/:proposalId/reject ───────────────────
-  fastify.post<{
-    Params: { tripId: string; proposalId: string };
-    Body: { reason?: string };
-  }>(
+  fastify.post<{ Params: ProposalParams; Body: RejectBody }>(
     '/trips/:tripId/replan/:proposalId/reject',
     {
       schema: {
         params: proposalParamsSchema,
         body: rejectBodySchema,
-        response: {
-          204: { type: 'null' },
-          404: errorSchema,
-          409: errorSchema,
-        },
       },
     },
     makeRejectHandler(deps),

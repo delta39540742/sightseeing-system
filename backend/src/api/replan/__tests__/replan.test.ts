@@ -11,6 +11,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import type { ReplanDeps } from '../handlers.js';
 import { replanPlugin } from '../routes.js';
+import type { TripSlot } from '@app/types';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -99,7 +100,7 @@ function makeInitialState() {
 
 function makeCtx() {
   return {
-    remainingSlots: [],
+    remainingSlots: [] as TripSlot[],
     weights: {
       wInterest: 1,
       wPace: 1,
@@ -301,8 +302,8 @@ describe('POST /api/trips/:tripId/replan', () => {
   it('filters slots to today when replanScope is remaining_day', async () => {
     const ctx = makeCtx();
     ctx.remainingSlots = [
-      { slotId: 's1', placeId: 1, dayIndex: 0, slotOrder: 0, estimatedCost: 10, activityType: 'visit', version: 1, plannedStart: '09:00', plannedEnd: '11:00', tripId: TRIP_ID, actualStart: null, actualEnd: null, rationale: null, status: 'planned' },
-      { slotId: 's2', placeId: 2, dayIndex: 1, slotOrder: 0, estimatedCost: 10, activityType: 'visit', version: 1, plannedStart: '09:00', plannedEnd: '11:00', tripId: TRIP_ID, actualStart: null, actualEnd: null, rationale: null, status: 'planned' },
+      { slotId: 's1', placeId: 1, dayIndex: 0, slotOrder: 0, estimatedCost: 10, activityType: 'sightseeing' as const, version: 1, plannedStart: '09:00', plannedEnd: '11:00', tripId: TRIP_ID, actualStart: null, actualEnd: null, rationale: null, status: 'planned' as const },
+      { slotId: 's2', placeId: 2, dayIndex: 1, slotOrder: 0, estimatedCost: 10, activityType: 'sightseeing' as const, version: 1, plannedStart: '09:00', plannedEnd: '11:00', tripId: TRIP_ID, actualStart: null, actualEnd: null, rationale: null, status: 'planned' as const },
     ];
     (deps.planLoader.load as ReturnType<typeof vi.fn>).mockResolvedValue(ctx);
     (deps.pool.query as ReturnType<typeof vi.fn>).mockResolvedValue(makeTripRow());

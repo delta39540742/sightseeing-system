@@ -14,20 +14,20 @@
  *  - Các class/type con được re-export để route handler và test sử dụng trực tiếp
  */
 
-export { PlanLoader } from './PlanLoader';
-export { StateEvolver } from './StateEvolver';
-export { MutationOperators } from './MutationOperators';
-export type { MutationResult, OperatorName } from './MutationOperators';
-export { BeamSearch, ObjectiveScorer } from './BeamSearch';
+export { PlanLoader } from './PlanLoader.js';
+export { StateEvolver } from './StateEvolver.js';
+export { MutationOperators } from './MutationOperators.js';
+export type { MutationResult, OperatorName } from './MutationOperators.js';
+export { BeamSearch, ObjectiveScorer } from './BeamSearch.js';
 export type {
   BeamSearchConfig,
   BeamNode,
   BeamSearchContext,
-} from './BeamSearch';
-export { CausalTraceBuilder } from './CausalTraceBuilder';
-export type { CausalTrace } from './CausalTraceBuilder';
-export { ProposalStore } from './ProposalStore';
-export type { ProposalStatus, ProposalFilter } from './ProposalStore';
+} from './BeamSearch.js';
+export { CausalTraceBuilder } from './CausalTraceBuilder.js';
+export type { CausalTrace } from './CausalTraceBuilder.js';
+export { ProposalStore } from './ProposalStore.js';
+export type { ProposalStatus, ProposalFilter } from './ProposalStore.js';
 
 /**
  * ReplannerService
