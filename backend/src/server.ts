@@ -8,6 +8,7 @@ import { placesPlugin } from './routes/places';
 import { tripsPlugin } from './routes/trips';
 import { internalEventsPlugin } from './routes/internalEvents';
 import { authPlugin } from './routes/auth';
+import tripRoutes from './api/plan/routes';
 
 dotenv.config();
 
@@ -41,5 +42,7 @@ async function start() {
     process.exit(1);
   }
 }
+
+fastify.register(tripRoutes, { prefix: '/api/trips' });
 
 start();
