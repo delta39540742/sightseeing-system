@@ -55,6 +55,7 @@ async function start() {
   await fastify.register(internalEventsPlugin, { prefix: '/api/internal/events' });
   await fastify.register(authPlugin, { prefix: '/api/auth' });
   await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
+  await fastify.register(tripRoutes, { prefix: '/api/plan' });
 
   fastify.get('/health', async () => {
     return { status: 'ok', message: 'TDTT Backend is running' };
@@ -67,7 +68,5 @@ async function start() {
     process.exit(1);
   }
 }
-
-fastify.register(tripRoutes, { prefix: '/api/trips' });
 
 start();
