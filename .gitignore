@@ -25,10 +25,3 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-
-# Claude Code memory
-.claude/
-
-# Planning docs (không cần thiết cho team)
-ke-hoach-nguoi-6.md
-travel-system-spec.md
