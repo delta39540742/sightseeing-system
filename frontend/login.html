@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TravelSystem – Đăng nhập</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f4f8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.10);
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 400px;
+    }
+
+    h1 { font-size: 1.5rem; margin-bottom: 6px; color: #1a202c; }
+    .subtitle { color: #718096; font-size: .9rem; margin-bottom: 28px; }
+
+    label { display: block; font-size: .85rem; font-weight: 600; color: #4a5568; margin-bottom: 6px; }
+
+    input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 1rem;
+      margin-bottom: 16px;
+      transition: border-color .2s;
+      outline: none;
+    }
+    input:focus { border-color: #4299e1; }
+
+    .btn {
+      width: 100%;
+      padding: 11px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary { background: #4299e1; color: #fff; margin-bottom: 10px; }
+    .btn-primary:hover:not(:disabled) { background: #3182ce; }
+    .btn-google {
+      background: #fff;
+      color: #4a5568;
+      border: 1.5px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-google:hover:not(:disabled) { background: #f7fafc; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 16px 0;
+      color: #a0aec0;
+      font-size: .85rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #e2e8f0;
+    }
+
+    .error {
+      background: #fff5f5;
+      border: 1px solid #feb2b2;
+      color: #c53030;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: .875rem;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .result {
+      background: #f0fff4;
+      border: 1px solid #9ae6b4;
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 20px;
+      display: none;
+    }
+    .result h3 { color: #276749; font-size: .9rem; margin-bottom: 8px; }
+    .result pre {
+      font-size: .78rem;
+      color: #2d3748;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .token-box {
+      background: #ebf8ff;
+      border: 1px solid #90cdf4;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-top: 12px;
+      font-size: .75rem;
+      color: #2c5282;
+      word-break: break-all;
+    }
+    .token-box strong { display: block; margin-bottom: 4px; }
+
+    .logout-btn {
+      background: none;
+      border: none;
+      color: #e53e3e;
+      cursor: pointer;
+      font-size: .85rem;
+      padding: 0;
+      margin-top: 12px;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>✈️ TravelSystem</h1>
+  <p class="subtitle">Đăng nhập để tiếp tục</p>
+
+  <div class="error" id="errorBox"></div>
+
+  <div id="loginForm">
+    <label for="email">Email</label>
+    <input type="email" id="email" placeholder="you@example.com" />
+
+    <label for="password">Mật khẩu</label>
+    <input type="password" id="password" placeholder="••••••••" />
+
+    <button class="btn btn-primary" id="btnEmail" onclick="loginEmail()">
+      Đăng nhập
+    </button>
+
+    <div class="divider">hoặc</div>
+
+    <button class="btn btn-google" id="btnGoogle" onclick="loginGoogle()">
+      <svg width="18" height="18" viewBox="0 0 48 48">
+        <path fill="#EA4335" d="M24 9.5c3.14 0 5.95 1.08 8.17 2.85l6.1-6.1C34.46 3.1 29.56 1 24 1 14.82 1 7.07 6.48 3.69 14.22l7.1 5.52C12.44 13.72 17.77 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.1 24.5c0-1.6-.14-3.13-.4-4.62H24v8.75h12.44c-.54 2.9-2.17 5.36-4.63 7.02l7.1 5.52C43.27 37.3 46.1 31.36 46.1 24.5z"/>
+        <path fill="#FBBC05" d="M10.79 28.26A14.5 14.5 0 0 1 9.5 24c0-1.48.25-2.91.69-4.26l-7.1-5.52A23 23 0 0 0 1 24c0 3.77.9 7.34 2.49 10.49l7.3-6.23z"/>
+        <path fill="#34A853" d="M24 47c5.56 0 10.23-1.84 13.63-5.01l-7.1-5.52c-1.84 1.24-4.19 1.98-6.53 1.98-6.23 0-11.56-4.22-13.21-9.94l-7.3 6.23C7.07 41.52 14.82 47 24 47z"/>
+      </svg>
+      Đăng nhập bằng Google
+    </button>
+  </div>
+
+  <div class="result" id="resultBox">
+    <h3>Đăng nhập thành công</h3>
+    <pre id="resultJson"></pre>
+    <div class="token-box" id="tokenBox">
+      <strong>ID Token (dùng để gọi API):</strong>
+      <span id="tokenText"></span>
+    </div>
+    <button class="logout-btn" onclick="logout()">Đăng xuất</button>
+  </div>
+</div>
+
+<!-- ===================== Firebase SDK ===================== -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import {
+    getAuth,
+    signInWithEmailAndPassword,
+    signInWithPopup,
+    GoogleAuthProvider,
+    signOut,
+    onAuthStateChanged,
+  } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+
+  // ── Điền thông tin Firebase project của bạn vào đây ──────────────────────
+  // Firebase Console → Project Settings → General → Your apps → Web app
+  const firebaseConfig = {
+    apiKey: "AIzaSyD3ewf8GD0P-p_mnKDwmyXfIt5f5aTbE-8",
+    authDomain: "sightseeing-40ce2.firebaseapp.com",
+    projectId: "sightseeing-40ce2",
+    storageBucket: "sightseeing-40ce2.firebasestorage.app",
+    messagingSenderId: "338165023155",
+    appId: "1:338165023155:web:984b83da2cba15c5e38bc6"
+  };
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  const BACKEND = 'http://10.188.193.21:3000';
+
+  function showError(msg) {
+    const el = document.getElementById('errorBox');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+  function clearError() {
+    document.getElementById('errorBox').style.display = 'none';
+  }
+
+  async function callBackendLogin(user, email, username) {
+    const idToken = await user.getIdToken();
+    console.log(idToken);
+
+    const res = await fetch(`${BACKEND}/api/auth/login`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (!res.ok) throw new Error(`Backend trả lỗi ${res.status}`);
+    return { data: await res.json(), idToken };
+  }
+
+  function showResult({ data, idToken }) {
+    document.getElementById('loginForm').style.display  = 'none';
+    const box = document.getElementById('resultBox');
+    box.style.display = 'block';
+    document.getElementById('resultJson').textContent = JSON.stringify(data, null, 2);
+    document.getElementById('tokenText').textContent  = idToken;
+  }
+
+  // Expose to onclick handlers
+  window.loginEmail = async () => {
+    clearError();
+    const email    = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const btn = document.getElementById('btnEmail');
+    btn.disabled = true;
+    btn.textContent = 'Đang xử lý…';
+    try {
+      const { user, email } = await signInWithEmailAndPassword(auth, email, password);
+      const username = "wtf";
+      showResult(await callBackendLogin(user, email, username));
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Đăng nhập';
+    }
+  };
+
+  window.loginGoogle = async () => {
+    clearError();
+    const btn = document.getElementById('btnGoogle');
+    btn.disabled = true;
+    try {
+      const { user } = await signInWithPopup(auth, new GoogleAuthProvider());
+      showResult(await callBackendLogin(user));
+      
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  window.logout = async () => {
+    await signOut(auth);
+    document.getElementById('loginForm').style.display  = 'block';
+    document.getElementById('resultBox').style.display  = 'none';
+  };
+</script>
+</body>
+</html>

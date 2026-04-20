@@ -1,1 +1,34 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+firebase-service-account.json
+
+# Prisma
+backend/prisma/migrations/
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code memory
+.claude/
+
+# Planning docs (không cần thiết cho team)
+ke-hoach-nguoi-6.md
+travel-system-spec.md

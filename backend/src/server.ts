@@ -1,6 +1,6 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import dotenv from 'dotenv';
 import pg from 'pg';
 
 import { placesPlugin } from './routes/places';
@@ -20,7 +20,6 @@ import {
   ProposalStore,
 } from './replanner/index';
 
-dotenv.config();
 
 // Fix BigInt JSON serialization globally
 (BigInt.prototype as any).toJSON = function () {
