@@ -31,6 +31,7 @@ export const verifyToken = async (request: FastifyRequest, reply: FastifyReply):
       email: decodedToken.email,
       name: decodedToken.name,
     };
+    return;
   } catch (error: any) {
     console.error('Error verifying Firebase token:', error);
     return reply.status(401).send({ success: false, error: 'Unauthorized: Invalid token' });

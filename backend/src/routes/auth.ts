@@ -1,18 +1,21 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '../server';
+import { prisma } from '../lib/prisma';
 import { verifyToken } from '../middlewares/authMiddleware';
 
 export async function authPlugin(fastify: FastifyInstance): Promise<void> {
   // POST /api/auth/login
   fastify.post('/login', { preHandler: verifyToken }, async (request, reply) => {
+    //console.log(request);
     try {
       const { uid, email, name } = request.user!;
-
+      // kiểm tra đã từng đăng kí chưa?
       let user = await prisma.app_user.findUnique({
         where: { firebase_uid: uid },
       });
 
+      
       if (!user) {
+        // đăng kí cho user mới
         user = await prisma.app_user.create({
           data: {
             firebase_uid: uid,

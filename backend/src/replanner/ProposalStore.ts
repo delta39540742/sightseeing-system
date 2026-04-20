@@ -1,5 +1,5 @@
 import type { ReplanProposal, TripState } from '@app/types';
-import type { CausalTrace } from './CausalTraceBuilder.js';
+import type { CausalTrace } from './CausalTraceBuilder';
 
 /**
  * Trạng thái vòng đời của một ReplanProposal.

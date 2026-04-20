@@ -1,15 +1,25 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
 
 import { placesPlugin } from './routes/places';
 import { tripsPlugin } from './routes/trips';
 import { internalEventsPlugin } from './routes/internalEvents';
 import { authPlugin } from './routes/auth';
+import tripRoutes from './api/plan/routes';
 
-dotenv.config();
+import { replanPlugin } from './api/replan/routes';
+import {
+  PlanLoader,
+  StateEvolver,
+  MutationOperators,
+  ObjectiveScorer,
+  BeamSearch,
+  CausalTraceBuilder,
+  ProposalStore,
+} from './replanner/index';
+
 
 // Fix BigInt JSON serialization globally
 (BigInt.prototype as any).toJSON = function () {
@@ -19,16 +29,33 @@ dotenv.config();
 const fastify = Fastify({ logger: true });
 const port = parseInt(process.env.PORT || '3000', 10);
 
+export { prisma } from './lib/prisma';
+
 const connectionString = process.env.DATABASE_URL!;
-const adapter = new PrismaPg({ connectionString });
-export const prisma = new PrismaClient({ adapter });
+const pool = new pg.Pool({ connectionString });
 
 async function start() {
+  const evolver = new StateEvolver();
+  const operators = new MutationOperators(evolver);
+  const scorer = new ObjectiveScorer(evolver);
+  const beamSearch = new BeamSearch(evolver, operators, scorer);
+  const replanDeps = {
+    pool,
+    planLoader: new PlanLoader() as any,
+    evolver,
+    scorer,
+    beamSearch,
+    traceBuilder: new CausalTraceBuilder(),
+    proposalStore: new ProposalStore(),
+  };
+
   await fastify.register(cors);
   await fastify.register(placesPlugin, { prefix: '/api/places' });
   await fastify.register(tripsPlugin, { prefix: '/api/trips' });
   await fastify.register(internalEventsPlugin, { prefix: '/api/internal/events' });
   await fastify.register(authPlugin, { prefix: '/api/auth' });
+  await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
+  await fastify.register(tripRoutes, { prefix: '/api/plan' });
 
   fastify.get('/health', async () => {
     return { status: 'ok', message: 'TDTT Backend is running' };

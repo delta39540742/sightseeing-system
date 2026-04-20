@@ -11,12 +11,12 @@
  */
 
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
-import type { ReplanDeps, ReplanBody, RejectBody, TripParams, ProposalParams } from './handlers.js';
+import type { ReplanDeps, ReplanBody, RejectBody, TripParams, ProposalParams } from './handlers';
 import {
   makeReplanHandler,
   makeAcceptHandler,
   makeRejectHandler,
-} from './handlers.js';
+} from './handlers';
 
 // ---------------------------------------------------------------------------
 // JSON Schema definitions
