@@ -4,13 +4,16 @@ import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 
+// Initialize env FIRST so DATABASE_URL is available before Prisma init
+dotenv.config();
+
 import placeRoutes from './routes/place';
 import tripsRouter from './routes/trips';
 import internalEventsRouter from './routes/internalEvents';
 import authRouter from './routes/auth';
 
-// Initialize env
-dotenv.config();
+// Gọi Thư ký dậy bằng cú pháp chuẩn của TypeScript
+import './events/listeners';
 
 // Fix BigInt JSON serialization globally for Express to return BigInt as String properly
 (BigInt.prototype as any).toJSON = function () {

@@ -32,8 +32,8 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
     InternalEventBus.publish('places.listed', { page, limit, totalFound: total });
 
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       data: places,
       meta: {
         total,
@@ -62,10 +62,10 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const place = await prisma.place.findUnique({ 
-      where: { place_id: placeId } 
+    const place = await prisma.place.findUnique({
+      where: { place_id: placeId }
     });
-    
+
     if (!place) {
       res.status(404).json({ success: false, error: 'Place not found' });
       return;
