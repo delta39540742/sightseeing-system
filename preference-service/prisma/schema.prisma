@@ -1,0 +1,137 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Tham chiếu bảng đã có (không owned bởi Người 8) ─────────────────────────
+// Người 8 chỉ READ các bảng này, không migrate
+
+model AppUser {
+  userId      String   @id @map("user_id") @db.Uuid
+  firebaseUid String   @unique @map("firebase_uid")
+  email       String
+  displayName String?  @map("display_name")
+
+  // Relations owned bởi Người 8
+  preference        UserPreference?
+  armStats          UserArmStat[]
+  objectiveWeights  UserObjectiveWeights?
+  similarities      UserSimilarity[]      @relation("UserSimilaritySource")
+  similarTo         UserSimilarity[]      @relation("UserSimilarityTarget")
+  interactions      InteractionLog[]
+
+  @@map("app_user")
+}
+
+model Place {
+  placeId         BigInt  @id @default(autoincrement()) @map("place_id")
+  name            String
+  popularityScore Float?  @map("popularity_score")
+
+  interactions    InteractionLog[]
+
+  @@map("place")
+}
+
+// ─── Tables owned bởi Người 8 ─────────────────────────────────────────────────
+
+model UserPreference {
+  userId               String   @id @map("user_id") @db.Uuid
+  primaryPurpose       String   @map("primary_purpose")
+  preferredTagIds      Int[]    @map("preferred_tag_ids")
+  pace                 Float
+  dailyScheduleType    String   @map("daily_schedule_type")
+  foodPreferences      String[] @map("food_preferences")
+  budgetPerDayMin      Int      @map("budget_per_day_min")
+  budgetPerDayMax      Int      @map("budget_per_day_max")
+  groupType            String   @map("group_type")
+  mobilityRestrictions String[] @map("mobility_restrictions")
+  preferenceVector     Float[]  @map("preference_vector")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  user AppUser @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("user_preference")
+}
+
+model BanditArm {
+  armId      Int    @id @map("arm_id")
+  name       String @unique
+  wInterest  Float  @map("w_interest")
+  wPace      Float  @map("w_pace")
+  wDistance  Float  @map("w_distance")
+  wBudget    Float  @map("w_budget")
+  wWeather   Float  @map("w_weather")
+  wRisk      Float  @map("w_risk")
+
+  armStats         UserArmStat[]
+  objectiveWeights UserObjectiveWeights[]
+
+  @@map("bandit_arm")
+}
+
+model UserArmStat {
+  userId      String   @map("user_id") @db.Uuid
+  armId       Int      @map("arm_id")
+  pulls       Int      @default(0)
+  totalReward Float    @default(0) @map("total_reward")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user AppUser   @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  arm  BanditArm @relation(fields: [armId], references: [armId])
+
+  @@id([userId, armId])
+  @@map("user_arm_stat")
+}
+
+model UserObjectiveWeights {
+  userId          String   @id @map("user_id") @db.Uuid
+  wInterest       Float    @map("w_interest")
+  wPace           Float    @map("w_pace")
+  wDistance       Float    @map("w_distance")
+  wBudget         Float    @map("w_budget")
+  wWeather        Float    @map("w_weather")
+  wRisk           Float    @map("w_risk")
+  currentArmId    Int      @map("current_arm_id")
+  softConstraints Json     @default("[]") @map("soft_constraints")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user AppUser   @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  arm  BanditArm @relation(fields: [currentArmId], references: [armId])
+
+  @@map("user_objective_weights")
+}
+
+model UserSimilarity {
+  userId        String   @map("user_id") @db.Uuid
+  similarUserId String   @map("similar_user_id") @db.Uuid
+  similarity    Float
+  rankPosition  Int      @map("rank_position")
+  computedAt    DateTime @default(now()) @map("computed_at")
+
+  user        AppUser @relation("UserSimilaritySource", fields: [userId], references: [userId], onDelete: Cascade)
+  similarUser AppUser @relation("UserSimilarityTarget", fields: [similarUserId], references: [userId], onDelete: Cascade)
+
+  @@id([userId, similarUserId])
+  @@map("user_similarity")
+}
+
+model InteractionLog {
+  interactionId   BigInt   @id @default(autoincrement()) @map("interaction_id")
+  userId          String   @map("user_id") @db.Uuid
+  placeId         BigInt?  @map("place_id")
+  tripId          String?  @map("trip_id") @db.Uuid
+  interactionType String   @map("interaction_type")
+  rating          Float?
+  context         Json?
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user  AppUser @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  place Place?  @relation(fields: [placeId], references: [placeId])
+
+  @@map("interaction_log")
+}
