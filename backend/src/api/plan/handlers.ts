@@ -82,10 +82,24 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         });
 
         const candidates = places.map((p: any) => {
-            const tagMatchCount = p.place_tag_map.filter((tm: any) => 
+            const tagMatchCount = p.place_tag_map.filter((tm: any) =>
                 (payload.preferredTagIds || []).includes(tm.tag_id)
             ).length;
-            return { ...p, matchScore: tagMatchCount + (p.popularity_score || 0) * 0.3 };
+            return {
+                placeId:            Number(p.place_id),
+                name:               p.name,
+                lat:                p.lat ?? 16.06,
+                lng:                p.lng ?? 108.22,
+                avgVisitDurationMin: p.avg_visit_duration_min ?? 60,
+                minPrice:           p.min_price ?? 0,
+                maxPrice:           p.max_price ?? 0,
+                indoorOutdoor:      p.indoor_outdoor,
+                popularityScore:    p.popularity_score ?? 0,
+                terrainEasiness:    p.terrain_easiness ?? 1,
+                tags:               p.place_tag_map,
+                openingHours:       [],
+                matchScore:         tagMatchCount + (p.popularity_score || 0) * 0.3,
+            };
         }).sort((a: any, b: any) => b.matchScore - a.matchScore).slice(0, 100);
         // ---------------------------------------------------
 

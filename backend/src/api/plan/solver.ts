@@ -17,9 +17,9 @@ export function generateGreedyPlan(
 ): TripSlot[] {
     const plan: TripSlot[] = [];
     let budgetRemaining = budgetTotal;
-    
-    // Set để đánh dấu các POI đã đi, tránh lặp lại
-    const visitedPlaceIds = new Set<number>();
+
+    // Set để đánh dấu các POI đã đi — dùng string để tránh BigInt vs number mismatch
+    const visitedPlaceIds = new Set<string>();
 
     for (let dayIndex = 0; dayIndex < days; dayIndex++) {
         // Giả sử bắt đầu ngày mới lúc 08:00 sáng
@@ -38,8 +38,9 @@ export function generateGreedyPlan(
 
             // Quét tìm POI tốt nhất tiếp theo
             for (const place of candidates) {
-                if (visitedPlaceIds.has(place.placeId)) continue;
-                
+                if (visitedPlaceIds.has(String(place.placeId))) continue;
+                if (!place.lat || !place.lng) continue; // bỏ qua place thiếu tọa độ
+
                 // 1. Kiểm tra các điều kiện (Ràng buộc cứng)
                 const travelTime = estimateTravelTimeMin(currentLat, currentLng, place.lat, place.lng);
                 const cost = place.avgVisitDurationMin || 0; // Giả sử cost nằm ở bảng giá
@@ -98,10 +99,10 @@ export function generateGreedyPlan(
             });
 
             // 4. Cập nhật lại Trạng thái (State) cho vòng lặp tiếp theo
-            visitedPlaceIds.add(bestPlace.placeId);
-            currentTimeMinutes += bestTravelTime + duration; // Sửa lại chỗ này luôn
-            currentLat = bestPlace.lat;
-            currentLng = bestPlace.lng;
+            visitedPlaceIds.add(String(bestPlace.placeId));
+            currentTimeMinutes += bestTravelTime + duration;
+            currentLat = bestPlace.lat ?? currentLat;
+            currentLng = bestPlace.lng ?? currentLng;
             budgetRemaining -= (bestPlace.minPrice || 0);
             slotOrder++;
         }

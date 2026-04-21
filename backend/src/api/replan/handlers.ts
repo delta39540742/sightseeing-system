@@ -311,6 +311,26 @@ async function validateProposal(
 // ---------------------------------------------------------------------------
 
 /**
+ * GET /api/trips/:tripId/replan/pending
+ *
+ * Returns the current pending proposal for a trip, or null if none exists.
+ */
+export function makePendingHandler(deps: ReplanDeps) {
+  return async function pendingHandler(
+    request: FastifyRequest<{ Params: TripParams }>,
+    reply: FastifyReply,
+  ): Promise<void> {
+    const { tripId } = request.params;
+    const pending = await deps.proposalStore.findMany({
+      tripId,
+      status: 'pending',
+      limit: 1,
+    });
+    return reply.status(200).send(pending[0] ?? null);
+  };
+}
+
+/**
  * POST /api/trips/:tripId/replan
  *
  * Triggers the full replanning pipeline and returns a new ReplanProposal.

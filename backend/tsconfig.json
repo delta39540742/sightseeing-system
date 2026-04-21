@@ -9,6 +9,7 @@
     "strict": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    "types": ["node"],
     "paths": {
       "@app/types": ["./src/types/index.ts"]
     }

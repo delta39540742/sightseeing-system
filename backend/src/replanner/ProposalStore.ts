@@ -1,87 +1,117 @@
-import type { ReplanProposal, TripState } from '@app/types';
+import type { Pool } from 'pg';
+import type { ReplanProposal } from '@app/types';
 import type { CausalTrace } from './CausalTraceBuilder';
 
-/**
- * Trạng thái vòng đời của một ReplanProposal.
- */
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected' | 'expired';
 
-/**
- * Bộ lọc khi truy vấn proposals từ store.
- */
 export interface ProposalFilter {
   tripId?: string;
   status?: ProposalStatus;
-  /** Chỉ lấy proposals được tạo sau mốc thời gian này */
   createdAfter?: Date;
   limit?: number;
   offset?: number;
 }
 
-/**
- * ProposalStore
- *
- * Lớp persistence cho ReplanProposal và CausalTrace — giao tiếp với Postgres
- * để lưu, truy vấn, và cập nhật vòng đời của các proposals.
- *
- * Nhiệm vụ chính:
- *  - Persist ReplanProposal (bao gồm proposed TripState dạng JSONB) vào DB
- *  - Lưu CausalTrace liên kết với proposal tương ứng
- *  - Truy vấn proposals theo tripId / status / thời gian
- *  - Cập nhật status khi người dùng accept/reject
- *  - Tự động đánh dấu expired cho proposals quá hạn (TTL-based)
- *  - Cung cấp transaction wrapper để đảm bảo atomicity khi save proposal + trace
- */
 export class ProposalStore {
-  /**
-   * Lưu một ReplanProposal mới cùng CausalTrace của nó (trong một transaction).
-   * @param proposal Proposal cần lưu
-   * @param trace CausalTrace giải thích quá trình tạo proposal
-   * @returns UUID được gán cho proposal sau khi insert
-   */
+  constructor(private readonly pool: Pool) {}
+
   async save(proposal: ReplanProposal, trace: CausalTrace): Promise<string> {
-    throw new Error('Not implemented');
+    await this.pool.query(
+      `INSERT INTO replan_proposal
+         (proposal_id, trip_id, triggered_by_event_id, expires_at,
+          old_plan_snapshot, new_plan_snapshot, causal_trace,
+          score_before, score_after, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')`,
+      [
+        proposal.proposalId,
+        proposal.tripId,
+        proposal.triggeredByEventId ?? null,
+        new Date(proposal.expiresAt),
+        JSON.stringify(proposal.oldPlanSnapshot),
+        JSON.stringify(proposal.newPlanSnapshot),
+        JSON.stringify(trace.steps),
+        proposal.scoreBefore,
+        proposal.scoreAfter,
+      ],
+    );
+    return proposal.proposalId;
   }
 
-  /**
-   * Truy vấn danh sách proposals theo bộ lọc.
-   * @param filter Điều kiện lọc
-   * @returns Danh sách ReplanProposal thỏa điều kiện
-   */
   async findMany(filter: ProposalFilter): Promise<ReplanProposal[]> {
-    throw new Error('Not implemented');
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (filter.tripId) {
+      conditions.push(`trip_id = $${idx++}`);
+      params.push(filter.tripId);
+    }
+    if (filter.status) {
+      conditions.push(`status = $${idx++}`);
+      params.push(filter.status);
+    }
+    if (filter.createdAfter) {
+      conditions.push(`created_at > $${idx++}`);
+      params.push(filter.createdAfter);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = filter.limit ? `LIMIT $${idx++}` : '';
+    if (filter.limit) params.push(filter.limit);
+    const offset = filter.offset ? `OFFSET $${idx++}` : '';
+    if (filter.offset) params.push(filter.offset);
+
+    const res = await this.pool.query(
+      `SELECT * FROM replan_proposal ${where} ORDER BY created_at DESC ${limit} ${offset}`,
+      params,
+    );
+    return res.rows.map(rowToProposal);
   }
 
-  /**
-   * Lấy một proposal theo ID.
-   * @param proposalId UUID của proposal
-   * @returns ReplanProposal hoặc null nếu không tìm thấy
-   */
   async findById(proposalId: string): Promise<ReplanProposal | null> {
-    throw new Error('Not implemented');
+    const res = await this.pool.query(
+      `SELECT * FROM replan_proposal WHERE proposal_id = $1`,
+      [proposalId],
+    );
+    return res.rows[0] ? rowToProposal(res.rows[0]) : null;
   }
 
-  /**
-   * Cập nhật status của proposal (accept / reject).
-   * @param proposalId UUID của proposal
-   * @param status Trạng thái mới
-   * @param actorId UUID của người thực hiện hành động
-   */
   async updateStatus(
     proposalId: string,
     status: ProposalStatus,
-    actorId: string,
+    _actorId: string,
   ): Promise<void> {
-    throw new Error('Not implemented');
+    await this.pool.query(
+      `UPDATE replan_proposal SET status = $1, decided_at = NOW() WHERE proposal_id = $2`,
+      [status, proposalId],
+    );
   }
 
-  /**
-   * Đánh dấu expired tất cả proposals của một trip đã quá TTL.
-   * @param tripId UUID chuyến đi
-   * @param ttlMs Thời gian sống tính bằng millisecond
-   * @returns Số proposals bị expire
-   */
   async expireOld(tripId: string, ttlMs: number): Promise<number> {
-    throw new Error('Not implemented');
+    const cutoff = new Date(Date.now() - ttlMs);
+    const res = await this.pool.query<{ count: string }>(
+      `UPDATE replan_proposal
+          SET status = 'expired'
+        WHERE trip_id = $1 AND status = 'pending' AND created_at < $2
+        RETURNING proposal_id`,
+      [tripId, cutoff],
+    );
+    return res.rowCount ?? 0;
   }
+}
+
+function rowToProposal(row: Record<string, unknown>): ReplanProposal {
+  return {
+    proposalId: row['proposal_id'] as string,
+    tripId: row['trip_id'] as string,
+    triggeredByEventId: (row['triggered_by_event_id'] as string) ?? null,
+    createdAt: (row['created_at'] as Date).toISOString(),
+    expiresAt: (row['expires_at'] as Date).toISOString(),
+    oldPlanSnapshot: row['old_plan_snapshot'] as ReplanProposal['oldPlanSnapshot'],
+    newPlanSnapshot: row['new_plan_snapshot'] as ReplanProposal['newPlanSnapshot'],
+    causalTrace: row['causal_trace'] as unknown[],
+    scoreBefore: row['score_before'] as number,
+    scoreAfter: row['score_after'] as number,
+    status: row['status'] as ReplanProposal['status'],
+  };
 }

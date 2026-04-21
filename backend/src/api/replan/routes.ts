@@ -16,6 +16,7 @@ import {
   makeReplanHandler,
   makeAcceptHandler,
   makeRejectHandler,
+  makePendingHandler,
 } from './handlers';
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,13 @@ export async function replanPlugin(
   options: ReplanPluginOptions,
 ): Promise<void> {
   const { deps } = options;
+
+  // ── GET /api/trips/:tripId/replan/pending ──────────────────────────────
+  fastify.get<{ Params: TripParams }>(
+    '/trips/:tripId/replan/pending',
+    { schema: { params: tripParamsSchema } },
+    makePendingHandler(deps),
+  );
 
   // ── POST /api/trips/:tripId/replan ──────────────────────────────────────
   fastify.post<{ Params: TripParams; Body: ReplanBody }>(

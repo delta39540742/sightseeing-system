@@ -202,7 +202,7 @@
   const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
 
-  const BACKEND = 'http://10.188.193.21:3000';
+  const BACKEND = window.BACKEND_URL || 'http://localhost:3000';
 
   function showError(msg) {
     const el = document.getElementById('errorBox');

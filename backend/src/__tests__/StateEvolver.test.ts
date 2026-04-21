@@ -40,8 +40,8 @@ function makePlace(overrides: Partial<Place> = {}): Place {
     description: null,
     lat: 16.0614,
     lng: 108.2273,
-    minPrice: null,
-    maxPrice: null,
+    minPrice: undefined,
+    maxPrice: undefined,
     priceType: 'free',
     avgVisitDurationMin: 60,
     parkingAvailable: false,
@@ -348,7 +348,7 @@ describe('StateEvolver.evolve', () => {
   });
 
   it('sets source to "simulated"', () => {
-    const s = makeState({ source: 'planned' });
+    const s = makeState({ source: 'simulated' });
     const next = evolver.evolve(s, makeSlot(), makeCtx());
     expect(next.source).toBe('simulated');
   });

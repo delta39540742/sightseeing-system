@@ -41,12 +41,12 @@ async function start() {
   const beamSearch = new BeamSearch(evolver, operators, scorer);
   const replanDeps = {
     pool,
-    planLoader: new PlanLoader() as any,
+    planLoader: new PlanLoader(pool),
     evolver,
     scorer,
     beamSearch,
     traceBuilder: new CausalTraceBuilder(),
-    proposalStore: new ProposalStore(),
+    proposalStore: new ProposalStore(pool),
   };
 
   await fastify.register(cors);

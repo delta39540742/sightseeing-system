@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
   }));
 
   // Mock Prisma
-  vi.mock('../../server', () => ({
+  vi.mock('../../lib/prisma', () => ({
     prisma: {
       app_user: {
         findUnique: vi.fn(),
@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
   }));
 
   import { auth } from '../../config/firebase';
-  import { prisma } from '../../server';
+  import { prisma } from '../../lib/prisma';
 
   async function buildApp(): Promise<FastifyInstance> {
     const app = Fastify({ logger: false });
