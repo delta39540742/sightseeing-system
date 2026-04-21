@@ -1,3 +1,23 @@
+node_modules/
+dist/
+.env
+firebase-service-account.json
+
+# Bỏ qua thư mục chứa data nặng
+data/
+
+# Bỏ qua TẤT CẢ các file PDF trong dự án
+*.pdf
+
+# Bỏ qua thư mục rác của AI
+.agent/
+
+# Bỏ qua các file text/document nháp
+PLAN-hcmc-osm-database.md
+travel_schema.md
+danang_places.json
+t03_text_extract.txt
+*.docx
 # Dependencies
 node_modules/
 
