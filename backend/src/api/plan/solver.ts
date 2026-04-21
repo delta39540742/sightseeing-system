@@ -76,7 +76,9 @@ export function generateGreedyPlan(
             startTime.setHours(Math.floor((currentTimeMinutes + bestTravelTime) / 60), (currentTimeMinutes + bestTravelTime) % 60, 0, 0);
             
             const endTime = new Date(startTime);
-            endTime.setMinutes(endTime.getMinutes() + bestPlace.avgVisitDurationMin);
+            // DÙNG FALLBACK: Nếu DB null, cho mặc định chơi 60 phút
+            const duration = bestPlace.avgVisitDurationMin || 60; 
+            endTime.setMinutes(endTime.getMinutes() + duration);
 
             plan.push({
                 slotId: `slot_${dayIndex}_${slotOrder}`,
@@ -97,7 +99,7 @@ export function generateGreedyPlan(
 
             // 4. Cập nhật lại Trạng thái (State) cho vòng lặp tiếp theo
             visitedPlaceIds.add(bestPlace.placeId);
-            currentTimeMinutes += bestTravelTime + bestPlace.avgVisitDurationMin;
+            currentTimeMinutes += bestTravelTime + duration; // Sửa lại chỗ này luôn
             currentLat = bestPlace.lat;
             currentLng = bestPlace.lng;
             budgetRemaining -= (bestPlace.minPrice || 0);
@@ -106,4 +108,109 @@ export function generateGreedyPlan(
     }
 
     return plan;
+}
+
+// backend/src/api/plan/solver.ts
+
+// 1. Định nghĩa các kiểu dữ liệu cơ bản (Giả định theo mô hình của bạn)
+// --- DÁN ĐOẠN NÀY XUỐNG CUỐI FILE solver.ts CỦA BẠN ---
+
+// Hàm tính khoảng cách giữa 2 tọa độ (Công thức Haversine)
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Bán kính trái đất (km)
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Trả về Kilomet
+}
+
+// Hàm tìm thông tin Place đầy đủ dựa trên placeId
+function getPlaceDetails(placeId: number, candidates: Place[]): Place | undefined {
+    return candidates.find(p => p.placeId === placeId);
+}
+
+// Hàm chấm điểm đã được sửa để nhận data thật của team
+export function calculateItineraryScore(
+    slots: TripSlot[], 
+    prefs: any, // Tạm dùng any cho UserPreferences để tránh lỗi type
+    candidates: Place[] // Cần danh sách gốc để tra cứu tọa độ/giá tiền
+): number {
+  let totalScore = 0;
+  let currentBudget = prefs.budgetRemaining;
+
+  for (let i = 0; i < slots.length; i++) {
+    // 1. Tìm thông tin chi tiết của địa điểm dựa trên placeId trong slot
+    const currentPlace = getPlaceDetails(slots[i].placeId, candidates);
+    if (!currentPlace) continue; // Bỏ qua nếu lỗi không tìm thấy
+
+    let slotScore = 0;
+
+    // A. Điểm sở thích (Tạm thời cho 10 điểm mỗi POI vì data tag hiện tại hơi phức tạp)
+    slotScore += prefs.weights.interest * 10; 
+
+    // B. Điểm khoảng cách (Distance Penalty)
+    if (i > 0) {
+      const prevPlace = getPlaceDetails(slots[i - 1].placeId, candidates);
+      if (prevPlace) {
+         const distance = calculateDistance(prevPlace.lat, prevPlace.lng, currentPlace.lat, currentPlace.lng);
+         slotScore -= prefs.weights.distance * distance; 
+      }
+    }
+
+    // C. Điểm ngân sách (Budget)
+    currentBudget -= currentPlace.minPrice || 0;
+    if (currentBudget < 0) {
+      slotScore -= prefs.weights.budget * 50; 
+    }
+
+    // D. Điểm thời tiết (Tạm thời bỏ qua phần isOutdoor vì Interface Place chưa có)
+    slotScore += prefs.weights.weather * 5; 
+
+    totalScore += slotScore;
+  }
+
+  return totalScore;
+}
+
+export function optimizeWith2Opt(
+    initialSlots: TripSlot[], 
+    prefs: any, 
+    candidates: Place[]
+): TripSlot[] {
+  let bestSlots = [...initialSlots];
+  let bestScore = calculateItineraryScore(bestSlots, prefs, candidates);
+  let improved = true;
+  let iterations = 0;
+  const MAX_ITERATIONS = 50; 
+
+  while (improved && iterations < MAX_ITERATIONS) {
+    improved = false;
+    iterations++;
+
+    for (let i = 1; i < bestSlots.length - 1; i++) {
+      for (let j = i + 1; j < bestSlots.length; j++) {
+        
+        const newSlots = [
+          ...bestSlots.slice(0, i),
+          ...bestSlots.slice(i, j + 1).reverse(),
+          ...bestSlots.slice(j + 1)
+        ];
+
+        const newScore = calculateItineraryScore(newSlots, prefs, candidates);
+
+        if (newScore > bestScore) {
+          bestSlots = newSlots;
+          bestScore = newScore;
+          improved = true; 
+        }
+      }
+    }
+  }
+
+  console.log(`[2-Opt] Hoàn thành sau ${iterations} vòng. Điểm tổng: ${bestScore}`);
+  return bestSlots;
 }
