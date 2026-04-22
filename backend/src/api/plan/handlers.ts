@@ -1,7 +1,10 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
+import type { place, place_tag_map } from '@prisma/client';
 import { prisma } from '../../server';
 import { generateGreedyPlan, optimizeWith2Opt } from './solver';
+
+type PlaceWithTags = place & { place_tag_map: place_tag_map[] };
 
 export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -33,9 +36,9 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     });
 
     // 4. Tính toán matchScore (Logic lõi của Người 4)
-    const candidates = places.map(p => {
+    const candidates = places.map((p: PlaceWithTags) => {
       // tagMatch: số lượng tag trùng khớp với sở thích user
-      const tagMatchCount = p.place_tag_map.filter(tm => 
+      const tagMatchCount = p.place_tag_map.filter((tm: place_tag_map) =>
         preferredTagIds.includes(tm.tag_id)
       ).length;
 
