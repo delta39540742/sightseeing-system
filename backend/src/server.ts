@@ -7,6 +7,7 @@ import { placesPlugin } from './routes/places';
 import { tripsPlugin } from './routes/trips';
 import { internalEventsPlugin } from './routes/internalEvents';
 import { authPlugin } from './routes/auth';
+import { nluPlugin } from './routes/nlu';
 import tripRoutes from './api/plan/routes';
 
 import { replanPlugin } from './api/replan/routes';
@@ -54,6 +55,7 @@ async function start() {
   await fastify.register(tripsPlugin, { prefix: '/api/trips' });
   await fastify.register(internalEventsPlugin, { prefix: '/api/internal/events' });
   await fastify.register(authPlugin, { prefix: '/api/auth' });
+  await fastify.register(nluPlugin, { prefix: '/api/nlu' });
   await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
   await fastify.register(tripRoutes, { prefix: '/api/plan' });
 
