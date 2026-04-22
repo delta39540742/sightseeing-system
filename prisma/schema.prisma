@@ -111,8 +111,8 @@ model place {
   name                                                              String
   description                                                       String?
   geom                                                              Unsupported("geography")
-  lat                                                               Float?                   @default(dbgenerated("st_y((geom)::geometry)"))
-  lng                                                               Float?                   @default(dbgenerated("st_x((geom)::geometry)"))
+  lat                                                               Float?                   
+  lng                                                               Float?                   
   min_price                                                         Int?
   max_price                                                         Int?
   price_type                                                        String
