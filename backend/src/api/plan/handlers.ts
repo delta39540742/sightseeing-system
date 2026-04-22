@@ -74,10 +74,10 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // --- PHẦN THÊM MỚI: Lấy candidates từ Database ---
         const avgBudgetPerDay = (payload.budgetTotal || 5000000) / 3;
         const places = await prisma.place.findMany({
-            // where: {
-            //     address: { contains: payload.destinationCity || 'Da Nang' },
-            //     min_price: { lte: avgBudgetPerDay },
-            // },
+            where: {
+                address: { contains: payload.destinationCity || 'Da Nang' },
+                min_price: { lte: avgBudgetPerDay },
+            },
             include: { place_tag_map: true }
         });
 
@@ -119,10 +119,57 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         const optimizedPlan = optimizeWith2Opt(greedyPlan, userPreferences, candidates);
 
         // 3. Trả kết quả đã tối ưu về cho User
-        return reply.send({
-            message: "Tạo lịch trình thành công",
-            slots: optimizedPlan 
+        // --- BẮT ĐẦU PHẦN LƯU DATABASE ---
+        // Sử dụng $transaction để đảm bảo nếu lưu lỗi thì sẽ không tạo trip "rác"
+        const defaultUser = await prisma.app_user.findFirst();
+        if (!defaultUser) {
+            throw new Error("Không tìm thấy người dùng nào trong DB. Hãy kiểm tra lại file seed!");
+        }
+
+        // Sử dụng $transaction để đảm bảo nếu lưu lỗi thì sẽ không tạo trip "rác"
+        const savedTrip = await prisma.$transaction(async (tx) => {
+            // 1. Tạo bản ghi Trip chính
+            const trip = await tx.trip.create({
+                data: {
+                    // SỬA Ở ĐÂY: Lấy ID thật của defaultUser vừa tìm được
+                    user_id: payload.userId || defaultUser.user_id, 
+                    destination_city: payload.destinationCity || 'Da Nang',
+                    start_date: new Date(payload.startDate),
+                    end_date: new Date(payload.endDate),
+                    budget_total: payload.budgetTotal || 5000000,
+                    status: 'confirmed',
+                    objective_score: 59.34, 
+                }
+            });
+
+            // 2. Tạo danh sách các Slot gắn liền với Trip vừa tạo
+            const slotsData = optimizedPlan.map(slot => ({
+                trip_id: trip.trip_id,
+                day_index: slot.dayIndex,
+                slot_order: slot.slotOrder,
+                place_id: BigInt(slot.placeId),
+                planned_start: new Date(slot.plannedStart),
+                planned_end: new Date(slot.plannedEnd),
+                estimated_cost: slot.estimatedCost,
+                activity_type: slot.activityType,
+                rationale: slot.rationale,
+                status: 'planned'
+            }));
+
+            await tx.trip_slot.createMany({
+                data: slotsData
+            });
+
+            // Lấy lại full dữ liệu trip kèm slots để trả về
+            return await tx.trip.findUnique({
+                where: { trip_id: trip.trip_id },
+                include: { trip_slot: true }
+            });
         });
+
+        // 3. Trả về kết quả 201 thành công kèm dữ liệu đã lưu từ Database
+        return reply.status(201).send(savedTrip);
+        // --- KẾT THÚC PHẦN LƯU DATABASE ---
     } catch (error: any) {
         console.error("=== LỖI CREATE TRIP ===", error); 
         return reply.status(500).send({ error: error.message });
