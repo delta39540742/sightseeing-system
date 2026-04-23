@@ -9,7 +9,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'https://sightseeing-system-iu8o.onrender.com', changeOrigin: true },
+      '/api': { target: process.env.VITE_API_TARGET ?? 'http://localhost:3000', changeOrigin: true },
       '/pref': { target: 'http://localhost:3001', changeOrigin: true, rewrite: p => p.replace(/^\/pref/, '') },
     },
   },
