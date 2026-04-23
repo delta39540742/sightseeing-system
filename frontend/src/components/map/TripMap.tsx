@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { TripSlot, Place } from '@/types'
@@ -28,14 +28,17 @@ function FocusController({ slots, focusedSlotId }: { slots: TripSlot[]; focusedS
   return null
 }
 
-function createNumberedIcon(n: number, hasConflict: boolean) {
+const DAY_COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4']
+
+function createDayIcon(dayIdx: number, orderInDay: number, hasConflict: boolean, dayColors: string[]) {
+  const color = hasConflict ? '#ef4444' : dayColors[dayIdx % dayColors.length]
   return L.divIcon({
     html: `<div style="
       width:28px;height:28px;border-radius:50%;
-      background:${hasConflict ? '#ef4444' : '#3b82f6'};
-      color:white;display:flex;align-items:center;justify-content:center;
-      font-size:12px;font-weight:700;border:2px solid white;
-      box-shadow:0 2px 8px rgba(0,0,0,0.3);">${n}</div>`,
+      background:${color};color:white;
+      display:flex;align-items:center;justify-content:center;
+      font-size:11px;font-weight:700;border:2px solid white;
+      box-shadow:0 2px 8px rgba(0,0,0,0.3);">${orderInDay + 1}</div>`,
     className: '',
     iconSize: [28, 28],
     iconAnchor: [14, 14],
@@ -51,7 +54,16 @@ export function TripMap({ slots, pendingSlots, focusedSlotId, startPoint, onMapC
     ? [placedSlots[0].place.lat, placedSlots[0].place.lng]
     : startPoint ?? [16.047, 108.206]
 
-  const routeCoords: [number, number][] = placedSlots.map((s) => [s.place!.lat, s.place!.lng])
+  // Group slots by dayIndex
+  const slotsByDay = useMemo(() => {
+    const map = new Map<number, TripSlot[]>()
+    placedSlots.forEach((s) => {
+      const day = s.dayIndex ?? 0
+      if (!map.has(day)) map.set(day, [])
+      map.get(day)!.push(s)
+    })
+    return map
+  }, [placedSlots])
 
   return (
     <MapContainer
@@ -65,17 +77,22 @@ export function TripMap({ slots, pendingSlots, focusedSlotId, startPoint, onMapC
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
-      {routeCoords.length > 1 && (
-        <Polyline
-          positions={routeCoords}
-          pathOptions={{
-            color: isPending ? '#94a3b8' : '#3b82f6',
-            weight: 3,
-            dashArray: isPending ? '8 4' : undefined,
-            opacity: isPending ? 0.6 : 0.9,
-          }}
-        />
-      )}
+      {Array.from(slotsByDay.entries()).map(([dayIdx, daySlots]) => {
+        const coords: [number, number][] = daySlots.map((s) => [s.place!.lat, s.place!.lng])
+        if (coords.length < 2) return null
+        return (
+          <Polyline
+            key={dayIdx}
+            positions={coords}
+            pathOptions={{
+              color: isPending ? '#94a3b8' : DAY_COLORS[dayIdx % DAY_COLORS.length],
+              weight: 2.5,
+              dashArray: isPending ? '8 4' : undefined,
+              opacity: isPending ? 0.5 : 0.75,
+            }}
+          />
+        )
+      })}
 
       {startPoint && (
         <Marker
@@ -91,27 +108,30 @@ export function TripMap({ slots, pendingSlots, focusedSlotId, startPoint, onMapC
         </Marker>
       )}
 
-      {placedSlots.map((slot, i) => (
-        <Marker
-          key={slot.slotId}
-          position={[slot.place!.lat, slot.place!.lng]}
-          icon={createNumberedIcon(i + 1, !!slot.conflict)}
-        >
-          <Popup>
-            <div className="min-w-[160px]">
-              <p className="font-semibold text-sm">{slot.place!.name}</p>
-              <p className="text-xs text-gray-500 mt-1">
-                {new Date(slot.plannedStart).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
-                {' → '}
-                {new Date(slot.plannedEnd).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
-              </p>
-              {slot.conflict && (
-                <p className="text-xs text-red-500 mt-1">⚠ {slot.conflict.message}</p>
-              )}
-            </div>
-          </Popup>
-        </Marker>
-      ))}
+      {Array.from(slotsByDay.entries()).map(([dayIdx, daySlots]) =>
+        daySlots.map((slot, orderInDay) => (
+          <Marker
+            key={slot.slotId}
+            position={[slot.place!.lat, slot.place!.lng]}
+            icon={createDayIcon(dayIdx, orderInDay, !!slot.conflict, DAY_COLORS)}
+          >
+            <Popup>
+              <div className="min-w-[160px]">
+                <p className="text-xs text-gray-400 mb-0.5">Ngày {dayIdx + 1}</p>
+                <p className="font-semibold text-sm">{slot.place!.name}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {new Date(slot.plannedStart).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                  {' → '}
+                  {new Date(slot.plannedEnd).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                </p>
+                {slot.conflict && (
+                  <p className="text-xs text-red-500 mt-1">⚠ {slot.conflict.message}</p>
+                )}
+              </div>
+            </Popup>
+          </Marker>
+        ))
+      )}
 
       <FocusController slots={displaySlots} focusedSlotId={focusedSlotId} />
 

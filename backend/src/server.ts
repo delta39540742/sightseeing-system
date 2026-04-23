@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import Fastify from 'fastify';
+import Fastify, {FastifyError} from 'fastify';
 import cors from '@fastify/cors';
 import pg from 'pg';
 
@@ -131,7 +131,7 @@ async function start() {
   fastify.get('/health', async () => ({ status: 'ok', message: 'TDTT Backend is running' }));
 
   // Hook: log lỗi uncaught trong handler
-  fastify.setErrorHandler((error, req, reply) => {
+  fastify.setErrorHandler<FastifyError>((error, req, reply) => {
     const time = new Date().toTimeString().slice(0, 8);
     console.error(
       `${c.red}[${time}] ERROR${c.reset} ${req.method} ${req.url}\n` +

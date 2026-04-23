@@ -1,21 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '@/services/api';
 import type { ReplanProposal } from './types';
 
 async function fetchPendingProposal(tripId: string): Promise<ReplanProposal | null> {
-  const res = await fetch(`/api/trips/${tripId}/replan/pending`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Lỗi tải đề xuất: ${res.status}`);
-  return res.json() as Promise<ReplanProposal>;
+  try {
+    const res = await api.get<ReplanProposal>(`/trips/${tripId}/replan/pending`);
+    return res.data;
+  } catch (err: unknown) {
+    if ((err as { response?: { status?: number } })?.response?.status === 404) return null;
+    throw err;
+  }
 }
 
 async function acceptProposal(tripId: string, proposalId: string): Promise<void> {
-  const res = await fetch(`/api/trips/${tripId}/replan/${proposalId}/accept`, {
-    method: 'POST',
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { message?: string }).message ?? `Lỗi chấp nhận: ${res.status}`);
-  }
+  await api.post(`/trips/${tripId}/replan/${proposalId}/accept`);
 }
 
 async function rejectProposal(
@@ -23,15 +21,7 @@ async function rejectProposal(
   proposalId: string,
   reason?: string,
 ): Promise<void> {
-  const res = await fetch(`/api/trips/${tripId}/replan/${proposalId}/reject`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { message?: string }).message ?? `Lỗi từ chối: ${res.status}`);
-  }
+  await api.post(`/trips/${tripId}/replan/${proposalId}/reject`, { reason });
 }
 
 // ---------------------------------------------------------------------------

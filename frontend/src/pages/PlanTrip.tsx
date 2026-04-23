@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useCallback, useRef } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Map, List } from 'lucide-react'
 import { NLPInput } from '@/components/planning/NLPInput'
@@ -20,6 +20,22 @@ export default function PlanTrip() {
   const [startPoint, setStartPoint] = useState<[number, number] | undefined>()
   const [mapClickMode, setMapClickMode] = useState(false)
   const [mobileTab, setMobileTab] = useState<MobileTab>('form')
+  const lastReqRef = useRef<PlanRequest | null>(null)
+
+  const [anchorIds, setAnchorIds] = useState<number[]>([])
+  const toggleAnchor = (id: number) =>
+    setAnchorIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
+
+  const candidatesReq: PlanRequest | null = parsed
+    ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles }
+    : null
+
+  const { data: candidates } = useQuery({
+    queryKey: ['candidates', candidatesReq],
+    queryFn: () => tripService.candidates(candidatesReq!),
+    enabled: !!candidatesReq,
+    staleTime: 60_000,
+  })
 
   const { mutate: generate, isPending } = useMutation({
     mutationFn: tripService.generate,
@@ -30,7 +46,9 @@ export default function PlanTrip() {
     },
     onError: () => toast.error('Không thể tạo kế hoạch. Thử lại sau.', {
       label: 'Thử lại',
-      onClick: () => {},
+      onClick: () => {
+        if (lastReqRef.current) generate(lastReqRef.current)
+      },
     }),
   })
 
@@ -53,7 +71,14 @@ export default function PlanTrip() {
   }, [mapClickMode])
 
   const handleSubmit = (req: PlanRequest) => {
-    generate({ ...req, startLat: startPoint?.[0], startLng: startPoint?.[1] })
+    const fullReq = {
+      ...req,
+      startLat: startPoint?.[0],
+      startLng: startPoint?.[1],
+      anchorPlaceIds: anchorIds,
+    }
+    lastReqRef.current = fullReq
+    generate(fullReq)
   }
 
   return (
@@ -110,7 +135,11 @@ export default function PlanTrip() {
                 />
               </div>
 
-              <ComparisonPanel />
+              <ComparisonPanel
+                candidates={candidates}
+                selectedIds={anchorIds}
+                onToggle={toggleAnchor}
+              />
             </div>
           </div>
 

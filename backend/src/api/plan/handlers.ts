@@ -101,11 +101,13 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         }
 
         // Lấy candidates từ DB
+        const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
         const places = await prisma.place.findMany({ include: { place_tag_map: true } });
         const candidates = places.map((p: any) => {
             const tagMatchCount = p.place_tag_map.filter((tm: any) =>
                 preferredTagIds.includes(tm.tag_id)
             ).length;
+            const isAnchor = anchorPlaceIds.includes(Number(p.place_id));
             return {
                 placeId:             Number(p.place_id),
                 name:                p.name,
@@ -119,7 +121,8 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 terrainEasiness:     p.terrain_easiness ?? 1,
                 tags:                p.place_tag_map,
                 openingHours:        [],
-                matchScore:          tagMatchCount + (p.popularity_score || 0) * 0.3,
+                matchScore:          tagMatchCount + (p.popularity_score || 0) * 0.3 + (isAnchor ? 1000 : 0),
+                isAnchor,
             };
         }).sort((a: any, b: any) => b.matchScore - a.matchScore).slice(0, 100);
 

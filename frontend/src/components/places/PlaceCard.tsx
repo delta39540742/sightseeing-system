@@ -1,17 +1,21 @@
 import { useState } from 'react'
-import { Star, Clock, DollarSign, MapPin, Plus } from 'lucide-react'
+import { Star, Clock, DollarSign, MapPin, Plus, Heart } from 'lucide-react'
 import type { Place } from '@/types'
 import { PlacePopup } from './PlacePopup'
+import { useFavorites } from '@/hooks/useFavorites'
 
 interface PlaceCardProps {
   place: Place
   index?: number
   onAdd?: (place: Place) => void
   compact?: boolean
+  onToggleFavorite?: () => void
 }
 
-export function PlaceCard({ place, index, onAdd, compact }: PlaceCardProps) {
+export function PlaceCard({ place, index, onAdd, compact, onToggleFavorite }: PlaceCardProps) {
   const [showPopup, setShowPopup] = useState(false)
+  const { isFavorite } = useFavorites()
+  const favorited = isFavorite(place.placeId)
 
   if (compact) {
     return (
@@ -55,7 +59,16 @@ export function PlaceCard({ place, index, onAdd, compact }: PlaceCardProps) {
           {place.imageUrl && (
             <img src={place.imageUrl} alt={place.name} className="w-full h-full object-cover" />
           )}
-          <div className="absolute top-2 right-2">
+          <div className="absolute top-2 right-2 flex gap-1">
+            {onToggleFavorite && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
+                aria-label={favorited ? `Bỏ yêu thích ${place.name}` : `Yêu thích ${place.name}`}
+                className="p-1.5 bg-white rounded-lg shadow hover:bg-gray-50"
+              >
+                <Heart className={`w-4 h-4 ${favorited ? 'fill-red-500 text-red-500' : 'text-gray-400'}`} />
+              </button>
+            )}
             {onAdd && (
               <button
                 onClick={(e) => { e.stopPropagation(); onAdd(place) }}

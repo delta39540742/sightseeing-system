@@ -5,6 +5,7 @@ import { ArrowLeft, ChevronDown, ChevronUp, Info } from 'lucide-react'
 import { preferenceService } from '@/services/preferenceService'
 import { toast } from '@/store/toastStore'
 import { Spinner } from '@/components/ui/Spinner'
+import { Skeleton } from '@/components/ui/Skeleton'
 import type { UserPreference } from '@/types'
 
 const TRAVEL_STYLES = [
@@ -15,6 +16,15 @@ const TRAVEL_STYLES = [
 const FOOD_PREFS = ['Thuần chay', 'Không hải sản', 'Halal', 'Không gluten']
 const TRANSPORT_MODES = ['Xe máy', 'Ô tô', 'Taxi/Grab', 'Đi bộ', 'Xe đạp']
 const PACE_OPTIONS = ['Thư thả', 'Vừa phải', 'Năng động']
+
+const WEIGHT_LABELS: Record<string, string> = {
+  wInterest: 'Sở thích cá nhân',
+  wPace: 'Nhịp độ',
+  wDistance: 'Khoảng cách',
+  wBudget: 'Ngân sách',
+  wWeather: 'Thời tiết',
+  wRisk: 'Rủi ro',
+}
 
 interface SectionProps {
   title: string
@@ -55,20 +65,49 @@ export default function Preferences() {
     transportMode: 'Xe máy',
     maxWalkingKm: 3,
   })
+  // B.1: Track whether user already has a saved survey
+  const [isExistingSurvey, setIsExistingSurvey] = useState(false)
+  // B.2: Store weights returned after submit
+  const [weights, setWeights] = useState<Record<string, number> | null>(null)
 
-  useQuery({
-    queryKey: ['pref-survey'],
+  // B.1: Load survey status on mount
+  // NOTE: GET /preferences/survey does NOT exist in preference-service/src/routes/survey.routes.ts
+  // Only GET /survey/status, POST /survey, PATCH /survey are available.
+  // Therefore we only use getSurveyStatus() to determine routing (POST vs PATCH).
+  // We cannot pre-populate form fields from saved data since there is no GET survey route.
+  const { isLoading: isLoadingStatus } = useQuery({
+    queryKey: ['pref-survey-status'],
     queryFn: async () => {
       const status = await preferenceService.getSurveyStatus()
+      if (status.completed) {
+        setIsExistingSurvey(true)
+      }
       return status
     },
   })
 
+  // B.2: POST vs PATCH routing
   const { mutate: save, isPending } = useMutation({
-    mutationFn: preferenceService.saveSurvey,
-    onSuccess: () => {
-      toast.success('Đã lưu sở thích!')
-      navigate(-1)
+    mutationFn: (data: UserPreference) => {
+      if (isExistingSurvey) {
+        return preferenceService.updateSurvey(data)
+      }
+      return preferenceService.saveSurvey(data)
+    },
+    onSuccess: async () => {
+      toast.success(isExistingSurvey ? 'Đã cập nhật sở thích!' : 'Đã lưu sở thích!')
+      // B.2: Fetch weights after successful submit
+      try {
+        const result = await preferenceService.getWeights()
+        // weights may be nested under result.weights or at top level
+        const w: Record<string, number> =
+          result && typeof result === 'object' && 'weights' in result
+            ? (result as { weights: Record<string, number> }).weights
+            : (result as Record<string, number>)
+        setWeights(w)
+      } catch {
+        // weights fetch failure is non-critical
+      }
     },
     onError: () => toast.error('Lưu thất bại, thử lại sau'),
   })
@@ -78,6 +117,27 @@ export default function Preferences() {
       const arr = (p[key] as string[]) ?? []
       return { ...p, [key]: arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value] }
     })
+  }
+
+  // B.1: Show loading skeleton while fetching survey status
+  if (isLoadingStatus) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
+          <button onClick={() => navigate(-1)} aria-label="Quay lại" className="p-2 hover:bg-gray-100 rounded-lg">
+            <ArrowLeft className="w-5 h-5 text-gray-600" />
+          </button>
+          <h1 className="font-semibold text-gray-900">Sở thích của tôi</h1>
+        </header>
+        <div className="max-w-xl mx-auto px-4 py-6 space-y-4">
+          <Skeleton className="h-10 w-full rounded-lg" />
+          <Skeleton className="h-32 w-full rounded-lg" />
+          <Skeleton className="h-32 w-full rounded-lg" />
+          <Skeleton className="h-48 w-full rounded-lg" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -197,9 +257,35 @@ export default function Preferences() {
             disabled={isPending}
             className="btn-primary w-full py-3"
           >
-            {isPending ? <Spinner size="sm" /> : 'Lưu sở thích'}
+            {isPending ? <Spinner size="sm" /> : isExistingSurvey ? 'Cập nhật sở thích' : 'Lưu sở thích'}
           </button>
         </div>
+
+        {/* B.2: Hiện trọng số tối ưu hoá sau khi submit */}
+        {weights && Object.keys(weights).length > 0 && (
+          <div className="card p-4 space-y-3 pb-8">
+            <h2 className="font-semibold text-sm text-gray-800">Trọng số tối ưu hoá</h2>
+            <div className="space-y-2">
+              {Object.entries(WEIGHT_LABELS).map(([key, label]) => {
+                const value = weights[key] ?? 0
+                return (
+                  <div key={key}>
+                    <div className="flex justify-between text-xs text-gray-600 mb-0.5">
+                      <span>{label}</span>
+                      <span>{(value * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-2">
+                      <div
+                        className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+                        style={{ width: `${value * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

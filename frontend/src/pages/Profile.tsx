@@ -7,14 +7,17 @@ import { vi } from 'date-fns/locale'
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
 import { useLoginActions } from '@/hooks/useAuth'
+import { useFavorites } from '@/hooks/useFavorites'
 import { TripCardSkeleton } from '@/components/ui/Skeleton'
 import { Modal } from '@/components/ui/Modal'
+import { toast } from '@/store/toastStore'
 import type { Trip } from '@/types'
 
 export default function Profile() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const { logout } = useLoginActions()
+  const { add: addFavorite } = useFavorites()
   const [reviewTrip, setReviewTrip] = useState<Trip | null>(null)
   const [swipeIndex, setSwipeIndex] = useState(0)
 
@@ -33,6 +36,14 @@ export default function Profile() {
 
   const handleSwipe = (direction: 'like' | 'dislike' | 'love') => {
     if (!reviewTrip) return
+
+    // B.3: If user rates 'love', add the current place to favorites
+    const currentPlace = reviewTrip.slots[swipeIndex]?.place
+    if (direction === 'love' && currentPlace?.placeId) {
+      addFavorite(currentPlace.placeId)
+      toast.success('Đã lưu địa điểm yêu thích')
+    }
+
     const slots = reviewTrip.slots
     if (swipeIndex < slots.length - 1) {
       setSwipeIndex((i) => i + 1)

@@ -1,5 +1,8 @@
 import axios from 'axios'
+import type { InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/authStore'
+
+type RetryConfig = InternalAxiosRequestConfig & { _retried?: boolean }
 
 export const api = axios.create({ baseURL: '/api' })
 export const prefApi = axios.create({ baseURL: '/pref/api' })
@@ -20,8 +23,30 @@ prefApi.interceptors.request.use((cfg) => {
 
 api.interceptors.response.use(
   (r) => r,
-  (err) => {
-    if (err.response?.status === 401) useAuthStore.getState().logout()
+  async (err: unknown) => {
+    const axiosErr = err as import('axios').AxiosError
+    const config = axiosErr.config as RetryConfig | undefined
+
+    if (axiosErr.response?.status === 401 && config && !config._retried) {
+      config._retried = true
+      try {
+        // Dynamic import tránh circular dependency
+        const { auth } = await import('@/config/firebase')
+        const firebaseUser = auth.currentUser
+        if (firebaseUser) {
+          const fresh = await firebaseUser.getIdToken(true)
+          // Cập nhật store với token mới — setUser nhận (user, idToken)
+          useAuthStore.getState().setUser(firebaseUser, fresh)
+          config.headers = config.headers ?? {}
+          config.headers.Authorization = `Bearer ${fresh}`
+          config.headers['x-user-id'] = firebaseUser.uid
+          return api.request(config)
+        }
+      } catch {
+        // Token refresh thất bại → logout
+      }
+      useAuthStore.getState().logout()
+    }
     return Promise.reject(err)
   },
 )

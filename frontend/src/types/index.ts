@@ -63,6 +63,7 @@ export interface PlanRequest {
   startLat?: number
   startLng?: number
   preferences?: string[]
+  anchorPlaceIds?: number[]
 }
 
 export interface UserPreference {
@@ -108,3 +109,32 @@ export interface ParsedNLPResult {
   startDate: string
   endDate: string
 }
+
+export interface NluSlots {
+  destinationCity: string | null
+  durationDays: number | null
+  startDate: string | null
+  preferredTagNames: string[]
+  budgetTotal: number | null
+  groupType: 'solo' | 'couple' | 'family' | 'friends' | 'business' | null
+  mobilityRestrictions: string[]
+  dietaryPreferences: string[]
+  pace: number | null
+}
+
+export interface NluParseResponse {
+  slots: NluSlots
+  missingSlots: string[]
+  confidence: number
+}
+
+export interface LandmarkRecognitionResult {
+  recognitionId: string
+  landmarkClassId: number
+  placeId: number
+  place: { id: number; name: string; address: string; rating: number }
+  confidence: number
+  isMock: boolean
+}
+
+export type ReplanScope = 'remaining_day' | 'remaining_trip'

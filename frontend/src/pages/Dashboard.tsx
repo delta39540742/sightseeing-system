@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, MapPin, Calendar, ChevronRight, User } from 'lucide-react'
@@ -6,7 +7,7 @@ import { vi } from 'date-fns/locale'
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
 import { TripCardSkeleton } from '@/components/ui/Skeleton'
-import type { Trip } from '@/types'
+import type { Trip, TripStatus } from '@/types'
 
 const statusLabels: Record<Trip['status'], { label: string; color: string }> = {
   draft:     { label: 'Nháp',           color: 'bg-gray-100 text-gray-600' },
@@ -16,15 +17,26 @@ const statusLabels: Record<Trip['status'], { label: string; color: string }> = {
   cancelled: { label: 'Đã hủy',         color: 'bg-red-100 text-red-600' },
 }
 
+const TABS = [
+  { key: 'all',       label: 'Tất cả' },
+  { key: 'active',    label: 'Đang diễn ra' },
+  { key: 'confirmed', label: 'Đã xác nhận' },
+  { key: 'completed', label: 'Hoàn thành' },
+  { key: 'cancelled', label: 'Đã huỷ' },
+] as const
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const { user, openLoginDrawer } = useAuthStore()
+  const [filter, setFilter] = useState<TripStatus | 'all'>('all')
 
   const { data: trips, isLoading } = useQuery({
     queryKey: ['trips'],
     queryFn: tripService.list,
     enabled: !!user,
   })
+
+  const filtered = filter === 'all' ? trips : trips?.filter(t => t.status === filter)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -75,7 +87,39 @@ export default function Dashboard() {
           </div>
         )}
 
-        {trips && trips.length === 0 && (
+        {!user && !isLoading && (
+          <div className="text-center py-16 text-gray-400">
+            <MapPin className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p className="font-medium text-gray-500">Đăng nhập để xem chuyến đi của bạn</p>
+            <p className="text-sm mt-1">Lưu và quản lý tất cả kế hoạch du lịch</p>
+            <button
+              onClick={openLoginDrawer}
+              className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
+            >
+              Đăng nhập ngay
+            </button>
+          </div>
+        )}
+
+        {user && trips && trips.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+            {TABS.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setFilter(tab.key)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  filter === tab.key
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-500 border border-gray-200 hover:border-blue-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {user && trips && trips.length === 0 && (
           <div className="text-center py-16 text-gray-400">
             <MapPin className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p className="font-medium">Chưa có chuyến đi nào</p>
@@ -83,10 +127,18 @@ export default function Dashboard() {
           </div>
         )}
 
-        {trips && trips.length > 0 && (
+        {user && filtered && filtered.length === 0 && trips && trips.length > 0 && (
+          <div className="text-center py-12 text-gray-400">
+            <MapPin className="w-10 h-10 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">Không có chuyến đi nào phù hợp</p>
+            <p className="text-sm mt-1">Thử chọn bộ lọc khác</p>
+          </div>
+        )}
+
+        {filtered && filtered.length > 0 && (
           <div className="space-y-3">
             <h2 className="font-semibold text-gray-700 text-sm">Chuyến đi của bạn</h2>
-            {trips.map((trip) => {
+            {filtered.map((trip) => {
               const status = statusLabels[trip.status]
               return (
                 <button

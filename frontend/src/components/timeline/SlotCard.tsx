@@ -1,7 +1,7 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle } from 'lucide-react'
+import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle, Info } from 'lucide-react'
 import type { TripSlot } from '@/types'
 import { ConflictBanner } from './ConflictBanner'
 import { format } from 'date-fns'
@@ -11,6 +11,7 @@ interface SlotCardProps {
   index: number
   isActive?: boolean
   onFocus: (id: string) => void
+  onClickInfo?: () => void
 }
 
 const activityColors: Record<TripSlot['activityType'], string> = {
@@ -29,8 +30,9 @@ const activityLabels: Record<TripSlot['activityType'], string> = {
   activity:    'Hoạt động',
 }
 
-export function SlotCard({ slot, index, isActive, onFocus }: SlotCardProps) {
+export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCardProps) {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [hovered, setHovered] = useState(false)
   const {
     attributes,
     listeners,
@@ -54,6 +56,8 @@ export function SlotCard({ slot, index, isActive, onFocus }: SlotCardProps) {
       <div
         data-slot-id={slot.slotId}
         onClick={() => onFocus(slot.slotId)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         className={`
           flex gap-3 px-4 py-3 transition-all cursor-pointer
           ${isActive ? 'bg-blue-50' : 'hover:bg-gray-50'}
@@ -88,6 +92,15 @@ export function SlotCard({ slot, index, isActive, onFocus }: SlotCardProps) {
             <p className="font-medium text-sm text-gray-900 truncate flex-1">
               {slot.place?.name ?? `Địa điểm ${slot.placeId}`}
             </p>
+            {onClickInfo && hovered && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onClickInfo() }}
+                aria-label="Xem thông tin địa điểm"
+                className="shrink-0 text-gray-400 hover:text-blue-500 transition-colors"
+              >
+                <Info className="w-3.5 h-3.5" />
+              </button>
+            )}
             {slot.conflict && (
               <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" aria-label="Có xung đột" />
             )}
