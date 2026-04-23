@@ -10,10 +10,11 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "types": ["node"],
+    "moduleResolution": "bundler",
     "paths": {
       "@app/types": ["./src/types/index.ts"]
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/__test__"]
 }

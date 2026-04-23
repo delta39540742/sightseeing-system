@@ -1,23 +1,27 @@
 import * as admin from 'firebase-admin';
-import * as path from 'path';
-import * as fs from 'fs';
 
-// Check if firebase-service-account.json exists in root
-const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
+if (!admin.apps.length) {
+  const projectId   = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  // Deploy platforms store the key with literal \n — restore real newlines
+  const privateKey  = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-try {
-  if (fs.existsSync(serviceAccountPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-    
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    console.log('Firebase Admin initialized successfully using service account JSON.');
+  if (!projectId || !clientEmail || !privateKey) {
+    console.warn('[Firebase] Missing env vars (FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY). Auth disabled.');
   } else {
-    console.warn(`FIREBASE SERVICE ACCOUNT NOT FOUND at ${serviceAccountPath}. Firebase Auth will not work.`);
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId,
+          privateKey,
+          clientEmail,
+        }),
+      });
+      console.log('[Firebase] Admin SDK initialized.');
+    } catch (e) {
+      console.error('[Firebase] Failed to initialize Admin SDK:', e);
+    }
   }
-} catch (e) {
-  console.error('Failed to initialize Firebase Admin:', e);
 }
 
 export const auth = admin.apps.length ? admin.auth() : null;

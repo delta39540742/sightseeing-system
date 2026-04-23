@@ -48,3 +48,9 @@ Thumbs.db
 
 # Claude Code memory
 .claude/
+
+# Agent
+.agents
+
+# Task for agent
+CONTEXT_NEXT_TASKS.md
