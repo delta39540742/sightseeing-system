@@ -67,67 +67,118 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
   }
 }
 
-// Thêm dòng này lên khu vực import ở đầu file:
-// import { generateGreedyPlan } from './solver';
-
 export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-        const payload = req.body as any; 
-        
-        // --- PHẦN THÊM MỚI: Lấy candidates từ Database ---
-        const avgBudgetPerDay = (payload.budgetTotal || 5000000) / 3;
-        const places = await prisma.place.findMany({
-            // where: {
-            //     address: { contains: payload.destinationCity || 'Da Nang' },
-            //     min_price: { lte: avgBudgetPerDay },
-            // },
-            include: { place_tag_map: true }
-        });
+        const payload = req.body as any;
 
+        // Lấy user từ firebase_uid trong header x-user-id
+        const firebaseUid = req.headers['x-user-id'] as string;
+        if (!firebaseUid) {
+            return reply.status(401).send({ error: 'Unauthorized: missing x-user-id header' });
+        }
+        const dbUser = await prisma.app_user.findUnique({ where: { firebase_uid: firebaseUid } });
+        if (!dbUser) {
+            return reply.status(401).send({ error: 'Unauthorized: user not found' });
+        }
+
+        // Tính số ngày thực tế từ startDate / endDate
+        const startDate = new Date(payload.startDate);
+        const endDate = new Date(payload.endDate);
+        const days = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 3600 * 24)) + 1);
+
+        // Map preferences (string[]) sang tag IDs bằng cách tìm trong DB
+        let preferredTagIds: number[] = payload.preferredTagIds || [];
+        if (preferredTagIds.length === 0 && payload.preferences?.length > 0) {
+            const matchedTags = await prisma.place_tag.findMany({
+                where: {
+                    OR: [
+                        { name: { in: payload.preferences } },
+                        { display_name: { in: payload.preferences } },
+                    ],
+                },
+            });
+            preferredTagIds = matchedTags.map((t) => t.tag_id);
+        }
+
+        // Lấy candidates từ DB
+        const places = await prisma.place.findMany({ include: { place_tag_map: true } });
         const candidates = places.map((p: any) => {
             const tagMatchCount = p.place_tag_map.filter((tm: any) =>
-                (payload.preferredTagIds || []).includes(tm.tag_id)
+                preferredTagIds.includes(tm.tag_id)
             ).length;
             return {
-                placeId:            Number(p.place_id),
-                name:               p.name,
-                lat:                p.lat ?? 16.06,
-                lng:                p.lng ?? 108.22,
+                placeId:             Number(p.place_id),
+                name:                p.name,
+                lat:                 p.lat ?? 16.06,
+                lng:                 p.lng ?? 108.22,
                 avgVisitDurationMin: p.avg_visit_duration_min ?? 60,
-                minPrice:           p.min_price ?? 0,
-                maxPrice:           p.max_price ?? 0,
-                indoorOutdoor:      p.indoor_outdoor,
-                popularityScore:    p.popularity_score ?? 0,
-                terrainEasiness:    p.terrain_easiness ?? 1,
-                tags:               p.place_tag_map,
-                openingHours:       [],
-                matchScore:         tagMatchCount + (p.popularity_score || 0) * 0.3,
+                minPrice:            p.min_price ?? 0,
+                maxPrice:            p.max_price ?? 0,
+                indoorOutdoor:       p.indoor_outdoor,
+                popularityScore:     p.popularity_score ?? 0,
+                terrainEasiness:     p.terrain_easiness ?? 1,
+                tags:                p.place_tag_map,
+                openingHours:        [],
+                matchScore:          tagMatchCount + (p.popularity_score || 0) * 0.3,
             };
         }).sort((a: any, b: any) => b.matchScore - a.matchScore).slice(0, 100);
-        // ---------------------------------------------------
 
-        const dummyWeights = { wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1 };
-        
-        // 1. Chạy Greedy (Lấy lịch trình thô)
-        const greedyPlan = generateGreedyPlan(3, payload.budgetTotal || 5000000, candidates, dummyWeights);
-
-        // Tạo object userPreferences giả để 2-opt dùng
+        const weights = { wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1 };
+        const greedyPlan = generateGreedyPlan(days, payload.budgetTotal || 5000000, candidates, weights);
         const userPreferences = {
-            preferredTagIds: payload.preferredTagIds || [],
+            preferredTagIds,
             budgetRemaining: payload.budgetTotal || 5000000,
-            weights: { interest: 1, distance: 1.5, budget: 1, weather: 1 }
+            weights: { interest: 1, distance: 1.5, budget: 1, weather: 1 },
         };
-
-        // 2. Chạy 2-opt (Tối ưu hóa lịch trình thô)
         const optimizedPlan = optimizeWith2Opt(greedyPlan, userPreferences, candidates);
 
-        // 3. Trả kết quả đã tối ưu về cho User
-        return reply.send({
-            message: "Tạo lịch trình thành công",
-            slots: optimizedPlan 
+        // Lưu Trip vào DB
+        const newTrip = await prisma.trip.create({
+            data: {
+                user_id:          dbUser.user_id,
+                destination_city: payload.destinationCity || 'Da Nang',
+                start_date:       startDate,
+                end_date:         endDate,
+                budget_total:     payload.budgetTotal || 5000000,
+                status:           'draft',
+            },
+        });
+
+        // Lưu các Slots vào DB
+        if (optimizedPlan.length > 0) {
+            await prisma.trip_slot.createMany({
+                data: optimizedPlan.map((slot: any) => ({
+                    trip_id:        newTrip.trip_id,
+                    day_index:      slot.dayIndex,
+                    slot_order:     slot.slotOrder,
+                    place_id:       BigInt(slot.placeId),
+                    planned_start:  new Date(slot.plannedStart),
+                    planned_end:    new Date(slot.plannedEnd),
+                    estimated_cost: slot.estimatedCost || 0,
+                    activity_type:  slot.activityType || 'sightseeing',
+                    status:         'planned',
+                    rationale:      slot.rationale || null,
+                })),
+            });
+        }
+
+        // Trả về Trip object đúng format mà frontend expect
+        return reply.status(201).send({
+            tripId:          newTrip.trip_id,
+            userId:          newTrip.user_id,
+            title:           newTrip.title,
+            destinationCity: newTrip.destination_city,
+            startDate:       newTrip.start_date.toISOString(),
+            endDate:         newTrip.end_date.toISOString(),
+            status:          newTrip.status,
+            budgetTotal:     newTrip.budget_total,
+            objectiveScore:  newTrip.objective_score,
+            createdAt:       newTrip.created_at.toISOString(),
+            updatedAt:       newTrip.updated_at.toISOString(),
+            slots:           optimizedPlan.map((slot: any) => ({ ...slot, tripId: newTrip.trip_id })),
         });
     } catch (error: any) {
-        console.error("=== LỖI CREATE TRIP ===", error); 
+        console.error("=== LỖI CREATE TRIP ===", error);
         return reply.status(500).send({ error: error.message });
     }
 };

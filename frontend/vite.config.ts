@@ -9,7 +9,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: true },
+      '/api': { target: 'https://sightseeing-system-iu8o.onrender.com', changeOrigin: true },
       '/pref': { target: 'http://localhost:3001', changeOrigin: true, rewrite: p => p.replace(/^\/pref/, '') },
     },
   },
