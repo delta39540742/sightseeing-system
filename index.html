@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Người 5 - Simulation</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: white; display: flex; flex-direction: column; align-items: center; padding: 50px; }
+        .panel { background: #2d2d2d; padding: 30px; border-radius: 20px; width: 600px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }
+        button { padding: 15px; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; color: white; transition: 0.2s; }
+        .b-blue { background: #007bff; } .b-orange { background: #fd7e14; }
+        .b-red { background: #dc3545; } .b-purple { background: #6f42c1; }
+        .b-reset { background: #6c757d; grid-column: span 2; }
+        button:hover { filter: brightness(1.2); }
+        pre { background: #000; padding: 15px; border-radius: 10px; color: #00ff00; font-size: 13px; overflow-x: auto; border: 1px solid #333; }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h2 style="text-align:center">🛰️ Giả lập Sự cố (Người 5)</h2>
+        <div class="btn-grid">
+            <button class="b-blue" onclick="send('mua')">🌧️ Ấn để Mưa</button>
+            <button class="b-orange" onclick="send('met')">😫 Ấn để Mệt</button>
+            <button class="b-red" onclick="send('tre')">🚗 Ấn để Trễ 30p</button>
+            <button class="b-purple" onclick="send('dongcua')">🕒 Ấn để Check Đóng cửa</button>
+            <button class="b-reset" onclick="send('clear')">🔄 Reset Hệ Thống</button>
+        </div>
+        <p>Dữ liệu JSON cung cấp cho Người 6:</p>
+        <pre id="display">Đang quét tín hiệu...</pre>
+    </div>
+    <script>
+        const send = (a) => fetch(`/api/trigger?action=${a}`);
+        setInterval(() => {
+            fetch('/api/check-incident').then(r => r.json()).then(data => {
+                document.getElementById('display').innerHTML = JSON.stringify(data, null, 4);
+            });
+        }, 1500);
+    </script>
+</body>
+</html>
