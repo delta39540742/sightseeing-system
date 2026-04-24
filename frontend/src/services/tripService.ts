@@ -15,11 +15,8 @@ export const tripService = {
 
   get: (tripId: string) => api.get<Trip>(`/trips/${tripId}`).then((r) => r.data),
 
-  // Tạo draft trip — backend cần snake_case fields
-  createDraft: (data: CreateDraftBody) => api.post<Trip>('/trips', data).then((r) => r.data),
-
-  // Giữ lại để không break code cũ, nhưng ưu tiên dùng createDraft()
-  create: (data: Partial<Trip>) => api.post<Trip>('/trips', data).then((r) => r.data),
+  // Tạo trip (Draft)
+  create: (data: CreateDraftBody) => api.post<Trip>('/trips', data).then((r) => r.data),
 
   // Backend chưa có PATCH /trips/:id — dùng tạm, cần backend implement sau
   update: (tripId: string, data: Partial<Trip>) =>
@@ -44,6 +41,9 @@ export const tripService = {
 
   getPendingReplan: (tripId: string) =>
     api.get(`/trips/${tripId}/replan/pending`).then((r) => r.data),
+
+  checkIncident: () =>
+    api.get('/monitor/check-incident').then((r) => r.data),
 
   acceptReplan: (tripId: string, pid: string) =>
     api.post(`/trips/${tripId}/replan/${pid}/accept`).then((r) => r.data),

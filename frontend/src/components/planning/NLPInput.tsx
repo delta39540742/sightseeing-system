@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Sparkles } from 'lucide-react'
-import { format, addDays, parseISO } from 'date-fns'
 import type { ParsedNLPResult, NluParseResponse } from '@/types'
 import { parseNLP } from '@/utils/nlpParser'
 import { nluService } from '@/services/nluService'
+import { NluSlotEditor } from './NluSlotEditor'
 import { toast } from '@/store/toastStore'
 
 const PLACEHOLDERS = [
@@ -12,28 +12,6 @@ const PLACEHOLDERS = [
   'Tuần trăng mật 5 ngày Phú Quốc, nghỉ dưỡng, budget 10 triệu…',
   '4 ngày Đà Nẵng, thích chụp ảnh và biển đẹp…',
 ]
-
-const SLOT_LABELS: Record<string, string> = {
-  destinationCity: 'điểm đến',
-  durationDays: 'số ngày',
-  startDate: 'ngày đi',
-  budgetTotal: 'ngân sách',
-  groupType: 'loại nhóm',
-}
-
-function mapNluToParseResult(r: NluParseResponse): ParsedNLPResult {
-  const today = new Date()
-  const days = r.slots.durationDays ?? 3
-  const startStr = r.slots.startDate ?? format(today, 'yyyy-MM-dd')
-  return {
-    destinationCity: r.slots.destinationCity ?? 'Đà Nẵng',
-    days,
-    budget: r.slots.budgetTotal ?? 3_000_000,
-    styles: r.slots.preferredTagNames ?? [],
-    startDate: startStr,
-    endDate: format(addDays(parseISO(startStr), days - 1), 'yyyy-MM-dd'),
-  }
-}
 
 interface NLPInputProps {
   onParsed: (result: ParsedNLPResult) => void
@@ -45,7 +23,7 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
   const [phIndex, setPhIndex] = useState(0)
   const [hasInteracted, setHasInteracted] = useState(false)
   const [isParsing, setIsParsing] = useState(false)
-  const [missingSlots, setMissingSlots] = useState<string[]>([])
+  const [nluResponse, setNluResponse] = useState<NluParseResponse | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const isLoading = externalLoading || isParsing
@@ -59,14 +37,13 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
   const handleSubmit = async () => {
     if (!value.trim()) return
     setIsParsing(true)
-    setMissingSlots([])
+    setNluResponse(null)
     try {
       const nluResult = await nluService.parse(value)
-      if (nluResult.missingSlots.length > 0) setMissingSlots(nluResult.missingSlots)
-      onParsed(mapNluToParseResult(nluResult))
+      setNluResponse(nluResult)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
-      // 503 = Colab NLU đang down — fallback về local parser
+      // 503 = Colab NLU đang down — fallback về local parser, bỏ qua editor
       if (!status || status === 503) {
         onParsed(parseNLP(value))
       } else {
@@ -77,10 +54,19 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
     }
   }
 
+  const handleEditorConfirm = (result: ParsedNLPResult) => {
+    onParsed(result)
+  }
+
+  const handleReparse = () => {
+    setNluResponse(null)
+    textareaRef.current?.focus()
+  }
+
   const handleQuickFill = (ph: string) => {
     setValue(ph.replace('…', ''))
     setHasInteracted(true)
-    setMissingSlots([])
+    setNluResponse(null)
     textareaRef.current?.focus()
     setTimeout(() => void handleSubmit(), 100)
   }
@@ -91,7 +77,7 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
         <textarea
           ref={textareaRef}
           value={value}
-          onChange={(e) => { setValue(e.target.value); setHasInteracted(true) }}
+          onChange={(e) => { setValue(e.target.value); setHasInteracted(true); setNluResponse(null) }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSubmit() }
           }}
@@ -111,13 +97,23 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
         </button>
       </div>
 
-      {missingSlots.length > 0 && (
-        <p className="text-xs text-amber-600">
-          Chưa rõ: {missingSlots.map((s) => SLOT_LABELS[s] ?? s).join(', ')} — hãy bổ sung vào form bên dưới.
-        </p>
+      {nluResponse && (
+        <>
+          <NluSlotEditor
+            response={nluResponse}
+            onConfirm={handleEditorConfirm}
+          />
+          <button
+            type="button"
+            onClick={handleReparse}
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
+          >
+            Nhập lại prompt khác
+          </button>
+        </>
       )}
 
-      {!hasInteracted && (
+      {!hasInteracted && !nluResponse && (
         <div>
           <p className="text-xs text-gray-400 mb-2">Thử ngay:</p>
           <div className="flex flex-wrap gap-2">

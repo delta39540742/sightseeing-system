@@ -79,7 +79,7 @@ interface ProposalContentProps {
   onAccepted: () => void;
   onRejected: () => void;
   refetch: () => void;
-  accept: { mutate: (id: string) => void; isPending: boolean; error: Error | null };
+  accept: { mutate: (id: string) => void; mutateAsync: (id: string) => Promise<void>; isPending: boolean; error: Error | null };
   reject: {
     mutate: (args: { proposalId: string; reason?: string }) => void;
     isPending: boolean;
@@ -102,10 +102,13 @@ function ProposalContent({
 
   const { label: expiryLabel, expired } = useExpiryCountdown(proposal.expiresAt);
 
-  function handleAccept() {
-    accept.mutate(proposal.proposalId);
-    // onAccepted called after mutation resolves via parent
-    onAccepted();
+  async function handleAccept() {
+    try {
+      await accept.mutateAsync(proposal.proposalId);
+      onAccepted();
+    } catch {
+      // lỗi hiển thị qua accept.error bên dưới
+    }
   }
 
   function handleReject() {

@@ -6,7 +6,8 @@ import { Spinner } from '@/components/ui/Spinner'
 
 export function LoginDrawer() {
   const { loginDrawerOpen, closeLoginDrawer } = useAuthStore()
-  const { loginEmail, loginGoogle } = useLoginActions()
+  const { loginEmail, registerEmail, loginGoogle } = useLoginActions()
+  const [isLogin, setIsLogin] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -19,9 +20,13 @@ export function LoginDrawer() {
     setError('')
     setLoading(true)
     try {
-      await loginEmail(email, password)
+      if (isLogin) {
+        await loginEmail(email, password)
+      } else {
+        await registerEmail(email, password)
+      }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Đăng nhập thất bại')
+      setError(err instanceof Error ? err.message : (isLogin ? 'Đăng nhập thất bại' : 'Đăng ký thất bại'))
     } finally {
       setLoading(false)
     }
@@ -44,7 +49,7 @@ export function LoginDrawer() {
       <div className="absolute inset-0 bg-black/40" onClick={closeLoginDrawer} />
       <div className="relative bg-white w-full max-w-sm h-full flex flex-col shadow-2xl animate-slideUp md:animate-none md:translate-x-0">
         <div className="flex items-center justify-between px-6 py-5 border-b">
-          <h2 className="text-lg font-semibold">Đăng nhập</h2>
+          <h2 className="text-lg font-semibold">{isLogin ? 'Đăng nhập' : 'Đăng ký'}</h2>
           <button onClick={closeLoginDrawer} aria-label="Đóng" className="p-2 rounded-lg hover:bg-gray-100">
             <X className="w-5 h-5 text-gray-500" />
           </button>
@@ -52,7 +57,7 @@ export function LoginDrawer() {
 
         <div className="flex-1 p-6 flex flex-col justify-center gap-4">
           <p className="text-sm text-gray-500 text-center">
-            Đăng nhập để lưu và đồng bộ kế hoạch của bạn
+            {isLogin ? 'Đăng nhập để lưu và đồng bộ kế hoạch của bạn' : 'Tạo tài khoản để bắt đầu lên kế hoạch'}
           </p>
 
           {error && (
@@ -87,11 +92,24 @@ export function LoginDrawer() {
               />
             </div>
             <button type="submit" disabled={loading} className="btn-primary w-full py-2.5">
-              {loading ? <Spinner size="sm" /> : 'Đăng nhập'}
+              {loading ? <Spinner size="sm" /> : (isLogin ? 'Đăng nhập' : 'Đăng ký')}
             </button>
           </form>
 
-          <div className="flex items-center gap-3 text-sm text-gray-400">
+          <div className="text-center mt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsLogin(!isLogin)
+                setError('')
+              }}
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+            >
+              {isLogin ? 'Chưa có tài khoản? Đăng ký ngay' : 'Đã có tài khoản? Đăng nhập'}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3 text-sm text-gray-400 mt-2">
             <div className="flex-1 h-px bg-gray-200" />
             <span>hoặc</span>
             <div className="flex-1 h-px bg-gray-200" />

@@ -12,6 +12,7 @@ import { landmarkPlugin } from './routes/landmark';
 import tripRoutes from './api/plan/routes';
 
 import { replanPlugin } from './api/replan/routes';
+import { monitorPlugin } from './routes/monitor';
 import {
   PlanLoader,
   StateEvolver,
@@ -127,6 +128,7 @@ async function start() {
   await fastify.register(landmarkPlugin, { prefix: '/api/landmark' });
   await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
   await fastify.register(tripRoutes, { prefix: '/api/plan' });
+  await fastify.register(monitorPlugin, { prefix: '/api/monitor' });
 
   fastify.get('/health', async () => ({ status: 'ok', message: 'TDTT Backend is running' }));
 

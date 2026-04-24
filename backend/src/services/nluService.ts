@@ -37,12 +37,13 @@ const COLAB_TIMEOUT_MS = 30_000; // Colab chậm, cần thời gian
 // --- MAIN PROXY FUNCTION ---
 
 export async function parseNlu(prompt: string): Promise<NluParseResponse> {
+
   if (!COLAB_NLU_URL) {
     throw new NluUnavailableError("COLAB_NLU_URL chưa được set trong file .env");
   }
 
   const url = `${COLAB_NLU_URL.replace(/\/$/, "")}/api/nlu/parse`;
-
+    console.log(`URL parser: ${url}`);
   let raw: unknown;
 
   try {

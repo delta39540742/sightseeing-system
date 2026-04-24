@@ -1,71 +1,133 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
-import type { place, place_tag_map } from '@prisma/client';
 import { prisma } from '../../server';
 import { generateGreedyPlan, optimizeWith2Opt } from './solver';
 
-type PlaceWithTags = place & { place_tag_map: place_tag_map[] };
-
 export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply) {
   try {
-    // 1. Lấy dữ liệu đầu vào từ Body
-    const { 
-      destinationCity, startDate, endDate, 
-      budgetTotal, preferredTagIds, mobilityRestrictions 
+    const {
+      destinationCity, startDate, endDate,
+      budgetTotal, preferences, mobilityRestrictions,
     } = req.body as any;
 
-    // 2. Tính ngân sách trung bình mỗi ngày
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 3600 * 24)) + 1;
-    const avgBudgetPerDay = budgetTotal / days;
+    // Map preference strings → tag IDs
+    let resolvedTagIds: number[] = [];
+    if (Array.isArray(preferences) && preferences.length > 0) {
+      const matchedTags = await prisma.place_tag.findMany({
+        where: {
+          OR: [
+            { name: { in: preferences } },
+            { display_name: { in: preferences } },
+          ],
+        },
+      });
+      resolvedTagIds = matchedTags.map((t) => t.tag_id);
+    }
 
-    // 3. Truy vấn Database với các ràng buộc cứng
-    const places = await prisma.place.findMany({
-      where: {
-        // Lọc theo thành phố (mặc định Da Nang)
-        address: { contains: destinationCity || 'Da Nang' },
-        // Giá phải nằm trong ngân sách ngày
-        min_price: { lte: avgBudgetPerDay },
-        // Kiểm tra khả năng tiếp cận xe lăn nếu cần
-        ...(mobilityRestrictions?.includes('xe_lan') ? { wheelchair_access: true } : {}),
-      },
-      include: {
-        place_tag_map: true // Lấy kèm tag để tính điểm
-      }
+    // Budget per day (fallback khi thiếu ngày)
+    const start = startDate ? new Date(startDate) : new Date();
+    const end = endDate ? new Date(endDate) : new Date(start.getTime() + 2 * 86_400_000);
+    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000) + 1);
+    const budget = budgetTotal ?? 5_000_000;
+    const avgBudgetPerDay = budget / days;
+
+    const includeRelations = {
+      place_image:        true,
+      place_tag_map:      { include: { place_tag: true } },
+      place_opening_hour: true,
+    } as const;
+
+    const mobilityFilter = mobilityRestrictions?.includes('xe_lan') ? { wheelchair_access: true as const } : {};
+    const budgetCondition = { OR: [{ min_price: null }, { min_price: { lte: avgBudgetPerDay } }] };
+
+    // Build AND array to avoid OR key collision when spreading multiple OR filters
+    const andConditions: any[] = [budgetCondition];
+    if (destinationCity) {
+      andConditions.push({
+        OR: [
+          { address: { contains: destinationCity, mode: 'insensitive' as const } },
+          { address: null },
+        ],
+      });
+    }
+    if (mobilityRestrictions?.includes('xe_lan')) {
+      andConditions.push({ wheelchair_access: true });
+    }
+
+    let places = await prisma.place.findMany({
+      where: { AND: andConditions },
+      include: includeRelations,
     });
 
-    // 4. Tính toán matchScore (Logic lõi của Người 4)
-    const candidates = places.map((p: PlaceWithTags) => {
-      // tagMatch: số lượng tag trùng khớp với sở thích user
-      const tagMatchCount = p.place_tag_map.filter((tm: place_tag_map) =>
-        preferredTagIds.includes(tm.tag_id)
+    // Fallback: nếu city filter quá hẹp → bỏ city filter, giữ budget
+    if (places.length === 0 && destinationCity) {
+      places = await prisma.place.findMany({
+        where: { AND: [budgetCondition, ...(mobilityFilter.wheelchair_access ? [{ wheelchair_access: true }] : [])] },
+        include: includeRelations,
+      });
+    }
+
+    // Nếu DB hoàn toàn rỗng → trả mock data để test UI
+    if (places.length === 0) {
+      return reply.send({ places: MOCK_PLACES, _mock: true });
+    }
+
+    // Score + sort
+    const scored = places.map((p: any) => {
+      const tagMatchCount = p.place_tag_map.filter((tm: any) =>
+        resolvedTagIds.includes(tm.tag_id),
       ).length;
-
-      // Công thức: tagMatch + popularity * 0.3
-      const matchScore = tagMatchCount + (p.popularity_score || 0) * 0.3;
-
-      return {
-        ...p,
-        matchScore
-      };
-    })
-    // Sắp xếp giảm dần theo điểm và lấy top 100
-    .sort((a: { matchScore: number }, b: { matchScore: number }) => b.matchScore - a.matchScore)
-    .slice(0, 100);
-
-    return reply.send({ items: candidates });
-  } catch (error: any) {
-    // Thêm dòng này để in lỗi đỏ chót ra terminal
-    console.error("=== LỖI DATABASE ===", error); 
-
-    // Ép nó trả về message thật thay vì mỗi cái clientVersion
-    return reply.status(500).send({ 
-      error: 'INTERNAL_SERVER_ERROR', 
-      message: error.message || 'Lỗi không xác định' 
+      const score = tagMatchCount * 2 + (p.popularity_score ?? 0) * 0.3;
+      return { p, score };
     });
+    scored.sort((a: any, b: any) => b.score - a.score);
+
+    // Serialize to Place type
+    const result = scored.slice(0, 20).map(({ p }: any) => ({
+      placeId:             Number(p.place_id),
+      name:                p.name,
+      description:         p.description ?? null,
+      lat:                 p.lat,
+      lng:                 p.lng,
+      indoorOutdoor:       p.indoor_outdoor,
+      avgVisitDurationMin: p.avg_visit_duration_min ?? 60,
+      minPrice:            p.min_price ?? null,
+      priceType:           p.price_type ?? null,
+      imageUrl:            p.place_image?.url ?? null,
+      rating:              p.rating ?? null,
+      tags: (p.place_tag_map ?? []).map((m: any) => ({
+        tagId: m.tag_id,
+        name:  m.place_tag?.name ?? null,
+      })),
+      openingHours: (p.place_opening_hour ?? []).map((h: any) => ({
+        dayOfWeek: h.day_of_week,
+        openTime:  h.open_time,
+        closeTime: h.close_time,
+      })),
+    }));
+
+    return reply.send({ places: result });
+  } catch (error: any) {
+    console.error('=== LỖI CANDIDATES ===', error);
+    return reply.status(500).send({ error: 'INTERNAL_SERVER_ERROR', message: error.message });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Mock places — chỉ dùng khi DB hoàn toàn rỗng (để test UI)
+// ---------------------------------------------------------------------------
+const MOCK_PLACES = [
+  { placeId: 9001, name: 'Bãi biển Mỹ Khê', description: 'Bãi biển dài nhất Đà Nẵng, cát trắng mịn.', lat: 16.0544, lng: 108.2474, indoorOutdoor: 'outdoor', avgVisitDurationMin: 120, minPrice: 0, priceType: null, imageUrl: null, rating: 4.7, tags: [{ tagId: 1, name: 'beach' }], openingHours: [] },
+  { placeId: 9002, name: 'Bán đảo Sơn Trà', description: 'Khu bảo tồn thiên nhiên với đàn voọc chà vá chân nâu.', lat: 16.1096, lng: 108.2748, indoorOutdoor: 'outdoor', avgVisitDurationMin: 180, minPrice: 0, priceType: null, imageUrl: null, rating: 4.8, tags: [{ tagId: 2, name: 'nature' }], openingHours: [] },
+  { placeId: 9003, name: 'Ngũ Hành Sơn', description: '5 ngọn núi đá cẩm thạch với hang động và chùa cổ.', lat: 15.9731, lng: 108.2614, indoorOutdoor: 'mixed', avgVisitDurationMin: 150, minPrice: 40000, priceType: 'ticket', imageUrl: null, rating: 4.5, tags: [{ tagId: 3, name: 'landmark' }], openingHours: [] },
+  { placeId: 9004, name: 'Bảo tàng Chăm', description: 'Bảo tàng điêu khắc Chăm lớn nhất thế giới.', lat: 16.0602, lng: 108.2239, indoorOutdoor: 'indoor', avgVisitDurationMin: 90, minPrice: 60000, priceType: 'ticket', imageUrl: null, rating: 4.4, tags: [{ tagId: 4, name: 'museum' }], openingHours: [] },
+  { placeId: 9005, name: 'Cầu Rồng', description: 'Cây cầu biểu tượng của Đà Nẵng, phun lửa cuối tuần.', lat: 16.0612, lng: 108.2272, indoorOutdoor: 'outdoor', avgVisitDurationMin: 45, minPrice: 0, priceType: null, imageUrl: null, rating: 4.6, tags: [{ tagId: 5, name: 'landmark' }], openingHours: [] },
+  { placeId: 9006, name: 'Chùa Linh Ứng Bãi Bụt', description: 'Chùa lớn nằm trên Sơn Trà, tượng Phật Quan Âm 67m.', lat: 16.0987, lng: 108.2789, indoorOutdoor: 'outdoor', avgVisitDurationMin: 90, minPrice: 0, priceType: null, imageUrl: null, rating: 4.7, tags: [{ tagId: 6, name: 'pagoda' }], openingHours: [] },
+  { placeId: 9007, name: 'Phố cổ Hội An', description: 'Di sản văn hóa thế giới với đèn lồng và kiến trúc cổ.', lat: 15.8801, lng: 108.3380, indoorOutdoor: 'outdoor', avgVisitDurationMin: 240, minPrice: 120000, priceType: 'ticket', imageUrl: null, rating: 4.9, tags: [{ tagId: 7, name: 'heritage' }], openingHours: [] },
+  { placeId: 9008, name: 'Khu ẩm thực Bạch Đằng', description: 'Phố ẩm thực bên sông Hàn, nhiều món đặc sản Đà Nẵng.', lat: 16.0750, lng: 108.2206, indoorOutdoor: 'outdoor', avgVisitDurationMin: 90, minPrice: 50000, priceType: 'meal', imageUrl: null, rating: 4.3, tags: [{ tagId: 8, name: 'food' }], openingHours: [] },
+  { placeId: 9009, name: 'Đỉnh Bà Nà Hills', description: 'Khu du lịch trên đỉnh núi 1487m, Cầu Vàng nổi tiếng.', lat: 15.9976, lng: 107.9884, indoorOutdoor: 'mixed', avgVisitDurationMin: 300, minPrice: 750000, priceType: 'ticket', imageUrl: null, rating: 4.6, tags: [{ tagId: 2, name: 'nature' }], openingHours: [] },
+  { placeId: 9010, name: 'Làng đá mỹ nghệ Non Nước', description: 'Làng nghề truyền thống chạm khắc đá cẩm thạch.', lat: 15.9735, lng: 108.2589, indoorOutdoor: 'outdoor', avgVisitDurationMin: 60, minPrice: 0, priceType: null, imageUrl: null, rating: 4.2, tags: [{ tagId: 9, name: 'craft' }], openingHours: [] },
+];
 
 export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
     try {

@@ -1,4 +1,6 @@
 import { Clock, DollarSign, MapPin, Star, X } from 'lucide-react'
+import { MapContainer, TileLayer, Marker } from 'react-leaflet'
+import 'leaflet/dist/leaflet.css'
 import type { Place } from '@/types'
 
 const days = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
@@ -22,14 +24,27 @@ export function PlacePopup({ place, open, onClose }: PlacePopupProps) {
         className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm animate-fadeIn"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="h-40 bg-gradient-to-br from-blue-400 to-indigo-600 rounded-t-2xl overflow-hidden relative">
-          {place.imageUrl && (
+        <div className="h-40 bg-gray-100 rounded-t-2xl overflow-hidden relative">
+          {place.imageUrl ? (
             <img src={place.imageUrl} alt={place.name} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full">
+              <MapContainer 
+                center={[place.lat, place.lng]} 
+                zoom={14} 
+                className="w-full h-full"
+                zoomControl={false}
+                attributionControl={false}
+              >
+                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <Marker position={[place.lat, place.lng]} />
+              </MapContainer>
+            </div>
           )}
           <button
             onClick={onClose}
             aria-label="Đóng"
-            className="absolute top-3 right-3 p-1.5 bg-black/30 hover:bg-black/50 rounded-lg text-white"
+            className="absolute top-3 right-3 p-1.5 bg-black/30 hover:bg-black/50 rounded-lg text-white z-[400]"
           >
             <X className="w-4 h-4" />
           </button>

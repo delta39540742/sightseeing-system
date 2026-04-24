@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
-    "seed:places": "ts-node --project tsconfig.seed.json src/scripts/seed-places.ts"
+    "seed:places": "ts-node --project tsconfig.seed.json src/scripts/seed-places.ts",
+    "seed:fake": "ts-node --project tsconfig.seed.json src/scripts/seed-fake.ts"
   },
   "keywords": [],
   "author": "",
@@ -22,10 +23,10 @@
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "axios": "^1.15.0",
-    "docker": "^1.0.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "firebase-admin": "^13.8.0",
+    "node-cron": "^4.2.1",
     "pg": "^8.20.0"
   },
   "devDependencies": {

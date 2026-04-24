@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut } from 'firebase/auth'
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, signOut } from 'firebase/auth'
 import { auth, googleProvider } from '@/config/firebase'
 import { useAuthStore } from '@/store/authStore'
 import { api } from '@/services/api'
@@ -38,6 +38,15 @@ export function useLoginActions() {
     toast.success('Đăng nhập thành công!')
   }
 
+  const registerEmail = async (email: string, password: string) => {
+    const { user } = await createUserWithEmailAndPassword(auth, email, password)
+    const idToken = await user.getIdToken()
+    await api.post('/auth/login', {}, { headers: { Authorization: `Bearer ${idToken}` } })
+    setUser(user, idToken)
+    closeLoginDrawer()
+    toast.success('Đăng ký thành công!')
+  }
+
   const loginGoogle = async () => {
     const { user } = await signInWithPopup(auth, googleProvider)
     const idToken = await user.getIdToken()
@@ -53,5 +62,5 @@ export function useLoginActions() {
     toast.info('Đã đăng xuất')
   }
 
-  return { loginEmail, loginGoogle, logout }
+  return { loginEmail, registerEmail, loginGoogle, logout }
 }

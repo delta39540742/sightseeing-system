@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { arrayMove } from '@dnd-kit/sortable'
-import type { Trip, TripSlot, TripVersion, SortMode } from '@/types'
+import type { Trip, TripSlot, TripVersion, SortMode, PlanRequest } from '@/types'
 import { detectConflicts } from '@/utils/conflictDetector'
 
 const MAX_HISTORY = 50
@@ -12,6 +12,10 @@ interface TripStore {
   focusedSlotId: string | null
   sortMode: SortMode
   versions: TripVersion[]
+
+  // Planning Steps
+  planRequest: PlanRequest | null
+  step: number
 
   // undo/redo
   past: TripSlot[][]
@@ -30,6 +34,9 @@ interface TripStore {
   saveVersion: () => void
   restoreVersion: (idx: number) => void
   clear: () => void
+
+  setPlanRequest: (req: PlanRequest | null) => void
+  setStep: (step: number) => void
 }
 
 export const useTripStore = create<TripStore>((set, get) => ({
@@ -41,6 +48,8 @@ export const useTripStore = create<TripStore>((set, get) => ({
   versions: [],
   past: [],
   future: [],
+  planRequest: null,
+  step: 1,
 
   setTrip: (trip) => set({ trip, pendingSlots: null, hasPending: false, past: [], future: [] }),
 
@@ -133,5 +142,8 @@ export const useTripStore = create<TripStore>((set, get) => ({
     set({ trip: { ...trip, slots: withConflicts }, pendingSlots: null, hasPending: false })
   },
 
-  clear: () => set({ trip: null, pendingSlots: null, hasPending: false, past: [], future: [], versions: [] }),
+  clear: () => set({ trip: null, pendingSlots: null, hasPending: false, past: [], future: [], versions: [], planRequest: null, step: 1 }),
+
+  setPlanRequest: (planRequest) => set({ planRequest }),
+  setStep: (step) => set({ step }),
 }))

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import {
   DndContext, DragEndEvent, DragOverEvent, closestCenter,
   PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay, DragStartEvent,
@@ -8,7 +8,6 @@ import { format, addDays, parseISO } from 'date-fns'
 import { useTripStore } from '@/store/tripStore'
 import { DayGroup } from './DayGroup'
 import { SlotCard } from './SlotCard'
-import { useState } from 'react'
 import type { TripSlot } from '@/types'
 
 const DAY_COLORS = [
@@ -19,7 +18,12 @@ const DAY_COLORS = [
   'bg-pink-50 text-pink-800',
 ]
 
-export function Timeline() {
+interface TimelineProps {
+  /** Callback triggered when user clicks "+ Thêm slot" for a specific day */
+  onAddSlot?: (dayIndex: number) => void
+}
+
+export function Timeline({ onAddSlot }: TimelineProps) {
   const {
     trip, pendingSlots, hasPending, focusedSlotId,
     movePendingSlot, movePendingToDay, commitPending, discardPending,
@@ -35,11 +39,11 @@ export function Timeline() {
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   )
 
-  const slots = pendingSlots ?? trip?.slots ?? []
+  const slots     = pendingSlots ?? trip?.slots ?? []
   const startDate = trip?.startDate ?? format(new Date(), 'yyyy-MM-dd')
-  const days = trip ? Math.ceil(
-    (parseISO(trip.endDate).getTime() - parseISO(trip.startDate).getTime()) / 86400000
-  ) + 1 : 1
+  const days      = trip
+    ? Math.ceil((parseISO(trip.endDate).getTime() - parseISO(trip.startDate).getTime()) / 86400000) + 1
+    : 1
 
   const slotsByDay: Record<number, TripSlot[]> = {}
   for (let d = 0; d < days; d++) slotsByDay[d] = []
@@ -77,12 +81,14 @@ export function Timeline() {
     }
   }, [movePendingSlot])
 
+  // Auto-scroll to focused slot
   useEffect(() => {
     if (!focusedSlotId || !containerRef.current) return
     const el = containerRef.current.querySelector(`[data-slot-id="${focusedSlotId}"]`)
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [focusedSlotId])
 
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo() }
@@ -97,7 +103,7 @@ export function Timeline() {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 shrink-0">
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-100 shrink-0">
         <button
           onClick={undo}
           disabled={past.length === 0}
@@ -116,7 +122,9 @@ export function Timeline() {
         >
           <RotateCw className="w-4 h-4" />
         </button>
+
         <div className="flex-1" />
+
         <button
           onClick={saveVersion}
           title="Lưu phiên bản"
@@ -149,7 +157,7 @@ export function Timeline() {
         </div>
       )}
 
-      {/* Pending bar */}
+      {/* Pending change bar */}
       {hasPending && (
         <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 shrink-0">
           <span className="text-xs text-amber-700 flex-1 font-medium">Có thay đổi chưa lưu</span>
@@ -179,6 +187,7 @@ export function Timeline() {
               slots={slotsByDay[d] ?? []}
               focusedSlotId={focusedSlotId}
               onFocus={setFocus}
+              onAddSlot={onAddSlot}
               dayColors={DAY_COLORS}
             />
           ))}

@@ -25,6 +25,7 @@ export function PlanForm({ parsed, onSubmit, onGPS, onMapClick, startPoint, isLo
       endDate: '',
       budgetTotal: 3_000_000,
       preferences: [],
+      numPeople: 1,
     },
   })
 
@@ -35,6 +36,7 @@ export function PlanForm({ parsed, onSubmit, onGPS, onMapClick, startPoint, isLo
     setValue('endDate', parsed.endDate)
     setValue('budgetTotal', parsed.budget)
     setValue('preferences', parsed.styles)
+    setValue('numPeople', parsed.numPeople || 1)
   }, [parsed, setValue])
 
   useEffect(() => {
@@ -63,6 +65,17 @@ export function PlanForm({ parsed, onSubmit, onGPS, onMapClick, startPoint, isLo
           placeholder="Đà Nẵng, Đà Lạt, Hội An…"
         />
         {errors.destinationCity && <p className="text-xs text-red-500 mt-1">{errors.destinationCity.message}</p>}
+      </div>
+
+      <div>
+        <label className="text-xs font-semibold text-gray-600 flex items-center gap-1 mb-1">
+          Số người
+        </label>
+        <input
+          type="number"
+          {...register('numPeople', { valueAsNumber: true, min: 1, max: 20 })}
+          className="input"
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -135,7 +148,7 @@ export function PlanForm({ parsed, onSubmit, onGPS, onMapClick, startPoint, isLo
       </div>
 
       <button type="submit" disabled={isLoading} className="btn-primary w-full py-2.5">
-        {isLoading ? 'Đang tạo kế hoạch…' : '✨ Tạo lịch trình'}
+        Tiếp theo
       </button>
     </form>
   )

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Map, Sparkles, Smartphone, ChevronRight } from 'lucide-react'
+import { Map, Sparkles, Smartphone, ChevronRight, LogIn } from 'lucide-react'
+import { useAuthStore } from '@/store/authStore'
 
 const slides = [
   {
@@ -23,9 +24,27 @@ const slides = [
 export default function Welcome() {
   const [slide, setSlide] = useState(0)
   const navigate = useNavigate()
+  const { user, openLoginDrawer } = useAuthStore()
+
+  useEffect(() => {
+    if (user) {
+      navigate('/', { replace: true })
+    }
+  }, [user, navigate])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 flex flex-col items-center justify-center p-6 relative">
+      {/* Nút đăng nhập ở góc */}
+      <div className="absolute top-6 right-6">
+        <button 
+          onClick={openLoginDrawer}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white/80 backdrop-blur rounded-full shadow-sm hover:bg-gray-50 transition-colors"
+        >
+          <LogIn className="w-4 h-4" />
+          Đăng nhập
+        </button>
+      </div>
+
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900">✈️ TravelSystem</h1>
@@ -55,13 +74,13 @@ export default function Welcome() {
               Tiếp theo <ChevronRight className="w-4 h-4" />
             </button>
           ) : (
-            <button onClick={() => navigate('/plan')} className="btn-primary w-full py-3">
+            <button onClick={openLoginDrawer} className="btn-primary w-full py-3">
               ✨ Bắt đầu lập kế hoạch
             </button>
           )}
           <button
-            onClick={() => navigate('/plan')}
-            className="text-sm text-gray-400 hover:text-gray-600 w-full text-center"
+            onClick={() => setSlide(slides.length - 1)}
+            className={`text-sm text-gray-400 hover:text-gray-600 w-full text-center ${slide === slides.length - 1 ? 'invisible' : ''}`}
           >
             Bỏ qua
           </button>

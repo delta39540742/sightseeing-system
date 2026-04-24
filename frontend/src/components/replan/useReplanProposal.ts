@@ -32,9 +32,11 @@ export interface UseReplanProposalReturn {
   refetch: () => void;
   accept: {
     mutate: (proposalId: string) => void;
+    mutateAsync: (proposalId: string) => Promise<void>;
     isPending: boolean;
     error: Error | null;
   };
+
   reject: {
     mutate: (args: { proposalId: string; reason?: string }) => void;
     isPending: boolean;
@@ -77,6 +79,7 @@ export function useReplanProposal(tripId: string): UseReplanProposalReturn {
     refetch: () => void refetch(),
     accept: {
       mutate: (proposalId) => acceptMutation.mutate(proposalId),
+      mutateAsync: (proposalId) => acceptMutation.mutateAsync(proposalId),
       isPending: acceptMutation.isPending,
       error: acceptMutation.error,
     },

@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { Plus, MapPin, Calendar, ChevronRight, User } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Plus, MapPin, Calendar, ChevronRight, User, Trash2 } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
+import { toast } from '@/store/toastStore'
 import { TripCardSkeleton } from '@/components/ui/Skeleton'
+import { Modal } from '@/components/ui/Modal'
 import type { Trip, TripStatus } from '@/types'
 
 const statusLabels: Record<Trip['status'], { label: string; color: string }> = {
@@ -27,13 +29,28 @@ const TABS = [
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { user, openLoginDrawer } = useAuthStore()
   const [filter, setFilter] = useState<TripStatus | 'all'>('all')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const { data: trips, isLoading } = useQuery({
     queryKey: ['trips'],
     queryFn: tripService.list,
     enabled: !!user,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: tripService.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trips'] })
+      toast.success('Đã xóa chuyến đi thành công')
+      setDeletingId(null)
+    },
+    onError: () => {
+      toast.error('Không thể xóa chuyến đi, vui lòng thử lại sau')
+      setDeletingId(null)
+    }
   })
 
   const filtered = filter === 'all' ? trips : trips?.filter(t => t.status === filter)
@@ -42,7 +59,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-10">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
-          <h1 className="font-bold text-lg text-gray-900">✈️ TravelSystem</h1>
+          <button onClick={() => navigate('/')} className="font-bold text-lg text-gray-900 hover:text-blue-600 transition-colors">✈️ TravelSystem</button>
           <button
             onClick={() => user ? navigate('/profile') : openLoginDrawer()}
             className="p-2 rounded-full hover:bg-gray-100"
@@ -141,10 +158,12 @@ export default function Dashboard() {
             {filtered.map((trip) => {
               const status = statusLabels[trip.status]
               return (
-                <button
+                <div
                   key={trip.tripId}
-                  onClick={() => navigate(`/trip/${trip.tripId}`)}
-                  className="card w-full p-4 hover:shadow-md transition-shadow text-left flex items-center gap-4"
+                  onClick={() =>
+                    navigate(trip.status === 'active' ? `/trip/${trip.tripId}/live` : `/trip/${trip.tripId}`)
+                  }
+                  className="card w-full p-4 hover:shadow-md transition-shadow text-left flex items-center gap-4 cursor-pointer"
                 >
                   <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-white text-xl shrink-0">
                     ✈️
@@ -165,13 +184,54 @@ export default function Dashboard() {
                       </span>
                     </div>
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setDeletingId(trip.tripId)
+                    }}
+                    className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors shrink-0"
+                    title="Xóa chuyến đi"
+                    disabled={deleteMutation.isPending}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                   <ChevronRight className="w-4 h-4 text-gray-300 shrink-0" />
-                </button>
+                </div>
               )
             })}
           </div>
         )}
       </main>
+
+      <Modal
+        open={!!deletingId}
+        onClose={() => setDeletingId(null)}
+        title="Xóa chuyến đi"
+        description="Bạn có chắc chắn muốn xóa chuyến đi này? Hành động này không thể hoàn tác."
+        size="sm"
+        footer={
+          <>
+            <button
+              onClick={() => setDeletingId(null)}
+              className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg"
+              disabled={deleteMutation.isPending}
+            >
+              Hủy
+            </button>
+            <button
+              onClick={() => deletingId && deleteMutation.mutate(deletingId)}
+              className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2"
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Đang xóa...' : 'Xóa chuyến đi'}
+            </button>
+          </>
+        }
+      >
+        <div className="text-sm text-gray-500">
+          Tất cả dữ liệu về lịch trình, địa điểm của chuyến đi này sẽ bị xóa vĩnh viễn khỏi hệ thống.
+        </div>
+      </Modal>
     </div>
   )
 }

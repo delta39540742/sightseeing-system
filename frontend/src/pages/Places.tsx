@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MapPin } from 'lucide-react'
+import { MapPin, Camera, X } from 'lucide-react'
+import { LandmarkRecognizer } from '@/components/landmark/LandmarkRecognizer'
+import { tripService } from '@/services/tripService'
 import type { Place } from '@/types'
 import { placeService } from '@/services/placeService'
 import { PlaceCard } from '@/components/places/PlaceCard'
@@ -14,6 +16,8 @@ interface PlacesFilters {
 export default function Places() {
   const [page, setPage] = useState(1)
   const [places, setPlaces] = useState<Place[]>([])
+  const [selectedPlaceToAdd, setSelectedPlaceToAdd] = useState<Place | null>(null)
+  const [showRecognizer, setShowRecognizer] = useState(false)
   const [filters, setFilters] = useState<PlacesFilters>({
     indoor_outdoor: undefined,
     is_landmark: undefined,
@@ -26,7 +30,8 @@ export default function Places() {
       placeService.list({
         page,
         limit: 20,
-        tags: filters.is_landmark ? 'landmark' : undefined,
+        is_landmark: filters.is_landmark,
+        indoor_outdoor: filters.indoor_outdoor,
       }),
     staleTime: 2 * 60 * 1000,
   })
@@ -61,9 +66,18 @@ export default function Places() {
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-4 sticky top-0 z-10">
         <div className="max-w-2xl mx-auto">
-          <div className="flex items-center gap-2 mb-3">
-            <MapPin className="w-5 h-5 text-blue-500" />
-            <h1 className="text-lg font-bold text-gray-900">Địa điểm</h1>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-blue-500" />
+              <h1 className="text-lg font-bold text-gray-900">Địa điểm</h1>
+            </div>
+            <button 
+              onClick={() => setShowRecognizer(true)}
+              className="flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-full"
+            >
+              <Camera className="w-4 h-4" />
+              Nhận diện ảnh
+            </button>
           </div>
 
           {/* Filter chips */}
@@ -141,6 +155,7 @@ export default function Places() {
                     add(place.placeId)
                   }
                 }}
+                onAdd={() => setSelectedPlaceToAdd(place)}
               />
             ))}
           </div>
@@ -166,6 +181,91 @@ export default function Places() {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Add To Trip Modal */}
+      {selectedPlaceToAdd && (
+        <AddToTripModal 
+          place={selectedPlaceToAdd} 
+          onClose={() => setSelectedPlaceToAdd(null)} 
+        />
+      )}
+
+      {/* Landmark Recognizer Modal */}
+      {showRecognizer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto relative p-4">
+            <button 
+              onClick={() => setShowRecognizer(false)}
+              className="absolute top-4 right-4 p-1.5 bg-gray-100 hover:bg-gray-200 rounded-full"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <LandmarkRecognizer />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AddToTripModal({ place, onClose }: { place: Place; onClose: () => void }) {
+  const { data: trips, isLoading } = useQuery({ queryKey: ['trips'], queryFn: tripService.list })
+  const activeTrips = trips?.filter(t => t.status === 'active' || t.status === 'draft') || []
+  const [adding, setAdding] = useState(false)
+
+  const handleAdd = async (tripId: string) => {
+    setAdding(true)
+    try {
+      await tripService.addSlot(tripId, place.placeId)
+      alert('Đã thêm vào lịch trình!')
+      onClose()
+    } catch {
+      alert('Lỗi khi thêm vào chuyến')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-sm p-5 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center">
+          <h3 className="font-bold text-gray-900">Thêm vào chuyến đi</h3>
+          <button onClick={onClose}><X className="w-4 h-4 text-gray-500" /></button>
+        </div>
+        
+        <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+            <MapPin className="w-5 h-5 text-blue-600" />
+          </div>
+          <div>
+            <p className="font-medium text-sm">{place.name}</p>
+            <p className="text-xs text-gray-500">{place.avgVisitDurationMin} phút</p>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-60 overflow-y-auto">
+          {isLoading ? (
+            <p className="text-sm text-center text-gray-500 py-4">Đang tải...</p>
+          ) : activeTrips.length === 0 ? (
+            <p className="text-sm text-center text-gray-500 py-4">Không có chuyến đi nào đang hoạt động</p>
+          ) : (
+            activeTrips.map(trip => (
+              <button
+                key={trip.tripId}
+                onClick={() => handleAdd(trip.tripId)}
+                disabled={adding}
+                className="w-full text-left p-3 border border-gray-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-colors disabled:opacity-50"
+              >
+                <p className="font-medium text-sm">{trip.title || trip.destinationCity}</p>
+                <p className="text-xs text-gray-500">
+                  {new Date(trip.startDate).toLocaleDateString('vi-VN')} - {new Date(trip.endDate).toLocaleDateString('vi-VN')}
+                </p>
+              </button>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )

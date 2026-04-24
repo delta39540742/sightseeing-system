@@ -23,8 +23,11 @@ export async function landmarkPlugin(fastify: FastifyInstance): Promise<void> {
     const result = mockIdentify(filename);
     if (!result) return reply.status(400).send({ error: 'MOCK_NO_MATCH' });
 
+    const recognitionId = `recog_${Date.now()}`;
+    recognitionStore.set(recognitionId, result.placeId);
+
     return {
-      recognitionId: result.recognitionId,
+      recognitionId,
       landmarkClassId: result.classId,
       placeId: result.placeId,
       place: result.place,

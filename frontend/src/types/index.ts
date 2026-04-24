@@ -64,6 +64,16 @@ export interface PlanRequest {
   startLng?: number
   preferences?: string[]
   anchorPlaceIds?: number[]
+  orderedPlaceIds?: number[]
+  mustVisitPlaceIds?: number[]
+  numPeople?: number
+}
+
+export interface PlaceOrderItem {
+  placeId: number
+  place: Place
+  mustVisit: boolean
+  priority: number
 }
 
 export interface UserPreference {
@@ -108,6 +118,7 @@ export interface ParsedNLPResult {
   styles: string[]
   startDate: string
   endDate: string
+  numPeople: number
 }
 
 export interface NluSlots {

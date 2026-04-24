@@ -139,9 +139,15 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ success: false, error: 'Missing required configuration fields.' });
       }
 
+      // user_id từ frontend là Firebase UID — cần map sang UUID của app_user
+      const appUser = await prisma.app_user.findUnique({
+        where: { firebase_uid: user_id },
+      });
+      if (!appUser) return reply.status(404).send({ success: false, error: 'User not found' });
+
       const newTrip = await prisma.trip.create({
         data: {
-          user_id,
+          user_id: appUser.user_id,
           destination_city,
           start_date: new Date(start_date),
           end_date: new Date(end_date),

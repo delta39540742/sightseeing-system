@@ -47,5 +47,5 @@ export function parseNLP(input: string): ParsedNLPResult {
   const startDate = format(new Date(), 'yyyy-MM-dd')
   const endDate = format(addDays(new Date(), days - 1), 'yyyy-MM-dd')
 
-  return { destinationCity, days, budget, styles, startDate, endDate }
+  return { destinationCity, days, budget, styles, startDate, endDate, numPeople: 1 }
 }

@@ -1,14 +1,16 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ScanLine, AlertCircle } from 'lucide-react'
 import { CameraCapture } from './CameraCapture'
 import { LandmarkResult } from './LandmarkResult'
 import { landmarkService } from '@/services/landmarkService'
+import { tripService } from '@/services/tripService'
 import type { LandmarkRecognitionResult } from '@/types'
 
 type State = 'idle' | 'uploading' | 'result' | 'adding' | 'done' | 'error'
 
 interface LandmarkRecognizerProps {
-  tripId: string
+  tripId?: string
   onProposalCreated?: (proposalId: string) => void
 }
 
@@ -16,6 +18,12 @@ export function LandmarkRecognizer({ tripId, onProposalCreated }: LandmarkRecogn
   const [state, setState] = useState<State>('idle')
   const [result, setResult] = useState<LandmarkRecognitionResult | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(tripId || null)
+  const { data: trips } = useQuery({
+    queryKey: ['active-trips'],
+    queryFn: () => tripService.list(),
+    enabled: !tripId
+  })
 
   const handleCapture = async (file: File) => {
     setState('uploading')
@@ -32,9 +40,15 @@ export function LandmarkRecognizer({ tripId, onProposalCreated }: LandmarkRecogn
 
   const handleAddToTrip = async () => {
     if (!result) return
+    const targetTripId = tripId || selectedTripId
+    if (!targetTripId) {
+      setErrorMsg('Vui lòng chọn chuyến đi')
+      setState('error')
+      return
+    }
     setState('adding')
     try {
-      const { proposalId } = await landmarkService.addToTrip(result.recognitionId, tripId)
+      const { proposalId } = await landmarkService.addToTrip(result.recognitionId, targetTripId)
       setState('done')
       onProposalCreated?.(proposalId)
     } catch {
@@ -70,12 +84,30 @@ export function LandmarkRecognizer({ tripId, onProposalCreated }: LandmarkRecogn
       )}
 
       {(state === 'result' || state === 'adding' || state === 'done') && result && (
-        <LandmarkResult
-          result={result}
-          onAddToTrip={() => void handleAddToTrip()}
-          isAdding={state === 'adding'}
-          added={state === 'done'}
-        />
+        <div className="space-y-4">
+          <LandmarkResult
+            result={result}
+            onAddToTrip={() => void handleAddToTrip()}
+            isAdding={state === 'adding'}
+            added={state === 'done'}
+          />
+          
+          {!tripId && state !== 'done' && state !== 'adding' && (
+            <div className="mt-4 p-4 border border-gray-200 rounded-xl">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Chọn chuyến đi để thêm</label>
+              <select 
+                className="w-full border-gray-300 rounded-lg p-2.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                value={selectedTripId || ''}
+                onChange={e => setSelectedTripId(e.target.value)}
+              >
+                <option value="">-- Chọn chuyến đi --</option>
+                {trips?.filter((t) => t.status === 'active' || t.status === 'draft').map((t) => (
+                  <option key={t.tripId} value={t.tripId}>{t.title || t.destinationCity}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
       )}
 
       {state === 'error' && (

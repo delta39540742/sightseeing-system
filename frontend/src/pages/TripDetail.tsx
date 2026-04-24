@@ -1,9 +1,11 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus } from 'lucide-react'
+import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity } from 'lucide-react'
 import { tripService } from '@/services/tripService'
 import { placeService } from '@/services/placeService'
+import { monitorService } from '@/services/monitorService'
+import type { MonitorAlert } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
 import { TripMap } from '@/components/map/TripMap'
 import { Timeline } from '@/components/timeline/Timeline'
@@ -12,6 +14,7 @@ import { Modal } from '@/components/ui/Modal'
 import { BottomSheet } from '@/components/ui/BottomSheet'
 import { LandmarkRecognizer } from '@/components/landmark/LandmarkRecognizer'
 import { ReplanModal } from '@/components/replan/ReplanModal'
+import { ConflictBanner } from '@/components/timeline/ConflictBanner'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from '@/store/toastStore'
 import { format, parseISO } from 'date-fns'
@@ -25,7 +28,7 @@ export default function TripDetail() {
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { setTrip, trip, pendingSlots, focusedSlotId } = useTripStore()
+  const { setTrip, trip, pendingSlots, focusedSlotId, setFocus } = useTripStore()
   const [mobileTab, setMobileTab] = useState<MobileTab>('list')
   const [shareModal, setShareModal] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
@@ -35,6 +38,7 @@ export default function TripDetail() {
   const [replanScopeSheet, setReplanScopeSheet] = useState(false)
   const [isReplanning, setIsReplanning] = useState(false)
   const [addPlaceSheet, setAddPlaceSheet] = useState(false)
+  const [addSlotDay, setAddSlotDay] = useState<number | undefined>(undefined)
   const [searchQuery, setSearchQuery] = useState('')
 
   const { data, isLoading, error } = useQuery({
@@ -44,22 +48,35 @@ export default function TripDetail() {
   })
 
   const { data: placesData } = useQuery({
-    queryKey: ['places-search', searchQuery],
-    queryFn: () => placeService.list({ city: trip?.destinationCity, page: 1, limit: 20 }),
+    queryKey: ['places-search'],
+    queryFn: () => placeService.list({ page: 1, limit: 50 }),
     enabled: addPlaceSheet,
     staleTime: 60_000,
   })
 
+  const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
+    queryKey: ['check-incident', tripId],
+    queryFn: () => monitorService.checkIncident(),
+    refetchInterval: 30_000,
+    enabled: !!tripId,
+  })
+
   const { mutate: addSlot, isPending: isAddingSlot } = useMutation({
-    mutationFn: ({ placeId }: { placeId: number }) =>
-      tripService.addSlot(tripId!, placeId),
+    mutationFn: ({ placeId, dayIndex }: { placeId: number; dayIndex?: number }) =>
+      tripService.addSlot(tripId!, placeId, dayIndex),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
       toast.success('Đã thêm địa điểm vào lịch trình')
       setAddPlaceSheet(false)
+      setAddSlotDay(undefined)
     },
     onError: () => toast.error('Không thể thêm địa điểm, thử lại sau'),
   })
+
+  const handleOpenAddSlot = (dayIndex?: number) => {
+    setAddSlotDay(dayIndex)
+    setAddPlaceSheet(true)
+  }
 
   useEffect(() => {
     if (data) setTrip(data)
@@ -193,12 +210,34 @@ export default function TripDetail() {
         <div className="h-full flex">
           {/* Timeline (left on desktop) */}
           <div className={`w-full md:w-[380px] md:flex flex-col h-full bg-white border-r border-gray-100 ${mobileTab === 'list' ? 'flex' : 'hidden'}`}>
-            <Timeline />
+            {incidentData && 'type' in incidentData && incidentData.type && (
+              <div className="pt-3">
+                <ConflictBanner
+                  conflict={{
+                    type: 'time',
+                    message: ('reason' in incidentData ? incidentData.reason : null) || 'Cảnh báo hệ thống',
+                    cause: incidentData.type,
+                    suggestion: 'Lộ trình có thể không tối ưu do thay đổi ngoại cảnh.',
+                  }}
+                  onViewProposal={() => navigate(`/trip/${tripId}/replan`)}
+                />
+              </div>
+            )}
+            <Timeline onAddSlot={handleOpenAddSlot} />
 
             {/* Bottom action bar */}
             <div className="border-t border-gray-100 p-3 shrink-0 space-y-2">
+              {trip.status === 'active' && (
+                <button
+                  onClick={() => navigate(`/trip/${tripId}/live`)}
+                  className="btn-secondary w-full py-2 text-sm flex items-center justify-center gap-2 border-green-200 text-green-700 hover:bg-green-50"
+                >
+                  <Activity className="w-4 h-4" />
+                  Xem Live Tracking
+                </button>
+              )}
               <button
-                onClick={() => setReplanScopeSheet(true)}
+                onClick={() => navigate(`/trip/${tripId}/replan`)}
                 disabled={isReplanning}
                 className="btn-secondary w-full py-2 text-sm flex items-center justify-center gap-2"
               >
@@ -221,6 +260,12 @@ export default function TripDetail() {
               slots={trip.slots}
               pendingSlots={pendingSlots}
               focusedSlotId={focusedSlotId}
+              onMarkerClick={(slotId) => {
+                // Highlight slot tương ứng trong timeline
+                setFocus(slotId)
+                // Trên mobile: chuyển sang tab list để user thấy slot được highlight
+                setMobileTab('list')
+              }}
               className="w-full h-full rounded-none"
             />
           </div>
@@ -308,7 +353,7 @@ export default function TripDetail() {
 
       {/* FAB thêm địa điểm */}
       <button
-        onClick={() => setAddPlaceSheet(true)}
+        onClick={() => handleOpenAddSlot()}
         className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-xl flex items-center justify-center hover:bg-blue-700 active:scale-95 transition-all z-30"
         aria-label="Thêm địa điểm"
       >
@@ -316,7 +361,11 @@ export default function TripDetail() {
       </button>
 
       {/* BottomSheet thêm địa điểm */}
-      <BottomSheet open={addPlaceSheet} onClose={() => setAddPlaceSheet(false)} title="Thêm địa điểm">
+      <BottomSheet
+        open={addPlaceSheet}
+        onClose={() => { setAddPlaceSheet(false); setAddSlotDay(undefined) }}
+        title={addSlotDay !== undefined ? `Thêm địa điểm — Ngày ${addSlotDay + 1}` : 'Thêm địa điểm'}
+      >
         <div className="px-4 pb-6 space-y-3">
           <input
             type="text"
@@ -324,6 +373,7 @@ export default function TripDetail() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            autoFocus
           />
           <div className="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto">
             {placesData?.places
@@ -331,7 +381,7 @@ export default function TripDetail() {
               .map((place) => (
                 <button
                   key={place.placeId}
-                  onClick={() => addSlot({ placeId: place.placeId })}
+                  onClick={() => addSlot({ placeId: place.placeId, dayIndex: addSlotDay })}
                   disabled={isAddingSlot}
                   className="text-left p-3 border border-gray-200 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all disabled:opacity-50"
                 >
