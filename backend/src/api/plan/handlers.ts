@@ -45,8 +45,8 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     if (destinationCity) {
       andConditions.push({
         OR: [
-          { address: { contains: destinationCity, mode: 'insensitive' as const } },
-          { address: null },
+          { description: { contains: destinationCity, mode: 'insensitive' as const } },
+          { name: { contains: destinationCity, mode: 'insensitive' as const } },
         ],
       });
     }
@@ -60,16 +60,17 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     });
 
     // Fallback: nếu city filter quá hẹp → bỏ city filter, giữ budget
-    if (places.length === 0 && destinationCity) {
-      places = await prisma.place.findMany({
-        where: { AND: [budgetCondition, ...(mobilityFilter.wheelchair_access ? [{ wheelchair_access: true }] : [])] },
-        include: includeRelations,
-      });
-    }
+    // if (places.length === 0 && destinationCity) {
+    //   places = await prisma.place.findMany({
+    //     where: { AND: [budgetCondition, ...(mobilityFilter.wheelchair_access ? [{ wheelchair_access: true }] : [])] },
+    //     include: includeRelations,
+    //   });
+    // }
 
     // Nếu DB hoàn toàn rỗng → trả mock data để test UI
     if (places.length === 0) {
-      return reply.send({ places: MOCK_PLACES, _mock: true });
+      //return reply.send({ places: MOCK_PLACES, _mock: true });
+      return reply.send({ places: [] });
     }
 
     // Score + sort
@@ -164,7 +165,17 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
 
         // Lấy candidates từ DB
         const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
-        const places = await prisma.place.findMany({ include: { place_tag_map: true } });
+        const targetCity = payload.destinationCity || 'Da Nang';
+        const places = await prisma.place.findMany({ 
+            where: {
+                OR: [
+                    { address: { contains: targetCity, mode: 'insensitive' as const } },
+                    { description: { contains: targetCity, mode: 'insensitive' as const } },
+                    { name: { contains: targetCity, mode: 'insensitive' as const } },
+                ]
+            },
+            include: { place_tag_map: true } 
+        });
         const candidates = places.map((p: any) => {
             const tagMatchCount = p.place_tag_map.filter((tm: any) =>
                 preferredTagIds.includes(tm.tag_id)
@@ -189,22 +200,28 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         }).sort((a: any, b: any) => b.matchScore - a.matchScore).slice(0, 100);
 
         const weights = { wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1 };
-        const greedyPlan = generateGreedyPlan(days, payload.budgetTotal || 5000000, candidates, weights);
+        
+        // 1. TRUYỀN THÊM startDate VÀO HÀM NÀY
+        const greedyPlan = generateGreedyPlan(days, payload.budgetTotal ?? 5000000, candidates, weights, startDate);
+        
         const userPreferences = {
             preferredTagIds,
-            budgetRemaining: payload.budgetTotal || 5000000,
+            budgetRemaining: payload.budgetTotal ?? 5000000,
             weights: { interest: 1, distance: 1.5, budget: 1, weather: 1 },
         };
-        const optimizedPlan = optimizeWith2Opt(greedyPlan, userPreferences, candidates);
+        
+        // 2. HỨNG OBJECT (Lấy ra biến optimizedPlan và finalScore)
+        const { slots: optimizedPlan, score: finalScore } = optimizeWith2Opt(greedyPlan, userPreferences, candidates);
 
-        // Lưu Trip vào DB
+        // 3. LƯU Trip VÀO DB VỚI ĐIỂM SỐ
         const newTrip = await prisma.trip.create({
             data: {
                 user_id:          dbUser.user_id,
                 destination_city: payload.destinationCity || 'Da Nang',
                 start_date:       startDate,
                 end_date:         endDate,
-                budget_total:     payload.budgetTotal || 5000000,
+                budget_total:     payload.budgetTotal ?? 5000000,
+                objective_score:  finalScore, // <--- ĐIỂM SỐ ĐƯỢC LƯU VÀO ĐÂY
                 status:           'draft',
             },
         });

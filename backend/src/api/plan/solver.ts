@@ -13,6 +13,7 @@ export function generateGreedyPlan(
     budgetTotal: number,
     candidates: Place[],
     weights: ObjectiveWeights,
+    startDate: Date,
     hotelPlace?: Place
 ): TripSlot[] {
     const plan: TripSlot[] = [];
@@ -51,7 +52,8 @@ export function generateGreedyPlan(
                 
                 // Nếu vượt ngân sách -> Bỏ qua
                 // (Cần bổ sung logic check min_price/max_price tùy bạn định nghĩa)
-                
+                if ((place.minPrice || 0) > budgetRemaining) continue;
+
                 // 2. Chấm điểm (Ràng buộc mềm - Áp dụng ObjectiveWeights)
                 // Theo công thức: wInterest * tagMatch - wDistance * travelTime...
                 // (Bạn cần có hàm tính tagMatch ở đây giống như trong file handlers.ts của bạn)
@@ -73,7 +75,10 @@ export function generateGreedyPlan(
             }
 
             // 3. Nhét POI vào lịch
-            const startTime = new Date();
+            const slotDate = new Date(startDate);
+            slotDate.setDate(slotDate.getDate() + dayIndex);
+
+            const startTime = new Date(slotDate);
             startTime.setHours(Math.floor((currentTimeMinutes + bestTravelTime) / 60), (currentTimeMinutes + bestTravelTime) % 60, 0, 0);
             
             const endTime = new Date(startTime);
@@ -181,7 +186,7 @@ export function optimizeWith2Opt(
     initialSlots: TripSlot[], 
     prefs: any, 
     candidates: Place[]
-): TripSlot[] {
+): { slots: TripSlot[], score: number } {
   let bestSlots = [...initialSlots];
   let bestScore = calculateItineraryScore(bestSlots, prefs, candidates);
   let improved = true;
@@ -213,5 +218,63 @@ export function optimizeWith2Opt(
   }
 
   console.log(`[2-Opt] Hoàn thành sau ${iterations} vòng. Điểm tổng: ${bestScore}`);
-  return bestSlots;
+  
+  const maxDay = Math.max(...bestSlots.map(s => s.dayIndex));
+  for (let d = 0; d <= maxDay; d++) {
+      // Lấy các điểm của ngày hiện tại
+      const daySlots = bestSlots.filter(s => s.dayIndex === d);
+      if (daySlots.length === 0) continue;
+      
+      // Lấy cái ngày gốc ra (vd: 01/05/2026)
+      const baseDate = new Date(daySlots[0].plannedStart);
+      baseDate.setHours(0, 0, 0, 0);
+      
+      let currentMinutes = 8 * 60; // Bắt đầu từ 8:00 sáng
+      let currentLat = candidates.find(c => c.placeId === daySlots[0].placeId)?.lat || 16.06;
+      let currentLng = candidates.find(c => c.placeId === daySlots[0].placeId)?.lng || 108.22;
+
+      for (let i = 0; i < daySlots.length; i++) {
+          const slot = daySlots[i];
+          const place = candidates.find(c => c.placeId === slot.placeId);
+          
+          // 1. Tính thời gian di chuyển
+          let travelTime = 15; // Điểm đầu tiên coi như đi từ KS mất 15p
+          if (i > 0 && place) {
+              const distanceKm = Math.sqrt(Math.pow(currentLat - place.lat, 2) + Math.pow(currentLng - place.lng, 2)) * 111;
+              travelTime = Math.ceil(distanceKm * 2) + 5;
+          }
+
+          currentMinutes += travelTime;
+          
+          // 2. Ghi lại giờ đến nơi
+          const start = new Date(baseDate);
+          start.setHours(Math.floor(currentMinutes / 60), currentMinutes % 60, 0, 0);
+          slot.plannedStart = start.toISOString();
+          
+          // 3. Ghi lại giờ kết thúc chơi
+          const duration = place?.avgVisitDurationMin || 60;
+          currentMinutes += duration;
+          
+          const end = new Date(baseDate);
+          end.setHours(Math.floor(currentMinutes / 60), currentMinutes % 60, 0, 0);
+          slot.plannedEnd = end.toISOString();
+          
+          // 4. Đánh lại số thứ tự cho chuẩn
+          slot.slotOrder = i + 1;
+          slot.slotId = `slot_${d}_${slot.slotOrder}`;
+          
+          // Cập nhật mốc tọa độ
+          if (place) {
+              currentLat = place.lat;
+              currentLng = place.lng;
+          }
+      }
+  }
+  bestSlots.sort((a, b) => {
+      if (a.dayIndex !== b.dayIndex) {
+          return a.dayIndex - b.dayIndex; // Xếp theo ngày trước (0 -> 1 -> 2)
+      }
+      return a.slotOrder - b.slotOrder;   // Nếu cùng ngày thì xếp theo thứ tự đi chơi (1 -> 2 -> 3)
+  });
+  return { slots: bestSlots, score: bestScore };
 }
