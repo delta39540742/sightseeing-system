@@ -16,6 +16,9 @@ import LandmarkPage from './pages/LandmarkPage'
 import Preferences from './pages/Preferences'
 import Profile from './pages/Profile'
 import Places from './pages/Places'
+import Events from './pages/Events'
+import Destinations from './pages/Destinations'
+import About from './pages/About'
 
 function AuthInit() {
   useAuthInit()
@@ -31,6 +34,9 @@ export default function App() {
         <Route path="/" element={<ErrorBoundary><Home /></ErrorBoundary>} />
         <Route path="/welcome" element={<ErrorBoundary><Welcome /></ErrorBoundary>} />
         <Route path="/landmark" element={<ErrorBoundary><LandmarkPage /></ErrorBoundary>} />
+        <Route path="/events" element={<ErrorBoundary><Events /></ErrorBoundary>} />
+        <Route path="/destinations" element={<ErrorBoundary><Destinations /></ErrorBoundary>} />
+        <Route path="/about" element={<ErrorBoundary><About /></ErrorBoundary>} />
 
         {/* Protected */}
         <Route path="/trips" element={<ErrorBoundary><ProtectedRoute><Dashboard /></ProtectedRoute></ErrorBoundary>} />

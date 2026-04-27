@@ -5,9 +5,10 @@ import type { User } from 'firebase/auth'
 interface AuthState {
   user: User | null
   idToken: string | null
+  appUserId: string | null
   isLoading: boolean
   loginDrawerOpen: boolean
-  setUser: (user: User | null, idToken: string | null) => void
+  setUser: (user: User | null, idToken: string | null, appUserId?: string | null) => void
   setLoading: (v: boolean) => void
   openLoginDrawer: () => void
   closeLoginDrawer: () => void
@@ -19,13 +20,17 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       user: null,
       idToken: null,
+      appUserId: null,
       isLoading: true,
       loginDrawerOpen: false,
-      setUser: (user, idToken) => set({ user, idToken, isLoading: false }),
+      setUser: (user, idToken, appUserId) => set({
+        user, idToken, isLoading: false,
+        ...(appUserId !== undefined ? { appUserId } : {}),
+      }),
       setLoading: (isLoading) => set({ isLoading }),
       openLoginDrawer: () => set({ loginDrawerOpen: true }),
       closeLoginDrawer: () => set({ loginDrawerOpen: false }),
-      logout: () => set({ user: null, idToken: null }),
+      logout: () => set({ user: null, idToken: null, appUserId: null }),
     }),
     {
       name: 'auth-store',

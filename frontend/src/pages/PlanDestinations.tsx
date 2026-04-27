@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { TripMap } from '@/components/map/TripMap'
 import { NluSlotEditor } from '@/components/planning/NluSlotEditor'
+import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
 import { tripService } from '@/services/tripService'
 import { nluService } from '@/services/nluService'
 import { parseNLP } from '@/utils/nlpParser'
@@ -36,10 +37,10 @@ type ChatMessage =
   | { role: 'ai-slots'; nluResponse: NluParseResponse; confirmed: boolean }
 
 const NAV_ITEMS = [
-  { id: 'destinations', label: 'DESTINATIONS', Icon: PersonStanding },
-  { id: 'route',        label: 'ROUTE PATH',   Icon: Route },
-  { id: 'timeline',     label: 'TIMELINE',     Icon: Calendar },
-  { id: 'budget',       label: 'BUDGET',       Icon: Wallet },
+  { id: 'destinations', label: 'ĐỊA ĐIỂM',  Icon: PersonStanding },
+  { id: 'route',        label: 'LỘ TRÌNH',   Icon: Route },
+  { id: 'timeline',     label: 'THỜI GIAN',  Icon: Calendar },
+  { id: 'budget',       label: 'NGÂN SÁCH',  Icon: Wallet },
 ]
 
 const DEFAULT_HASHTAGS = ['Đà Nẵng', 'Hội An', 'Phú Quốc']
@@ -60,6 +61,8 @@ export default function PlanDestinations() {
   const [selectedPlaces, setSelectedPlaces] = useState<Place[]>([])
   const [dismissedIds, setDismissedIds] = useState<number[]>([])
   const [conflicts, setConflicts] = useState<ConflictWarning[]>([])
+  const [showNearby, setShowNearby] = useState(false)
+  const [selectedNearby, setSelectedNearby] = useState<Place | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   const { data: candidates, isLoading: candidatesLoading } = useQuery({
@@ -70,6 +73,33 @@ export default function PlanDestinations() {
   })
 
   const visibleCandidates = candidates?.filter((p) => !dismissedIds.includes(p.placeId)) ?? []
+
+  const nearbyPlaces: Place[] = useMemo(() => {
+    if (!showNearby || selectedPlaces.length === 0 || !candidates) return []
+    const selectedSet = new Set(selectedPlaces.map((p) => p.placeId))
+    const NEARBY_RADIUS_KM = 5
+    const MAX_NEARBY = 8
+
+    const scored = candidates
+      .filter((c) => !selectedSet.has(c.placeId) && c.lat && c.lng)
+      .map((c) => {
+        const distances = selectedPlaces
+          .filter((sel) => sel.lat && sel.lng)
+          .map((sel) => haversineKm(sel.lat, sel.lng, c.lat!, c.lng!))
+        const minDist = distances.length ? Math.min(...distances) : Infinity
+        return { place: c, minDist }
+      })
+      .filter(({ minDist }) => minDist <= NEARBY_RADIUS_KM)
+      .sort((a, b) => a.minDist - b.minDist)
+      .slice(0, MAX_NEARBY)
+
+    return scored.map(({ place }) => place)
+  }, [showNearby, selectedPlaces, candidates])
+
+  function addNearbyPlace(place: Place) {
+    addPlace(place)
+    setSelectedNearby(null)
+  }
 
   function addPlace(place: Place) {
     const newConflicts: ConflictWarning[] = []
@@ -119,6 +149,7 @@ export default function PlanDestinations() {
           durationDays: parsed.days,
           startDate: parsed.startDate,
           preferredTagNames: parsed.styles,
+          experienceKeywords: parsed.experienceKeywords ?? [],
           budgetTotal: parsed.budget,
           groupType: null,
           mobilityRestrictions: [],
@@ -152,6 +183,7 @@ export default function PlanDestinations() {
       endDate: result.endDate,
       budgetTotal: result.budget,
       preferences: result.styles,
+      experienceKeywords: result.experienceKeywords,
       numPeople: result.numPeople,
     })
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
@@ -183,10 +215,10 @@ export default function PlanDestinations() {
       <header className="h-14 bg-white border-b border-slate-200 flex items-center px-6 shrink-0 z-30">
         <span className="text-xl font-extrabold text-blue-600 tracking-tight mr-10">VOYAGER</span>
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-500">
-          <button className="hover:text-slate-900 transition-colors">Explore</button>
-          <button className="text-blue-600 border-b-2 border-blue-600 pb-0.5">Planner</button>
-          <button className="hover:text-slate-900 transition-colors">Destinations</button>
-          <button className="hover:text-slate-900 transition-colors">Community</button>
+          <button onClick={() => navigate('/')} className="hover:text-slate-900 transition-colors">Khám phá</button>
+          <button className="text-blue-600 border-b-2 border-blue-600 pb-0.5">Lên kế hoạch</button>
+          <button onClick={() => navigate('/destinations')} className="hover:text-slate-900 transition-colors">Điểm đến</button>
+          <button className="hover:text-slate-900 transition-colors">Cộng đồng</button>
         </nav>
         <div className="ml-auto flex items-center gap-3">
           <button className="p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors">
@@ -202,7 +234,7 @@ export default function PlanDestinations() {
             onClick={() => canProceed && navigate('/plan/route', { state: { selectedPlaces, planRequest } })}
             className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-1.5 rounded-lg transition-colors"
           >
-            Save Trip
+            Lưu chuyến đi
           </button>
         </div>
       </header>
@@ -213,9 +245,9 @@ export default function PlanDestinations() {
         <aside className="hidden lg:flex w-52 bg-slate-900 flex-col shrink-0">
           <div className="px-4 pt-5 pb-4 border-b border-slate-700">
             <p className="text-[11px] font-bold text-slate-200 uppercase tracking-widest truncate">
-              {destinationCity ? `TRIP TO ${destinationCity.toUpperCase()}` : 'CHUYẾN ĐI MỚI'}
+              {destinationCity ? `ĐẾN ${destinationCity.toUpperCase()}` : 'CHUYẾN ĐI MỚI'}
             </p>
-            <p className="text-[10px] text-slate-500 mt-0.5 uppercase tracking-widest">Phase: Planning</p>
+            <p className="text-[10px] text-slate-500 mt-0.5 uppercase tracking-widest">Giai đoạn: Lên kế hoạch</p>
           </div>
 
           <nav className="flex-1 px-2 py-3 space-y-0.5">
@@ -224,6 +256,9 @@ export default function PlanDestinations() {
               return (
                 <button
                   key={id}
+                  onClick={id !== 'destinations'
+                    ? () => navigate('/plan/route', { state: { selectedPlaces, planRequest } })
+                    : undefined}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-all ${
                     active
                       ? 'border-l-[3px] border-blue-500 bg-slate-800 text-white pl-[9px]'
@@ -240,7 +275,7 @@ export default function PlanDestinations() {
           <div className="px-2 py-3 border-t border-slate-700">
             <button className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
               <Share2 className="w-3.5 h-3.5" />
-              <span className="text-[11px] font-bold tracking-widest">SHARE PLAN</span>
+              <span className="text-[11px] font-bold tracking-widest">Chia sẻ</span>
             </button>
           </div>
         </aside>
@@ -295,6 +330,81 @@ export default function PlanDestinations() {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* Nearby suggestion toggle button */}
+              {selectedPlaces.length > 0 && candidates && candidates.length > 0 && (
+                <button
+                  onClick={() => {
+                    setShowNearby((prev) => !prev)
+                    if (showNearby) setSelectedNearby(null)
+                  }}
+                  className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border text-xs font-semibold transition-colors ${
+                    showNearby
+                      ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                      : 'bg-white text-amber-600 border-amber-300 hover:bg-amber-50'
+                  }`}
+                >
+                  <span className="text-sm">📍</span>
+                  {showNearby ? 'Ẩn địa điểm lân cận' : 'Đề xuất địa điểm lân cận'}
+                </button>
+              )}
+
+              {/* Nearby suggestions list in sidebar */}
+              {showNearby && (
+                <div>
+                  {nearbyPlaces.length === 0 ? (
+                    <p className="text-center text-xs text-slate-400 py-3">
+                      Không tìm thấy địa điểm nào trong vòng 10km.
+                    </p>
+                  ) : (
+                    <div>
+                      <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-2">
+                        {nearbyPlaces.length} điểm lân cận (&lt;10km)
+                      </p>
+                      <div className="space-y-2">
+                        {nearbyPlaces.map((place) => {
+                          const isAdded = selectedPlaces.some((s) => s.placeId === place.placeId)
+                          const nearestDist = selectedPlaces.reduce((min, sel) => {
+                            if (!sel.lat || !sel.lng) return min
+                            const d = haversineKm(sel.lat, sel.lng, place.lat!, place.lng!)
+                            return d < min ? d : min
+                          }, Infinity)
+                          return (
+                            <div
+                              key={place.placeId}
+                              className="flex items-center gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5"
+                            >
+                              <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 bg-amber-200">
+                                {place.imageUrl ? (
+                                  <img src={place.imageUrl} alt={place.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-sm">🏛️</div>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-slate-900 truncate">{place.name}</p>
+                                <p className="text-[10px] text-amber-700">
+                                  ~{nearestDist === Infinity ? '?' : nearestDist.toFixed(1)}km
+                                </p>
+                              </div>
+                              {isAdded ? (
+                                <span className="text-[10px] font-bold text-slate-400 shrink-0">Đã thêm</span>
+                              ) : (
+                                <button
+                                  onClick={() => addPlace(place)}
+                                  className="shrink-0 text-[10px] font-bold bg-amber-500 text-white px-2.5 py-1 rounded-lg hover:bg-amber-600 transition-colors"
+                                >
+                                  Thêm
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -528,7 +638,12 @@ export default function PlanDestinations() {
 
         {/* Right map */}
         <div className="hidden lg:flex flex-1 relative">
-          <TripMap slots={mapSlots} className="w-full h-full rounded-none" />
+          <TripMap
+            slots={mapSlots}
+            className="w-full h-full rounded-none"
+            nearbyPlaces={nearbyPlaces}
+            onNearbyClick={(place) => setSelectedNearby(place)}
+          />
           {selectedPlaces.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-lg text-center">
@@ -538,6 +653,15 @@ export default function PlanDestinations() {
               </div>
             </div>
           )}
+          <DestinationDetailPanel
+            place={selectedNearby}
+            onClose={() => setSelectedNearby(null)}
+            onAdd={addNearbyPlace}
+            alreadyAdded={
+              selectedNearby !== null &&
+              selectedPlaces.some((p) => p.placeId === selectedNearby.placeId)
+            }
+          />
         </div>
       </div>
     </div>

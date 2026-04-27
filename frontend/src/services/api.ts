@@ -7,6 +7,10 @@ type RetryConfig = InternalAxiosRequestConfig & { _retried?: boolean }
 export const api = axios.create({ baseURL: '/api' })
 export const prefApi = axios.create({ baseURL: '/pref/api' })
 
+export const authApi = {
+  deleteAccount: () => api.delete('/auth/account').then((r) => r.data),
+}
+
 api.interceptors.request.use((cfg) => {
   const token = useAuthStore.getState().idToken
   const user = useAuthStore.getState().user
@@ -16,8 +20,8 @@ api.interceptors.request.use((cfg) => {
 })
 
 prefApi.interceptors.request.use((cfg) => {
-  const user = useAuthStore.getState().user
-  if (user?.uid) cfg.headers['x-user-id'] = user.uid
+  const { appUserId } = useAuthStore.getState()
+  if (appUserId) cfg.headers['x-user-id'] = appUserId
   return cfg
 })
 

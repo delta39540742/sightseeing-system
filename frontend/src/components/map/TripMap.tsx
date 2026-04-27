@@ -1,7 +1,8 @@
-import { useEffect, useRef, useMemo } from 'react'
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet'
+import { useEffect, useRef, useMemo, useState } from 'react'
+import { MapContainer, TileLayer, Marker, Polyline, Popup, CircleMarker, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
-import type { TripSlot } from '@/types'
+import type { TripSlot, Place } from '@/types'
+import { routingService } from '@/services/routingService'
 
 interface TripMapProps {
   slots: TripSlot[]
@@ -12,6 +13,8 @@ interface TripMapProps {
   /** Called when user clicks a marker — passes the slotId */
   onMarkerClick?: (slotId: string) => void
   className?: string
+  nearbyPlaces?: Place[]
+  onNearbyClick?: (place: Place) => void
 }
 
 // ── Focus controller: flies to focused slot ──────────────────────────────────
@@ -40,6 +43,60 @@ function MapClickHandler({ onClick }: { onClick: (lat: number, lng: number) => v
     return () => { map.off('click', handler) }
   }, [map, onClick])
   return null
+}
+
+// ── Routing Polyline ──────────────────────────────────────────────────────────
+function RoutingPolyline({
+  dayIdx,
+  points,
+  isPending,
+}: {
+  dayIdx: number
+  points: { lat: number; lng: number }[]
+  isPending: boolean
+}) {
+  const [routePath, setRoutePath] = useState<[number, number][]>([])
+
+  useEffect(() => {
+    if (points.length < 2) {
+      setRoutePath([])
+      return
+    }
+    let isMounted = true
+
+    // Only re-fetch if coordinate values change
+    const fetchRoute = async () => {
+      try {
+        const res = await routingService.getRoute(points)
+        if (isMounted && res) {
+          // OSRM returns [lng, lat], Leaflet needs [lat, lng]
+          setRoutePath(res.geometry.coordinates.map((c) => [c[1], c[0]]))
+        } else if (isMounted) {
+          // Fallback to straight lines
+          setRoutePath(points.map((p) => [p.lat, p.lng]))
+        }
+      } catch (error) {
+        if (isMounted) setRoutePath(points.map((p) => [p.lat, p.lng]))
+      }
+    }
+
+    fetchRoute()
+    return () => { isMounted = false }
+  }, [JSON.stringify(points)]) // Serialize points to prevent infinite loop
+
+  if (routePath.length < 2) return null
+
+  return (
+    <Polyline
+      positions={routePath}
+      pathOptions={{
+        color: isPending ? '#94a3b8' : DAY_COLORS[dayIdx % DAY_COLORS.length],
+        weight: isPending ? 2 : 3.5,
+        dashArray: isPending ? '8 4' : undefined,
+        opacity: isPending ? 0.45 : 0.8,
+      }}
+    />
+  )
 }
 
 // ── Day accent palette ────────────────────────────────────────────────────────
@@ -104,6 +161,8 @@ export function TripMap({
   onMapClick,
   onMarkerClick,
   className = '',
+  nearbyPlaces,
+  onNearbyClick,
 }: TripMapProps) {
   const displaySlots = pendingSlots ?? slots
   const placedSlots  = displaySlots.filter((s) => s.place)
@@ -138,18 +197,14 @@ export function TripMap({
 
       {/* Route polylines per day */}
       {Array.from(slotsByDay.entries()).map(([dayIdx, daySlots]) => {
-        const coords: [number, number][] = daySlots.map((s) => [s.place!.lat, s.place!.lng])
-        if (coords.length < 2) return null
+        const points = daySlots.map((s) => ({ lat: s.place!.lat, lng: s.place!.lng }))
+        if (points.length < 2) return null
         return (
-          <Polyline
+          <RoutingPolyline
             key={dayIdx}
-            positions={coords}
-            pathOptions={{
-              color:     isPending ? '#94a3b8' : DAY_COLORS[dayIdx % DAY_COLORS.length],
-              weight:    isPending ? 2 : 2.5,
-              dashArray: isPending ? '8 4' : undefined,
-              opacity:   isPending ? 0.45 : 0.7,
-            }}
+            dayIdx={dayIdx}
+            points={points}
+            isPending={isPending}
           />
         )
       })}
@@ -216,6 +271,48 @@ export function TripMap({
           )
         })
       )}
+
+      {/* Nearby suggestion dots */}
+      {nearbyPlaces?.map((place) => (
+        <CircleMarker
+          key={`nearby-${place.placeId}`}
+          center={[place.lat, place.lng]}
+          radius={9}
+          pathOptions={{ fillColor: '#f59e0b', color: '#d97706', weight: 2, fillOpacity: 0.85, opacity: 1 }}
+          eventHandlers={{ click: () => onNearbyClick?.(place) }}
+        >
+          <Tooltip direction="top" offset={[0, -10]} opacity={1}>
+            <div style={{ minWidth: 160, maxWidth: 220 }}>
+              {place.imageUrl && (
+                <img
+                  src={place.imageUrl}
+                  alt={place.name}
+                  style={{ width: '100%', height: 80, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }}
+                />
+              )}
+              <p style={{ fontWeight: 700, fontSize: 13, margin: '0 0 2px' }}>{place.name}</p>
+              {place.rating != null && (
+                <p style={{ fontSize: 11, color: '#92400e', margin: '0 0 4px' }}>⭐ {place.rating.toFixed(1)}</p>
+              )}
+              {place.tags.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                  {place.tags.slice(0, 3).map((t) => (
+                    <span
+                      key={t.tagId}
+                      style={{
+                        background: '#fef3c7', color: '#92400e', borderRadius: 9999,
+                        padding: '1px 7px', fontSize: 10, fontWeight: 600,
+                      }}
+                    >
+                      {t.name}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Tooltip>
+        </CircleMarker>
+      ))}
 
       <FocusController slots={displaySlots} focusedSlotId={focusedSlotId} />
 

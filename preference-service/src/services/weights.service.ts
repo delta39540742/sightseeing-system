@@ -6,14 +6,15 @@ import { WeightsResponse } from '../types';
 // ─── B1: GET weights (Người 4 và 6 gọi) ──────────────────────────────────────
 
 export async function getWeights(userId: string): Promise<WeightsResponse> {
-  // Lấy objective weights hiện tại (đã tính sẵn)
-  const objWeights = await prisma.userObjectiveWeights.findUnique({
-    where: { userId },
-    include: { arm: true },
-  });
+  const [objWeights, preference] = await Promise.all([
+    prisma.userObjectiveWeights.findUnique({
+      where: { userId },
+      include: { arm: true },
+    }),
+    prisma.userPreference.findUnique({ where: { userId } }),
+  ]);
 
   if (!objWeights) {
-    // User chưa làm survey → trả về default balanced weights
     const defaultArm = await prisma.banditArm.findFirst({ where: { name: 'balanced' } });
     if (!defaultArm) throw new Error('bandit_arm table chưa được seed');
 
@@ -29,6 +30,12 @@ export async function getWeights(userId: string): Promise<WeightsResponse> {
       softConstraints: [],
       currentArmId: defaultArm.armId,
       armName: defaultArm.name,
+      preferenceVector: preference?.preferenceVector ?? [],
+      preferredTagIds: preference?.preferredTagIds ?? [],
+      pace: preference?.pace ?? 0.5,
+      budgetPerDayMin: preference?.budgetPerDayMin ?? 0,
+      budgetPerDayMax: preference?.budgetPerDayMax ?? 0,
+      mobilityRestrictions: preference?.mobilityRestrictions ?? [],
     };
   }
 
@@ -44,6 +51,12 @@ export async function getWeights(userId: string): Promise<WeightsResponse> {
     softConstraints: (objWeights.softConstraints as any[]) ?? [],
     currentArmId: objWeights.currentArmId,
     armName: objWeights.arm.name,
+    preferenceVector: preference?.preferenceVector ?? [],
+    preferredTagIds: preference?.preferredTagIds ?? [],
+    pace: preference?.pace ?? 0.5,
+    budgetPerDayMin: preference?.budgetPerDayMin ?? 0,
+    budgetPerDayMax: preference?.budgetPerDayMax ?? 0,
+    mobilityRestrictions: preference?.mobilityRestrictions ?? [],
   };
 }
 
@@ -99,13 +112,11 @@ export async function processBanditReward(
 ): Promise<void> {
   const reward = calcReward(eventType);
 
-  // Update pulls và total_reward cho arm này
-  await prisma.userArmStat.update({
+  // Update pulls và total_reward cho arm này (upsert để an toàn nếu record chưa có)
+  await prisma.userArmStat.upsert({
     where: { userId_armId: { userId, armId } },
-    data: {
-      pulls:       { increment: 1 },
-      totalReward: { increment: reward },
-    },
+    create: { userId, armId, pulls: 1, totalReward: reward },
+    update: { pulls: { increment: 1 }, totalReward: { increment: reward } },
   });
 
   // Sau mỗi reward → chạy UCB1 để chọn arm tốt nhất cho lần sau

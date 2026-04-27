@@ -53,6 +53,7 @@ export interface Trip {
   slots: TripSlot[]
   createdAt: string
   updatedAt: string
+  deletedAt?: string | null
 }
 
 export interface PlanRequest {
@@ -63,10 +64,13 @@ export interface PlanRequest {
   startLat?: number
   startLng?: number
   preferences?: string[]
+  experienceKeywords?: string[]
   anchorPlaceIds?: number[]
   orderedPlaceIds?: number[]
   mustVisitPlaceIds?: number[]
   numPeople?: number
+  additionalNotes?: string
+  strictMode?: boolean
 }
 
 export interface PlaceOrderItem {
@@ -87,6 +91,24 @@ export interface UserPreference {
   travelStyles?: string[]
   transportMode?: string
   maxWalkingKm?: number
+}
+
+// Khớp với SurveyPayload của preference-service (src/types/index.ts).
+export type SurveyPrimaryPurpose =
+  | 'nghi_duong' | 'van_hoa' | 'am_thuc' | 'phieu_luu' | 'chup_anh' | 'tam_linh'
+export type SurveyDailyScheduleType = 'early_bird' | 'normal' | 'night_owl'
+export type SurveyGroupType = 'solo' | 'couple' | 'family' | 'friends' | 'business'
+
+export interface SurveyPayload {
+  primaryPurpose: SurveyPrimaryPurpose
+  preferredTagIds: number[]
+  pace: number
+  dailyScheduleType: SurveyDailyScheduleType
+  foodPreferences: string[]
+  budgetPerDayMin: number
+  budgetPerDayMax: number
+  groupType: SurveyGroupType
+  mobilityRestrictions: string[]
 }
 
 export interface Toast {
@@ -116,6 +138,7 @@ export interface ParsedNLPResult {
   days: number
   budget: number
   styles: string[]
+  experienceKeywords?: string[]
   startDate: string
   endDate: string
   numPeople: number
@@ -126,6 +149,7 @@ export interface NluSlots {
   durationDays: number | null
   startDate: string | null
   preferredTagNames: string[]
+  experienceKeywords: string[]
   budgetTotal: number | null
   groupType: 'solo' | 'couple' | 'family' | 'friends' | 'business' | null
   mobilityRestrictions: string[]

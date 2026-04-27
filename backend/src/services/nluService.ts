@@ -9,6 +9,7 @@ export interface NluSlots {
   durationDays: number | null;
   startDate: string | null;
   preferredTagNames: string[];
+  experienceKeywords: string[];
   budgetTotal: number | null;
   groupType: GroupType | null;
   mobilityRestrictions: string[];
@@ -87,6 +88,9 @@ function normalise(raw: Record<string, unknown>): NluParseResponse {
     durationDays: numberOrNull(rawSlots.durationDays),
     startDate: stringOrNull(rawSlots.startDate),
     preferredTagNames: stringArray(rawSlots.preferredTagNames),
+    experienceKeywords: stringArray(rawSlots.experienceKeywords)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
     budgetTotal: numberOrNull(rawSlots.budgetTotal),
     groupType: asGroupType(rawSlots.groupType),
     mobilityRestrictions: stringArray(rawSlots.mobilityRestrictions),

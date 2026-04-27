@@ -1,81 +1,84 @@
-import { Router, Request, Response } from 'express';
+import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../middleware/auth';
-import { getSurveyStatus, createSurvey, updateSurvey } from '../services/survey.service';
+import { getSurveyStatus, getSurvey, createSurvey, updateSurvey } from '../services/survey.service';
 
-export const surveyRouter = Router();
-
-// Tất cả routes đều cần auth
-surveyRouter.use(requireAuth);
-
-// ─── A1: GET /api/preferences/survey/status ───────────────────────────────────
-surveyRouter.get('/status', async (req: Request, res: Response) => {
-  try {
-    const userId = res.locals.userId as string;
-    const result = await getSurveyStatus(userId);
-    res.json(result);
-  } catch (err) {
-    console.error('[GET /survey/status]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ─── A2: POST /api/preferences/survey ────────────────────────────────────────
-surveyRouter.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = res.locals.userId as string;
-    const payload = req.body;
-
-    // Validate required fields
-    const required = [
-      'primaryPurpose', 'preferredTagIds', 'pace',
-      'dailyScheduleType', 'foodPreferences',
-      'budgetPerDayMin', 'budgetPerDayMax',
-      'groupType', 'mobilityRestrictions',
-    ];
-    const missing = required.filter((f) => payload[f] === undefined);
-    if (missing.length > 0) {
-      res.status(400).json({
-        error: 'Bad Request',
-        message: `Thiếu fields: ${missing.join(', ')}`,
-      });
-      return;
+export async function surveyPlugin(app: FastifyInstance): Promise<void> {
+  // ─── A1: GET /status ──────────────────────────────────────────────────────
+  app.get('/status', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const result = await getSurveyStatus(userId);
+      return reply.send(result);
+    } catch (err) {
+      request.log.error(err, '[GET /survey/status]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
+  });
 
-    await createSurvey(userId, payload);
-    res.status(201).json({ message: 'Survey saved successfully' });
-  } catch (err: any) {
-    if (err.message?.includes('tối đa') || err.message?.includes('phải')) {
-      res.status(400).json({ error: 'Bad Request', message: err.message });
-      return;
+  // ─── A1b: GET / — full survey để FE pre-fill wizard ───────────────────────
+  app.get('/', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const survey = await getSurvey(userId);
+      return reply.send({ survey });
+    } catch (err) {
+      request.log.error(err, '[GET /survey]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
-    console.error('[POST /survey]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+  });
 
-// ─── A3: PATCH /api/preferences/survey ───────────────────────────────────────
-surveyRouter.patch('/', async (req: Request, res: Response) => {
-  try {
-    const userId = res.locals.userId as string;
-    const payload = req.body;
+  // ─── A2: POST / ───────────────────────────────────────────────────────────
+  app.post('/', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const payload = request.body as any;
 
-    if (Object.keys(payload).length === 0) {
-      res.status(400).json({ error: 'Bad Request', message: 'Body không được rỗng' });
-      return;
-    }
+      const required = [
+        'primaryPurpose', 'preferredTagIds', 'pace',
+        'dailyScheduleType', 'foodPreferences',
+        'budgetPerDayMin', 'budgetPerDayMax',
+        'groupType', 'mobilityRestrictions',
+      ];
+      const missing = required.filter((f) => payload[f] === undefined);
+      if (missing.length > 0) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `Thiếu fields: ${missing.join(', ')}`,
+        });
+      }
 
-    await updateSurvey(userId, payload);
-    res.json({ message: 'Survey updated successfully' });
-  } catch (err: any) {
-    if (err.message?.includes('chưa làm survey')) {
-      res.status(404).json({ error: 'Not Found', message: err.message });
-      return;
+      await createSurvey(userId, payload);
+      return reply.status(201).send({ message: 'Survey saved successfully' });
+    } catch (err: any) {
+      if (err.message?.includes('tối đa') || err.message?.includes('phải') || err.message?.includes('trùng lặp')) {
+        return reply.status(400).send({ error: 'Bad Request', message: err.message });
+      }
+      request.log.error(err, '[POST /survey]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
-    if (err.message?.includes('tối đa') || err.message?.includes('phải')) {
-      res.status(400).json({ error: 'Bad Request', message: err.message });
-      return;
+  });
+
+  // ─── A3: PATCH / ──────────────────────────────────────────────────────────
+  app.patch('/', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const payload = request.body as any;
+
+      if (!payload || Object.keys(payload).length === 0) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Body không được rỗng' });
+      }
+
+      await updateSurvey(userId, payload);
+      return reply.send({ message: 'Survey updated successfully' });
+    } catch (err: any) {
+      if (err.message?.includes('chưa làm survey')) {
+        return reply.status(404).send({ error: 'Not Found', message: err.message });
+      }
+      if (err.message?.includes('tối đa') || err.message?.includes('phải')) {
+        return reply.status(400).send({ error: 'Bad Request', message: err.message });
+      }
+      request.log.error(err, '[PATCH /survey]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
-    console.error('[PATCH /survey]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+  });
+}

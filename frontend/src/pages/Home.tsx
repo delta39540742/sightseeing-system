@@ -85,9 +85,9 @@ export default function Home() {
 
           <div className="hidden md:flex items-center gap-8">
             <span className="text-blue-600 border-b-2 border-blue-600 font-bold pb-1">Home</span>
-            <button className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Điểm đến</button>
-            <button className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Sự kiện</button>
-            <button className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Giới thiệu</button>
+            <button onClick={() => navigate('/destinations')} className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Điểm đến</button>
+            <button onClick={() => navigate('/events')} className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Sự kiện</button>
+            <button onClick={() => navigate('/about')} className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">Giới thiệu</button>
             <Link to="/trips" className="text-slate-700 font-semibold hover:text-blue-600 transition-colors">
               Chuyến đi của tôi
             </Link>
@@ -224,7 +224,7 @@ export default function Home() {
               <h2 className="text-3xl font-bold text-slate-900 mb-2">Sự kiện nổi bật</h2>
               <p className="text-slate-500 text-lg">Hòa mình vào không gian văn hóa truyền thống</p>
             </div>
-            <button className="text-blue-600 font-bold flex items-center gap-1 hover:underline">
+            <button onClick={() => navigate('/events')} className="text-blue-600 font-bold flex items-center gap-1 hover:underline">
               Xem tất cả <ArrowRight className="w-4 h-4" />
             </button>
           </div>

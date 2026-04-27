@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '../server';
+import { prisma } from '../lib/prisma';
 import { InternalEventBus } from '../events/eventBus';
+
+// Trả về place với place_id dạng number (thay vì string từ BigInt.toJSON) để
+// FE không cần xử lý hai dạng khác nhau giữa /api/places và /api/trips.
+function serializePlace(p: any) {
+  if (!p) return p;
+  return { ...p, place_id: Number(p.place_id) };
+}
 
 export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
   // GET /api/places
@@ -32,7 +39,7 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
 
       return reply.status(200).send({
         success: true,
-        data: places,
+        data: places.map(serializePlace),
         meta: {
           total,
           page,
@@ -41,7 +48,7 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
         },
       });
     } catch (error) {
-      console.error('Error fetching places:', error);
+      request.log.error({ err: error }, 'Error fetching places');
       return reply.status(500).send({ success: false, error: 'Internal server error' });
     }
   });
@@ -65,9 +72,9 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ success: false, error: 'Place not found' });
       }
 
-      return reply.status(200).send({ success: true, data: place });
+      return reply.status(200).send({ success: true, data: serializePlace(place) });
     } catch (error) {
-      console.error('Error fetching place details:', error);
+      request.log.error({ err: error }, 'Error fetching place details');
       return reply.status(500).send({ success: false, error: 'Internal server error' });
     }
   });

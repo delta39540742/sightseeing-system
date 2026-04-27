@@ -127,7 +127,9 @@ function makeCtx() {
 
 function makeDeps(): ReplanDeps {
   const pool = {
-    query: vi.fn(),
+    // Default: trả về rows rỗng cho mọi pool.query không được mock cụ thể
+    // (ví dụ fetchCurrentArmId trong accept/reject handlers).
+    query: vi.fn().mockResolvedValue({ rows: [] }),
     connect: vi.fn(),
   } as unknown as ReplanDeps['pool'];
 
@@ -149,11 +151,14 @@ function makeDeps(): ReplanDeps {
     search: vi.fn().mockReturnValue(makeBeamNode()),
   } as unknown as ReplanDeps['beamSearch'];
 
+  // traceBuilder giờ là factory tạo instance mới mỗi request (B1 fix).
   const traceBuilder = {
-    reset: vi.fn(),
-    begin: vi.fn(),
-    record: vi.fn(),
-    finalize: vi.fn().mockReturnValue({ steps: [] }),
+    create: vi.fn(() => ({
+      begin: vi.fn(),
+      record: vi.fn(),
+      finalize: vi.fn().mockReturnValue({ steps: [] }),
+      reset: vi.fn(),
+    })),
   } as unknown as ReplanDeps['traceBuilder'];
 
   const proposalStore = {
@@ -374,11 +379,13 @@ describe('POST /api/trips/:tripId/replan/:proposalId/accept', () => {
     };
     (deps.pool.connect as ReturnType<typeof vi.fn>).mockResolvedValue(mockClient);
 
-    // fetchUpdatedTrip needs pool.query (parallel queries)
+    // Thứ tự gọi pool.query trong acceptHandler:
+    //  1) fetchCurrentArmId  → SELECT current_arm_id …
+    //  2) fetchUpdatedTrip   → SELECT * FROM trip   (Promise.all)
+    //  3) fetchUpdatedTrip   → SELECT … FROM trip_slot (Promise.all)
     (deps.pool.query as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({
-        rows: [makeTripRow().rows[0]],
-      })
+      .mockResolvedValueOnce({ rows: [{ current_arm_id: 1 }] })
+      .mockResolvedValueOnce({ rows: [makeTripRow().rows[0]] })
       .mockResolvedValueOnce({ rows: [] }); // slots query
   }
 

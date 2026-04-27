@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
     "seed:places": "ts-node --project tsconfig.seed.json src/scripts/seed-places.ts",
-    "seed:fake": "ts-node --project tsconfig.seed.json src/scripts/seed-fake.ts"
+    "seed:fake": "ts-node --project tsconfig.seed.json src/scripts/seed-fake.ts",
+    "backfill:embeddings": "ts-node --project tsconfig.seed.json src/scripts/backfill-embeddings.ts"
   },
   "keywords": [],
   "author": "",
@@ -20,8 +21,10 @@
   "dependencies": {
     "@fastify/cors": "^10.1.0",
     "@fastify/multipart": "^10.0.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
+    "@xenova/transformers": "^2.17.2",
     "axios": "^1.15.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",

@@ -60,8 +60,11 @@ export interface ReplanDeps {
   scorer: ObjectiveScorer;
   /** Pre-configured BeamSearch instance (carries evolver, operators, scorer). */
   beamSearch: BeamSearch;
-  /** Stateful causal-trace builder (one instance per request). */
-  traceBuilder: CausalTraceBuilder;
+  /**
+   * Factory tạo CausalTraceBuilder mới cho mỗi request. Builder có state mutable
+   * (steps/tripId/startTime) nên không thể chia sẻ giữa các request đồng thời.
+   */
+  traceBuilder: { create(): CausalTraceBuilder };
   /** Persists proposals to DB and manages status transitions. */
   proposalStore: ProposalStore;
   /** Optional event-bus publisher; defaults to a no-op. */
@@ -247,7 +250,15 @@ export async function runAcceptTransaction(
       [proposal.proposalId],
     );
 
-    // 5. Resolve triggering event
+    // 5. Cập nhật objective_score của trip để phản ánh plan mới
+    await client.query(
+      `UPDATE trip
+          SET objective_score = $1, updated_at = NOW()
+        WHERE trip_id = $2`,
+      [proposal.scoreAfter, proposal.tripId],
+    );
+
+    // 6. Resolve triggering event
     if (proposal.triggeredByEventId) {
       await client.query(
         `UPDATE trip_event
@@ -267,10 +278,38 @@ export async function runAcceptTransaction(
 }
 
 // ---------------------------------------------------------------------------
-// Reusable validation helper
+// Reusable helpers
 // ---------------------------------------------------------------------------
 
 const VALID_REPLAN_STATUSES: TripStatus[] = ['active', 'confirmed'];
+
+/** Lấy currentArmId từ user_objective_weights để gắn vào event payload. */
+async function fetchCurrentArmId(pool: Pool, userId: string): Promise<number | null> {
+  const r = await pool.query<{ current_arm_id: number }>(
+    'SELECT current_arm_id FROM user_objective_weights WHERE user_id = $1',
+    [userId],
+  );
+  return r.rows[0]?.current_arm_id ?? null;
+}
+
+/**
+ * Gửi reward tới preference-service (fire-and-forget, không block response).
+ * Preference-service cập nhật bandit arm stats sau mỗi replan decision.
+ */
+function notifyPreferenceReward(payload: {
+  userId: string;
+  tripId: string;
+  armId: number;
+  interactionType: string;
+  placeId?: number;
+}): void {
+  const prefUrl = process.env.PREFERENCE_SERVICE_URL ?? 'http://localhost:3001';
+  fetch(`${prefUrl}/api/preferences/internal/reward`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((err) => console.error('[preference-service reward]', err));
+}
 
 /** Returns error reply or null when proposal is valid to act upon. */
 async function validateProposal(
@@ -409,6 +448,8 @@ export function makeReplanHandler(deps: ReplanDeps) {
     const oldScore = deps.scorer.score(oldPlan, oldStates, ctx.weights, ctx);
 
     // ── 6. Run beam search (catch crash → fallback) ────────────────────────
+    // Tạo trace builder cục bộ cho request này — tránh race condition.
+    const traceBuilder = deps.traceBuilder.create();
     let isTimeout = false;
     let newPlan: TripSlot[];
     let newScore: number;
@@ -419,10 +460,9 @@ export function makeReplanHandler(deps: ReplanDeps) {
       newScore = bestNode.score;
 
       // Build causal trace from mutation history
-      deps.traceBuilder.reset();
-      deps.traceBuilder.begin(tripId, triggerEvent as TripEvent);
+      traceBuilder.begin(tripId, triggerEvent as TripEvent);
       bestNode.mutationHistory.forEach((m, i) => {
-        deps.traceBuilder.record({
+        traceBuilder.record({
           stepIndex: i,
           reason: m.description,
           affectedSlotId: m.affectedSlotIds[0] ?? null,
@@ -438,11 +478,10 @@ export function makeReplanHandler(deps: ReplanDeps) {
       isTimeout = true;
       newPlan = oldPlan;
       newScore = oldScore;
-      deps.traceBuilder.reset();
-      deps.traceBuilder.begin(tripId, triggerEvent as TripEvent);
+      traceBuilder.begin(tripId, triggerEvent as TripEvent);
     }
 
-    const causalTrace = deps.traceBuilder.finalize();
+    const causalTrace = traceBuilder.finalize();
 
     // ── 7. Build and persist proposal ─────────────────────────────────────
     const now = new Date();
@@ -503,13 +542,22 @@ export function makeAcceptHandler(deps: ReplanDeps) {
     // Transaction: slots + proposal + event
     await runAcceptTransaction(deps.pool, proposal);
 
+    // Lấy armId của user để gắn vào event và cập nhật bandit
+    const armId = await fetchCurrentArmId(deps.pool, userId);
+
     // Publish
     deps.publish?.('trip.replan.accepted', {
       userId,
       tripId,
       proposalId,
+      armId,
       scoreDelta: proposal.scoreAfter - proposal.scoreBefore,
     });
+
+    // Cập nhật bandit reward (fire-and-forget)
+    if (armId != null) {
+      notifyPreferenceReward({ userId, tripId, armId, interactionType: 'replan_accepted' });
+    }
 
     // Load and return the refreshed trip
     const updatedTrip = await fetchUpdatedTrip(deps.pool, tripId);
@@ -541,12 +589,20 @@ export function makeRejectHandler(deps: ReplanDeps) {
 
     await deps.proposalStore.updateStatus(proposalId, 'rejected', userId);
 
+    const armId = await fetchCurrentArmId(deps.pool, userId);
+
     deps.publish?.('trip.replan.rejected', {
       userId,
       tripId,
       proposalId,
+      armId,
       reason: reason ?? null,
     });
+
+    // Cập nhật bandit reward (fire-and-forget)
+    if (armId != null) {
+      notifyPreferenceReward({ userId, tripId, armId, interactionType: 'replan_rejected' });
+    }
 
     return reply.status(204).send();
   };

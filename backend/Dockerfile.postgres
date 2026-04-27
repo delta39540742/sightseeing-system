@@ -1,0 +1,14 @@
+# Postgres 15 + PostGIS 3.3 (giữ cột geom) + pgvector (semantic embedding).
+# Cài pgvector qua prebuilt package từ PGDG (apt) — nhanh hơn compile from source,
+# không cần build-essential / git.
+FROM postgis/postgis:15-3.3
+
+# Image base này 2 tuổi nên cần refresh GPG keys + CA trước khi apt-get update,
+# tránh lỗi "NO_PUBKEY" / "expired certificate".
+RUN apt-get update --allow-releaseinfo-change \
+    || (apt-get install -y --no-install-recommends ca-certificates gnupg && \
+        apt-key adv --refresh-keys --keyserver keyserver.ubuntu.com && \
+        apt-get update --allow-releaseinfo-change)
+
+RUN apt-get install -y --no-install-recommends postgresql-15-pgvector \
+    && rm -rf /var/lib/apt/lists/*

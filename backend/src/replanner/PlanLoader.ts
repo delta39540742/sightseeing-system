@@ -166,7 +166,15 @@ export class PlanLoader {
       [userId],
     );
     const row = res.rows[0];
-    if (!row) throw new Error(`User preference not found for userId ${userId}`);
+    // Fallback giống nhánh này trong load(): user mới chưa setup preference
+    // không nên làm vỡ replan pipeline.
+    if (!row) {
+      return {
+        preferenceVector: new Array(10).fill(0.1),
+        pace: 0.5,
+        mobilityRestrictions: [],
+      };
+    }
     return {
       preferenceVector:    row.preference_vector,
       pace:                row.pace,

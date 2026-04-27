@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Fastify, {FastifyError} from 'fastify';
 import cors from '@fastify/cors';
-import pg from 'pg';
+import rateLimit from '@fastify/rate-limit';
 
 import { placesPlugin } from './routes/places';
 import { tripsPlugin } from './routes/trips';
@@ -22,6 +22,8 @@ import {
   CausalTraceBuilder,
   ProposalStore,
 } from './replanner/index';
+import { pool } from './lib/prisma';
+import { warmUpEmbedding } from './services/embeddingService';
 
 // Fix BigInt JSON serialization globally
 (BigInt.prototype as any).toJSON = function () {
@@ -48,10 +50,9 @@ const fastify = Fastify({
     : true,
 });
 
+// Re-export prisma giữ nguyên để các route đang import từ '../server' không vỡ
+// (sẽ chuyển dần sang import từ '../lib/prisma' cho rõ ràng).
 export { prisma } from './lib/prisma';
-
-const connectionString = process.env.DATABASE_URL!;
-const pool = new pg.Pool({ connectionString });
 
 // ANSI color helpers (chỉ dùng khi isDev)
 const c = {
@@ -85,13 +86,15 @@ async function start() {
   const operators = new MutationOperators(evolver);
   const scorer = new ObjectiveScorer(evolver);
   const beamSearch = new BeamSearch(evolver, operators, scorer);
+  // CausalTraceBuilder có state mutable (steps/tripId/startTime) — phải tạo
+  // mới mỗi request để tránh race condition giữa các replan đồng thời.
   const replanDeps = {
     pool,
     planLoader: new PlanLoader(pool),
     evolver,
     scorer,
     beamSearch,
-    traceBuilder: new CausalTraceBuilder(),
+    traceBuilder: { create: () => new CausalTraceBuilder() },
     proposalStore: new ProposalStore(pool),
   };
 
@@ -120,6 +123,11 @@ async function start() {
   });
 
   await fastify.register(cors);
+  await fastify.register(rateLimit, {
+    max: 100,
+    timeWindow: '1 minute',
+    allowList: (req) => req.url === '/health',
+  });
   await fastify.register(placesPlugin, { prefix: '/api/places' });
   await fastify.register(tripsPlugin, { prefix: '/api/trips' });
   await fastify.register(internalEventsPlugin, { prefix: '/api/internal/events' });
@@ -151,6 +159,8 @@ async function start() {
         `${c.gray}   /health  /api/trips  /api/plan/generate  ...${c.reset}\n`
       );
     }
+    // Tải model embedding ở background để request đầu không bị lag ~30s.
+    void warmUpEmbedding();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

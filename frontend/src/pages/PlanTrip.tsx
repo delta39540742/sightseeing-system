@@ -50,7 +50,7 @@ export default function PlanTrip() {
     setAnchorIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
 
   const candidatesReq: PlanRequest | null = parsed
-    ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles }
+    ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles, experienceKeywords: parsed.experienceKeywords }
     : null
 
   const { data: candidates, isFetching: candidatesLoading, isError: candidatesError } = useQuery({
@@ -138,6 +138,7 @@ export default function PlanTrip() {
       endDate: result.endDate,
       budgetTotal: result.budget,
       preferences: result.styles,
+      experienceKeywords: result.experienceKeywords,
       numPeople: result.numPeople,
       startLat: startPoint?.[0],
       startLng: startPoint?.[1],

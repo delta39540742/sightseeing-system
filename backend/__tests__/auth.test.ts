@@ -13,8 +13,7 @@ vi.mock('../src/config/firebase', () => ({
 vi.mock('../src/lib/prisma', () => ({
   prisma: {
     app_user: {
-      findUnique: vi.fn(),
-      create: vi.fn(),
+      upsert: vi.fn(),
     },
   },
 }));
@@ -60,14 +59,13 @@ describe('POST /api/auth/login', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('creates new user and returns 200', async () => {
+  it('upserts user on first login and returns 200', async () => {
     (auth!.verifyIdToken as any).mockResolvedValue({
       uid: 'uid-123',
       email: 'test@example.com',
       name: 'Test User',
     });
-    (prisma.app_user.findUnique as any).mockResolvedValue(null);
-    (prisma.app_user.create as any).mockResolvedValue({
+    (prisma.app_user.upsert as any).mockResolvedValue({
       firebase_uid: 'uid-123',
       email: 'test@example.com',
       display_name: 'Test User',
@@ -81,13 +79,16 @@ describe('POST /api/auth/login', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ success: true });
-    expect(prisma.app_user.create).toHaveBeenCalled();
+    expect(prisma.app_user.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { firebase_uid: 'uid-123' },
+      create: expect.objectContaining({ firebase_uid: 'uid-123' }),
+    }));
   });
 
-  it('returns existing user without creating', async () => {
+  it('upserts existing user without throwing on duplicate', async () => {
     const existing = { firebase_uid: 'uid-123', email: 'test@example.com', display_name: 'Test' };
     (auth!.verifyIdToken as any).mockResolvedValue({ uid: 'uid-123', email: 'test@example.com' });
-    (prisma.app_user.findUnique as any).mockResolvedValue(existing);
+    (prisma.app_user.upsert as any).mockResolvedValue(existing);
 
     const res = await app.inject({
       method: 'POST',
@@ -96,6 +97,6 @@ describe('POST /api/auth/login', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(prisma.app_user.create).not.toHaveBeenCalled();
+    expect(res.json()).toMatchObject({ success: true, data: existing });
   });
 });

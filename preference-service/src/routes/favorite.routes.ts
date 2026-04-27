@@ -1,45 +1,41 @@
-import { Router, Request, Response } from 'express';
+import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../middleware/auth';
 import { addFavorite, removeFavorite } from '../services/interaction.service';
 
-export const favoriteRouter = Router();
+export async function favoritePlugin(app: FastifyInstance): Promise<void> {
+  // ─── C1: POST / ───────────────────────────────────────────────────────────
+  app.post('/', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const { placeId, tripId } = request.body as any;
 
-favoriteRouter.use(requireAuth);
+      if (!placeId || typeof placeId !== 'number') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'placeId (number) là bắt buộc' });
+      }
 
-// ─── C1: POST /api/preferences/favorite ──────────────────────────────────────
-favoriteRouter.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = res.locals.userId as string;
-    const { placeId, tripId } = req.body;
-
-    if (!placeId || typeof placeId !== 'number') {
-      res.status(400).json({ error: 'Bad Request', message: 'placeId (number) là bắt buộc' });
-      return;
+      const result = await addFavorite(userId, placeId, tripId);
+      return reply.status(201).send(result);
+    } catch (err) {
+      request.log.error(err, '[POST /favorite]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
+  });
 
-    const result = await addFavorite(userId, placeId, tripId);
-    res.status(201).json(result);
-  } catch (err) {
-    console.error('[POST /favorite]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+  // ─── C2: DELETE /:placeId ─────────────────────────────────────────────────
+  app.delete('/:placeId', { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const userId = request.headers['x-user-id'] as string;
+      const placeId = parseInt((request.params as any).placeId);
 
-// ─── C2: DELETE /api/preferences/favorite/:placeId ───────────────────────────
-favoriteRouter.delete('/:placeId', async (req: Request, res: Response) => {
-  try {
-    const userId = res.locals.userId as string;
-    const placeId = parseInt(req.params.placeId);
+      if (isNaN(placeId)) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'placeId không hợp lệ' });
+      }
 
-    if (isNaN(placeId)) {
-      res.status(400).json({ error: 'Bad Request', message: 'placeId không hợp lệ' });
-      return;
+      await removeFavorite(userId, placeId);
+      return reply.status(204).send();
+    } catch (err) {
+      request.log.error(err, '[DELETE /favorite]');
+      return reply.status(500).send({ error: 'Internal server error' });
     }
-
-    await removeFavorite(userId, placeId);
-    res.status(204).send();
-  } catch (err) {
-    console.error('[DELETE /favorite]', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+  });
+}

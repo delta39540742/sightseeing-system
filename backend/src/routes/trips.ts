@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '../server';
+import { prisma } from '../lib/prisma';
 import { InternalEventBus } from '../events/eventBus';
 import { verifyToken } from '../middlewares/authMiddleware';
+import { sendReward, getCurrentArmId } from '../lib/preferenceClient';
 
 // ─── Serializers ────────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ function serializeTrip(t: any) {
     objectiveScore: t.objective_score ?? null,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
+    deletedAt: t.deleted_at ?? null,
     slots: (t.trip_slot ?? []).map(serializeSlot),
   };
 }
@@ -83,7 +85,7 @@ const slotInclude = {
 
 export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
 
-  // GET /api/trips — danh sách trips của user hiện tại
+  // GET /api/trips — danh sách trips của user (loại trừ đã xóa mềm)
   fastify.get('/', { preHandler: verifyToken }, async (request, reply) => {
     try {
       const appUser = await prisma.app_user.findUnique({
@@ -92,9 +94,30 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
       if (!appUser) return reply.status(401).send({ error: 'User not found' });
 
       const trips = await prisma.trip.findMany({
-        where: { user_id: appUser.user_id },
+        where: { user_id: appUser.user_id, deleted_at: null },
         include: { trip_slot: slotInclude },
         orderBy: { created_at: 'desc' },
+      });
+
+      return reply.send(trips.map(serializeTrip));
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  // GET /api/trips/deleted — danh sách trips đã xóa mềm
+  fastify.get('/deleted', { preHandler: verifyToken }, async (request, reply) => {
+    try {
+      const appUser = await prisma.app_user.findUnique({
+        where: { firebase_uid: request.user!.uid },
+      });
+      if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+      const trips = await prisma.trip.findMany({
+        where: { user_id: appUser.user_id, deleted_at: { not: null } },
+        include: { trip_slot: slotInclude },
+        orderBy: { deleted_at: 'desc' },
       });
 
       return reply.send(trips.map(serializeTrip));
@@ -116,7 +139,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
         if (!appUser) return reply.status(401).send({ error: 'User not found' });
 
         const trip = await prisma.trip.findFirst({
-          where: { trip_id: request.params.tripId, user_id: appUser.user_id },
+          where: { trip_id: request.params.tripId, user_id: appUser.user_id, deleted_at: null },
           include: { trip_slot: slotInclude },
         });
         if (!trip) return reply.status(404).send({ error: 'Trip not found' });
@@ -130,34 +153,56 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
   );
 
   // POST /api/trips
-  fastify.post('/', async (request, reply) => {
+  const createTripBodySchema = {
+    type: 'object',
+    required: ['destination_city', 'start_date', 'end_date', 'budget_total'],
+    properties: {
+      destination_city: { type: 'string', minLength: 1, maxLength: 100 },
+      start_date:       { type: 'string' },
+      end_date:         { type: 'string' },
+      budget_total:     { type: ['number', 'string'] },
+      raw_prompt:       { type: 'string', maxLength: 2000 },
+    },
+    additionalProperties: false,
+  } as const;
+
+  fastify.post('/', { preHandler: verifyToken, schema: { body: createTripBodySchema } }, async (request, reply) => {
     try {
-      const { user_id, destination_city, start_date, end_date, budget_total, raw_prompt } =
+      const { destination_city, start_date, end_date, budget_total, raw_prompt } =
         request.body as Record<string, any>;
 
-      if (!user_id || !destination_city || !start_date || !end_date || budget_total === undefined) {
+      if (!destination_city || !start_date || !end_date || budget_total === undefined) {
         return reply.status(400).send({ success: false, error: 'Missing required configuration fields.' });
       }
 
-      // user_id từ frontend là Firebase UID — cần map sang UUID của app_user
+      const startD = new Date(start_date);
+      const endD   = new Date(end_date);
+      if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
+        return reply.status(400).send({ success: false, error: 'start_date hoặc end_date không hợp lệ' });
+      }
+      if (endD.getTime() < startD.getTime()) {
+        return reply.status(400).send({ success: false, error: 'end_date phải >= start_date' });
+      }
+
+      // user lấy từ Firebase token (đã verify), bỏ qua user_id trong body
       const appUser = await prisma.app_user.findUnique({
-        where: { firebase_uid: user_id },
+        where: { firebase_uid: request.user!.uid },
       });
-      if (!appUser) return reply.status(404).send({ success: false, error: 'User not found' });
+      if (!appUser) return reply.status(401).send({ success: false, error: 'User not found' });
 
       const newTrip = await prisma.trip.create({
         data: {
           user_id: appUser.user_id,
           destination_city,
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
+          start_date: startD,
+          end_date:   endD,
           budget_total: parseInt(budget_total),
           raw_prompt: raw_prompt || null,
           status: 'draft',
         },
       });
 
-      InternalEventBus.publish('trip.created', { trip_id: newTrip.trip_id, user_id });
+      InternalEventBus.publish('trip.created', { trip_id: newTrip.trip_id, user_id: request.user!.uid });
 
       return reply.status(201).send({
         success: true,
@@ -209,9 +254,68 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
     },
   );
 
-  // DELETE /api/trips/:tripId
+  // DELETE /api/trips/:tripId — xóa mềm (chuyển vào thùng rác)
   fastify.delete<{ Params: { tripId: string } }>(
     '/:tripId',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const existing = await prisma.trip.findFirst({
+          where: { trip_id: request.params.tripId, user_id: appUser.user_id, deleted_at: null },
+        });
+        if (!existing) return reply.status(404).send({ error: 'Trip not found' });
+
+        await prisma.trip.update({
+          where: { trip_id: request.params.tripId },
+          data: { deleted_at: new Date(), updated_at: new Date() },
+        });
+
+        return reply.status(204).send();
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // PATCH /api/trips/:tripId/restore — khôi phục trip từ thùng rác
+  fastify.patch<{ Params: { tripId: string } }>(
+    '/:tripId/restore',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const existing = await prisma.trip.findFirst({
+          where: { trip_id: request.params.tripId, user_id: appUser.user_id, deleted_at: { not: null } },
+        });
+        if (!existing) return reply.status(404).send({ error: 'Trip not found in trash' });
+
+        const restored = await prisma.trip.update({
+          where: { trip_id: request.params.tripId },
+          data: { deleted_at: null, updated_at: new Date() },
+          include: { trip_slot: slotInclude },
+        });
+
+        return reply.send(serializeTrip(restored));
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // DELETE /api/trips/:tripId/permanent — xóa vĩnh viễn
+  fastify.delete<{ Params: { tripId: string } }>(
+    '/:tripId/permanent',
     { preHandler: verifyToken },
     async (request, reply) => {
       try {
@@ -261,6 +365,16 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
         // Xác định dayIndex và slotOrder
         const targetDay = request.body.dayIndex ?? 0
         const slotsOnDay = trip.trip_slot.filter((s) => s.day_index === targetDay)
+
+        // Duplicate check: cùng place trong cùng ngày → 409
+        const dup = slotsOnDay.find((s) => Number(s.place_id) === request.body.placeId)
+        if (dup) {
+          return reply.status(409).send({
+            error: 'DUPLICATE_PLACE',
+            message: `Place ${request.body.placeId} đã có trong ngày ${targetDay}`,
+          })
+        }
+
         const nextOrder = slotsOnDay.length > 0
           ? Math.max(...slotsOnDay.map((s) => s.slot_order)) + 1
           : 0
@@ -295,6 +409,59 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
       } catch (error) {
         fastify.log.error(error)
         return reply.status(500).send({ error: 'Internal server error' })
+      }
+    },
+  )
+
+  // PATCH /api/trips/:tripId/slots/:slotId — cập nhật trạng thái slot (VD: completed)
+  fastify.patch<{ Params: { tripId: string; slotId: string }; Body: { status: string } }>(
+    '/:tripId/slots/:slotId',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const slot = await prisma.trip_slot.findFirst({
+          where: {
+            slot_id: request.params.slotId,
+            trip: { trip_id: request.params.tripId, user_id: appUser.user_id },
+          },
+        });
+        if (!slot) return reply.status(404).send({ error: 'Slot not found' });
+
+        const { status } = request.body;
+        const updated = await prisma.trip_slot.update({
+          where: { slot_id: request.params.slotId },
+          data: { status },
+          include: {
+            place: {
+              include: {
+                place_image: true,
+                place_tag_map: { include: { place_tag: true } },
+                place_opening_hour: true,
+              },
+            },
+          },
+        });
+
+        if (status === 'completed' || status === 'skipped') {
+          const armId = await getCurrentArmId(appUser.user_id);
+          sendReward({
+            userId: appUser.user_id,
+            tripId: request.params.tripId,
+            placeId: Number(slot.place_id),
+            armId,
+            interactionType: status === 'completed' ? 'slot_completed' : 'poi_rejected',
+          });
+        }
+
+        return reply.send(serializeSlot(updated));
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
       }
     },
   )

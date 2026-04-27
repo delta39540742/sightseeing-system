@@ -1,14 +1,17 @@
 import { prefApi } from './api'
-import type { UserPreference } from '@/types'
+import type { SurveyPayload } from '@/types'
 
 export const preferenceService = {
   getSurveyStatus: () =>
-    prefApi.get<{ completed: boolean }>('/preferences/survey/status').then((r) => r.data),
+    prefApi.get<{ hasCompleted: boolean; completedAt: string | null }>('/preferences/survey/status').then((r) => r.data),
 
-  saveSurvey: (data: UserPreference) =>
+  getSurvey: () =>
+    prefApi.get<{ survey: SurveyPayload | null }>('/preferences/survey').then((r) => r.data.survey),
+
+  saveSurvey: (data: SurveyPayload) =>
     prefApi.post('/preferences/survey', data).then((r) => r.data),
 
-  updateSurvey: (data: Partial<UserPreference>) =>
+  updateSurvey: (data: Partial<SurveyPayload>) =>
     prefApi.patch('/preferences/survey', data).then((r) => r.data),
 
   getWeights: () =>
@@ -19,4 +22,12 @@ export const preferenceService = {
 
   removeFavorite: (placeId: number) =>
     prefApi.delete(`/preferences/favorite/${placeId}`).then((r) => r.data),
+
+  ratePlace: (placeId: number, rating: number, tripId?: string) =>
+    prefApi.post('/preferences/rating', { placeId, rating, ...(tripId ? { tripId } : {}) }).then((r) => r.data),
+
+  getSimilarUsers: (limit = 10) =>
+    prefApi.get<{ items: { userId: string; similarity: number; rankPosition: number }[]; isStale: boolean }>(
+      `/preferences/similar-users?limit=${limit}`
+    ).then((r) => r.data),
 }

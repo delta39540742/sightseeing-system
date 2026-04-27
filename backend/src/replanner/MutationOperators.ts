@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { TripSlot, Place } from '@app/types';
 import type { StateEvolver, ReplanContext } from './StateEvolver';
 
@@ -91,23 +92,26 @@ export class MutationOperators {
     const results: MutationResult[] = [];
 
     for (let i = 0; i < plan.length; i++) {
+      const anchor = plan[i]!;
       for (const shiftMin of TIME_SHIFT_DELTAS_MIN) {
-        // Build new plan: shift slot i, then cascade to all slots after it
+        // Build new plan: shift slot i, then cascade chỉ trong cùng ngày để
+        // không kéo lệch lịch các ngày sau.
         const newPlan = [...plan];
-        const shifted = this.shiftSlot(plan[i]!, shiftMin);
+        const shifted = this.shiftSlot(anchor, shiftMin);
 
         // Only proceed if the anchor slot's new time is within opening hours
         if (!this.withinOpeningHours(shifted, ctx)) continue;
 
         newPlan[i] = shifted;
         for (let j = i + 1; j < newPlan.length; j++) {
+          if (newPlan[j]!.dayIndex !== anchor.dayIndex) break;
           newPlan[j] = this.shiftSlot(newPlan[j]!, shiftMin);
         }
 
         results.push({
           newPlan,
           operator: 'TIME_SHIFT',
-          affectedSlotIds: [plan[i]!.slotId],
+          affectedSlotIds: [anchor.slotId],
           description: `Dời slot ${i} đi ${shiftMin > 0 ? '+' : ''}${shiftMin} phút`,
         });
       }
@@ -430,7 +434,8 @@ export class MutationOperators {
    * - Empty plan: start at `ctx.initialState.capturedAt`.
    *
    * The cost is set to `place.minPrice ?? 0` (conservative estimate).
-   * The synthetic `slotId` is `synth-<placeId>-<pos>` to avoid UUID collisions.
+   * The synthetic `slotId` is a fresh UUID so accept-transaction inserts pass
+   * the `slot_id @db.Uuid` constraint.
    */
   private synthesizeSlot(
     place: Place,
@@ -459,7 +464,7 @@ export class MutationOperators {
       prev?.dayIndex ?? next?.dayIndex ?? ctx.initialState.dayIndex;
 
     return {
-      slotId: `synth-${place.placeId}-${pos}`,
+      slotId: randomUUID(),
       tripId: ctx.initialState.tripId,
       dayIndex,
       slotOrder: pos,

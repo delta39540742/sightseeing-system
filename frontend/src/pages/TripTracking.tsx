@@ -1,12 +1,13 @@
 import { useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, Lightbulb, MapPin, Utensils, CheckCircle,
   Building2, Search, LocateFixed, Plus, Minus,
   Navigation, Bell, Settings, UserCircle, GitBranch, Zap,
 } from 'lucide-react'
 import { tripService } from '@/services/tripService'
+import { toast } from '@/store/toastStore'
 import { monitorService } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
 import { PageSpinner } from '@/components/ui/Spinner'
@@ -17,6 +18,7 @@ export default function TripTracking() {
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
   const { setTrip, trip } = useTripStore()
+  const queryClient = useQueryClient()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
@@ -146,6 +148,19 @@ export default function TripTracking() {
                   {currentSlot.place?.description && (
                     <p className="text-slate-500 text-sm mt-1 line-clamp-2">{currentSlot.place.description}</p>
                   )}
+                  <button
+                    onClick={() => {
+                      tripService.completeSlot(trip.tripId, currentSlot.slotId)
+                        .then(() => {
+                          queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+                          toast.success('Hoàn thành địa điểm!')
+                        })
+                        .catch(() => toast.error('Không thể cập nhật'))
+                    }}
+                    className="mt-3 w-full py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    Đã hoàn thành
+                  </button>
                 </div>
               </div>
             )}

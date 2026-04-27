@@ -1,7 +1,15 @@
-version: '3.8'
+# Giữ project name = travelsystem để dùng đúng volume cũ travelsystem_postgres_data
+# (trước đây compose chạy từ directory tên 'travelsystem', giờ là 'backend').
+name: travelsystem
+
 services:
   postgres:
-    image: postgis/postgis:15-3.3
+    # Build custom: postgis/postgis:15-3.3 + pgvector. Cùng major Postgres 15
+    # nên volume cũ vẫn dùng được, không mất data.
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: tdtt-postgres-pgvector:15-3.3
     restart: always
     environment:
       POSTGRES_USER: tdtt_user

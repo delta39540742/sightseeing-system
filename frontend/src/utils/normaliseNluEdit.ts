@@ -9,20 +9,30 @@ export const KNOWN_CITIES = [
   'Quảng Ninh', 'Ninh Bình', 'Sa Pa', 'Mộc Châu',
 ]
 
+// Khớp với 10 tag duy nhất tồn tại trong DB (xem backend/src/scripts/seed-places.ts).
 export const TAG_OPTIONS: { value: string; label: string }[] = [
-  { value: 'cafe',         label: 'Cà phê' },
-  { value: 'beach',        label: 'Biển' },
-  { value: 'mountain',     label: 'Núi' },
-  { value: 'waterfall',    label: 'Thác nước' },
-  { value: 'food',         label: 'Ẩm thực' },
-  { value: 'culture',      label: 'Văn hóa' },
-  { value: 'history',      label: 'Lịch sử' },
-  { value: 'shopping',     label: 'Mua sắm' },
-  { value: 'camping',      label: 'Cắm trại' },
-  { value: 'hiking',       label: 'Leo núi' },
-  { value: 'photography',  label: 'Chụp ảnh' },
-  { value: 'diving',       label: 'Lặn biển' },
+  { value: 'beach',         label: 'Biển' },
+  { value: 'mountain',      label: 'Núi' },
+  { value: 'culture',       label: 'Văn hóa' },
+  { value: 'food',          label: 'Ẩm thực' },
+  { value: 'spiritual',     label: 'Tâm linh' },
+  { value: 'shopping',      label: 'Mua sắm' },
+  { value: 'entertainment', label: 'Giải trí' },
+  { value: 'nature',        label: 'Thiên nhiên' },
+  { value: 'sport',         label: 'Thể thao' },
+  { value: 'landmark',      label: 'Điểm tham quan' },
 ]
+
+// Map các tag cũ (lưu trong localStorage / survey trước migration) sang tag DB hợp lệ.
+const LEGACY_TAG_MAP: Record<string, string> = {
+  cafe:        'food',
+  waterfall:   'nature',
+  hiking:      'mountain',
+  photography: 'landmark',
+  diving:      'sport',
+  camping:     'nature',
+  history:     'culture',
+}
 
 export const GROUP_OPTIONS: { value: GroupType; label: string }[] = [
   { value: 'solo',     label: 'Một mình' },
@@ -61,7 +71,15 @@ export function normaliseSlots(raw: Partial<NluSlots>): NluSlots {
   }
 
   const preferredTagNames = Array.isArray(raw.preferredTagNames)
-    ? raw.preferredTagNames.filter((t): t is string => typeof t === 'string' && VALID_TAGS.has(t))
+    ? raw.preferredTagNames
+        .map((t) => (typeof t === 'string' ? (LEGACY_TAG_MAP[t] ?? t) : t))
+        .filter((t): t is string => typeof t === 'string' && VALID_TAGS.has(t))
+    : []
+
+  const experienceKeywords = Array.isArray(raw.experienceKeywords)
+    ? raw.experienceKeywords.filter(
+        (x): x is string => typeof x === 'string' && x.trim().length > 0,
+      )
     : []
 
   const budgetTotal =
@@ -89,7 +107,8 @@ export function normaliseSlots(raw: Partial<NluSlots>): NluSlots {
 
   return {
     destinationCity, durationDays, startDate,
-    preferredTagNames, budgetTotal, groupType,
+    preferredTagNames, experienceKeywords,
+    budgetTotal, groupType,
     mobilityRestrictions, dietaryPreferences, pace,
   }
 }
@@ -105,6 +124,7 @@ export function slotsToParsedResult(slots: NluSlots): ParsedNLPResult {
     days,
     budget:    slots.budgetTotal ?? 3_000_000,
     styles:    slots.preferredTagNames,
+    experienceKeywords: slots.experienceKeywords,
     startDate: startStr,
     endDate:   format(addDays(parseISO(startStr), days - 1), 'yyyy-MM-dd'),
     numPeople,

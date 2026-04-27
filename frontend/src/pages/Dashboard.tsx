@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, MapPin, Calendar, ChevronRight, User, Trash2 } from 'lucide-react'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, differenceInDays } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
@@ -12,11 +12,18 @@ import { Modal } from '@/components/ui/Modal'
 import type { Trip, TripStatus } from '@/types'
 
 const statusLabels: Record<Trip['status'], { label: string; color: string }> = {
-  draft:     { label: 'Nháp',           color: 'bg-gray-100 text-gray-600' },
-  active:    { label: 'Đang diễn ra',   color: 'bg-green-100 text-green-700' },
+  draft:     { label: 'Nháp',              color: 'bg-gray-100 text-gray-600' },
+  active:    { label: 'Đang diễn ra',      color: 'bg-green-100 text-green-700' },
   confirmed: { label: 'Đang lên kế hoạch', color: 'bg-blue-100 text-blue-700' },
-  completed: { label: 'Đã hoàn thành',  color: 'bg-purple-100 text-purple-700' },
-  cancelled: { label: 'Đã hủy',         color: 'bg-red-100 text-red-600' },
+  completed: { label: 'Đã hoàn thành',     color: 'bg-purple-100 text-purple-700' },
+  cancelled: { label: 'Đã hủy',            color: 'bg-red-100 text-red-600' },
+}
+
+function getDisplayStatus(trip: Trip): { label: string; color: string } {
+  if (trip.status === 'draft' && trip.slots && trip.slots.length > 0) {
+    return { label: 'Đã lên kế hoạch', color: 'bg-blue-100 text-blue-700' }
+  }
+  return statusLabels[trip.status]
 }
 
 const TABS = [
@@ -156,46 +163,88 @@ export default function Dashboard() {
           <div className="space-y-3">
             <h2 className="font-semibold text-gray-700 text-sm">Chuyến đi của bạn</h2>
             {filtered.map((trip) => {
-              const status = statusLabels[trip.status]
+              const status = getDisplayStatus(trip)
+              const numDays = differenceInDays(parseISO(trip.endDate), parseISO(trip.startDate)) + 1
+              const numSlots = trip.slots?.length ?? 0
+              const budgetDisplay = trip.budgetTotal > 0
+                ? trip.budgetTotal >= 1_000_000
+                  ? `${(trip.budgetTotal / 1_000_000).toFixed(1).replace('.0', '')} tr đ`
+                  : `${(trip.budgetTotal / 1000).toFixed(0)}k đ`
+                : null
               return (
                 <div
                   key={trip.tripId}
                   onClick={() =>
                     navigate(trip.status === 'active' ? `/trip/${trip.tripId}/live` : `/trip/${trip.tripId}`)
                   }
-                  className="card w-full p-4 hover:shadow-md transition-shadow text-left flex items-center gap-4 cursor-pointer"
+                  className="card w-full p-4 hover:shadow-md transition-shadow text-left cursor-pointer"
                 >
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-white text-xl shrink-0">
-                    ✈️
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900 truncate">
-                      {trip.title ?? trip.destinationCity}
-                    </p>
-                    <div className="flex items-center gap-3 mt-1">
-                      <span className="flex items-center gap-1 text-xs text-gray-400">
+                  <div className="flex items-start gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-white text-lg shrink-0">
+                      ✈️
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold text-gray-900 truncate text-sm">
+                          {trip.title ?? trip.destinationCity}
+                        </p>
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium shrink-0 ${status.color}`}>
+                          {status.label}
+                        </span>
+                      </div>
+                      <span className="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
                         <Calendar className="w-3 h-3" />
                         {format(parseISO(trip.startDate), 'dd/MM', { locale: vi })}
                         {' – '}
                         {format(parseISO(trip.endDate), 'dd/MM/yyyy', { locale: vi })}
                       </span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${status.color}`}>
-                        {status.label}
-                      </span>
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setDeletingId(trip.tripId)
-                    }}
-                    className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors shrink-0"
-                    title="Xóa chuyến đi"
-                    disabled={deleteMutation.isPending}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                  <ChevronRight className="w-4 h-4 text-gray-300 shrink-0" />
+
+                  {(numDays > 0 || numSlots > 0 || budgetDisplay) && (
+                    <div className="flex items-center gap-3 mt-3 pt-2.5 border-t border-gray-100">
+                      {numDays > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-50 px-2 py-1 rounded-md">
+                          🗓 {numDays} ngày
+                        </span>
+                      )}
+                      {numSlots > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-50 px-2 py-1 rounded-md">
+                          📍 {numSlots} địa điểm
+                        </span>
+                      )}
+                      {budgetDisplay && (
+                        <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-50 px-2 py-1 rounded-md">
+                          💰 {budgetDisplay}
+                        </span>
+                      )}
+                      <div className="ml-auto flex items-center gap-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDeletingId(trip.tripId) }}
+                          className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Xóa chuyến đi"
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        <ChevronRight className="w-4 h-4 text-gray-300" />
+                      </div>
+                    </div>
+                  )}
+
+                  {numSlots === 0 && !budgetDisplay && (
+                    <div className="flex items-center justify-end mt-2 gap-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeletingId(trip.tripId) }}
+                        className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Xóa chuyến đi"
+                        disabled={deleteMutation.isPending}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <ChevronRight className="w-4 h-4 text-gray-300" />
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -206,8 +255,8 @@ export default function Dashboard() {
       <Modal
         open={!!deletingId}
         onClose={() => setDeletingId(null)}
-        title="Xóa chuyến đi"
-        description="Bạn có chắc chắn muốn xóa chuyến đi này? Hành động này không thể hoàn tác."
+        title="Chuyển vào thùng rác"
+        description="Chuyến đi sẽ được chuyển vào thùng rác. Bạn có thể khôi phục hoặc xóa vĩnh viễn trong trang cá nhân."
         size="sm"
         footer={
           <>
@@ -223,13 +272,13 @@ export default function Dashboard() {
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2"
               disabled={deleteMutation.isPending}
             >
-              {deleteMutation.isPending ? 'Đang xóa...' : 'Xóa chuyến đi'}
+              {deleteMutation.isPending ? 'Đang xóa...' : 'Chuyển vào thùng rác'}
             </button>
           </>
         }
       >
         <div className="text-sm text-gray-500">
-          Tất cả dữ liệu về lịch trình, địa điểm của chuyến đi này sẽ bị xóa vĩnh viễn khỏi hệ thống.
+          Chuyến đi sẽ bị ẩn khỏi danh sách. Vào <strong>Trang cá nhân → Thùng rác</strong> để khôi phục hoặc xóa vĩnh viễn.
         </div>
       </Modal>
     </div>

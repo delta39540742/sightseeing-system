@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { processBanditReward } from './weights.service';
+import { updatePreferenceVector, autoUpdateSoftConstraints } from './learning.service';
 
 // ─── C1: POST favorite ────────────────────────────────────────────────────────
 
@@ -15,6 +16,9 @@ export async function addFavorite(userId: string, placeId: number, tripId?: stri
       context: { source: 'favorite_button' },
     },
   });
+
+  // Tín hiệu tích cực mạnh: nudge vector về phía tags của place
+  updatePreferenceVector(userId, placeId, 0.5).catch(() => {});
 
   return {
     favoriteId: log.interactionId.toString(),
@@ -113,6 +117,15 @@ export async function onSlotDecision(payload: {
   });
 
   await processBanditReward(payload.userId, payload.armId, eventType);
+
+  // Cập nhật preference vector từ quyết định của user
+  const strength = payload.accepted ? 0.2 : -0.15;
+  updatePreferenceVector(payload.userId, payload.placeId, strength).catch(() => {});
+
+  // Nếu reject liên tục → tự học avoid_category
+  if (!payload.accepted) {
+    autoUpdateSoftConstraints(payload.userId).catch(() => {});
+  }
 }
 
 /**
@@ -137,6 +150,9 @@ export async function onSlotCompleted(payload: {
 
   // Hoàn thành slot là tín hiệu tích cực mạnh
   await processBanditReward(payload.userId, payload.armId, 'slot_completed');
+
+  // Hoàn thành → nudge vector về phía tags của địa điểm đó
+  updatePreferenceVector(payload.userId, payload.placeId, 0.3).catch(() => {});
 }
 
 /**
@@ -157,12 +173,16 @@ export async function onLandmarkRecognized(payload: {
       userId:          payload.userId,
       placeId:         payload.placeId,
       tripId:          payload.tripId ?? null,
-      interactionType: 'poi_rated', // dùng type gần nhất trong schema
-      rating:          0.3,         // tín hiệu yếu
+      interactionType: 'poi_rated',
+      rating:          0.3,
       context:         {
         source:     'landmark_recognition',
         confidence: payload.confidence,
       },
     },
   });
+
+  // Tín hiệu yếu nhưng vẫn có giá trị: user đang ở đây và chụp ảnh
+  const strengthFromConfidence = 0.1 * payload.confidence;
+  updatePreferenceVector(payload.userId, payload.placeId, strengthFromConfidence).catch(() => {});
 }

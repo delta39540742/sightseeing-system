@@ -1,14 +1,85 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { prisma } from '../../server';
-import { generateGreedyPlan, optimizeWith2Opt } from './solver';
+import { prisma, pool } from '../../lib/prisma';
+import { generateGreedyPlan, optimizeWith2Opt, SolverContext, SoftConstraint, descriptionMatchScore } from './solver';
+import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
+import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
+
+const DEFAULT_WEIGHTS = {
+  wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
+};
+
+interface PreferenceBundle {
+  weights: typeof DEFAULT_WEIGHTS;
+  preferenceVector: number[];
+  preferredTagIds: number[];
+  softConstraints: SoftConstraint[];
+  collaborativeBoosts: Map<number, number>;
+}
+
+const PREF_FETCH_TIMEOUT_MS = 2000;
+
+async function fetchPreferenceBundle(userId: string): Promise<PreferenceBundle> {
+  const fallback: PreferenceBundle = {
+    weights: DEFAULT_WEIGHTS,
+    preferenceVector: [],
+    preferredTagIds: [],
+    softConstraints: [],
+    collaborativeBoosts: new Map(),
+  };
+  try {
+    const prefUrl = process.env.PREFERENCE_SERVICE_URL ?? 'http://localhost:3001';
+    const headers = { 'x-user-id': userId };
+
+    // AbortSignal.timeout chỉ có từ Node 17.3+ — backend dùng Node 20+ nên OK.
+    const [weightsResp, cfResp] = await Promise.all([
+      fetch(`${prefUrl}/api/preferences/weights?context=plan`, {
+        headers,
+        signal: AbortSignal.timeout(PREF_FETCH_TIMEOUT_MS),
+      }).catch(() => null),
+      fetch(`${prefUrl}/api/preferences/collaborative-boost`, {
+        headers,
+        signal: AbortSignal.timeout(PREF_FETCH_TIMEOUT_MS),
+      }).catch(() => null),
+    ]);
+
+    if (!weightsResp || !weightsResp.ok) return fallback;
+    const data = (await weightsResp.json()) as any;
+
+    const cfMap = new Map<number, number>();
+    if (cfResp?.ok) {
+      const cfData = (await cfResp.json()) as any;
+      if (Array.isArray(cfData.boosts)) {
+        for (const b of cfData.boosts) {
+          if (typeof b.placeId === 'number' && typeof b.boost === 'number') {
+            cfMap.set(b.placeId, b.boost);
+          }
+        }
+      }
+    }
+
+    return {
+      weights: data.weights ?? DEFAULT_WEIGHTS,
+      preferenceVector: Array.isArray(data.preferenceVector) ? data.preferenceVector : [],
+      preferredTagIds: Array.isArray(data.preferredTagIds) ? data.preferredTagIds : [],
+      softConstraints: Array.isArray(data.softConstraints) ? data.softConstraints : [],
+      collaborativeBoosts: cfMap,
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
       destinationCity, startDate, endDate,
       budgetTotal, preferences, mobilityRestrictions,
+      experienceKeywords,
     } = req.body as any;
+    const expKws: string[] = Array.isArray(experienceKeywords)
+      ? experienceKeywords.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+      : [];
 
     // Map preference strings → tag IDs
     let resolvedTagIds: number[] = [];
@@ -43,10 +114,14 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     // Build AND array to avoid OR key collision when spreading multiple OR filters
     const andConditions: any[] = [budgetCondition];
     if (destinationCity) {
+      // Chỉ nhận place thực sự khớp city qua address / name / description.
+      // KHÔNG include `address: null` vì như vậy sẽ nuốt mọi place ở tỉnh khác mà
+      // chỉ đơn giản là thiếu address → đề xuất bị "lạc đoàn".
       andConditions.push({
         OR: [
-          { address: { contains: destinationCity, mode: 'insensitive' as const } },
-          { address: null },
+          { address:     { contains: destinationCity, mode: 'insensitive' as const } },
+          { name:        { contains: destinationCity, mode: 'insensitive' as const } },
+          { description: { contains: destinationCity, mode: 'insensitive' as const } },
         ],
       });
     }
@@ -72,12 +147,98 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
       return reply.send({ places: MOCK_PLACES, _mock: true });
     }
 
-    // Score + sort
+    // Semantic similarity từ description_embedding (pgvector cosine).
+    // Embed query text từ experienceKeywords → tính sim cho mỗi place trong pool.
+    // Best-effort: nếu model chưa load xong / DB chưa backfill embedding → bỏ qua,
+    // scoring vẫn rơi về descriptionMatchScore (keyword) như cũ.
+    const semSimMap = new Map<string, number>();
+    const queryText = expKws.join(', ').trim();
+    if (queryText.length > 0) {
+      try {
+        const queryVec = await embedText(queryText);
+        const placeIds = places.map((p: any) => p.place_id.toString());
+        if (placeIds.length > 0) {
+          const { rows } = await pool.query<{ pid: string; sim: string }>(
+            `SELECT place_id::text AS pid,
+                    1 - (description_embedding <=> $1::vector) AS sim
+             FROM place
+             WHERE place_id = ANY($2::bigint[])
+               AND description_embedding IS NOT NULL`,
+            [vectorToSqlLiteral(queryVec), placeIds],
+          );
+          for (const r of rows) {
+            const sim = Number(r.sim);
+            if (Number.isFinite(sim)) semSimMap.set(r.pid, sim);
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err: (err as Error).message }, 'semantic embedding failed; fallback to keyword match');
+      }
+    }
+
+    // Optionally pull user's preference vector for richer scoring (best-effort)
+    let userVector: number[] = [];
+    let userSoft: SoftConstraint[] = [];
+    let userCfBoosts: Map<number, number> = new Map();
+    const headerUid = (req.headers['x-user-id'] as string) || (req.user?.uid as string | undefined);
+    if (headerUid) {
+      try {
+        const dbUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: headerUid },
+          select: { user_id: true },
+        });
+        if (dbUser) {
+          const bundle = await fetchPreferenceBundle(dbUser.user_id);
+          userVector = bundle.preferenceVector;
+          userSoft = bundle.softConstraints;
+          userCfBoosts = bundle.collaborativeBoosts;
+          if (bundle.preferredTagIds.length > 0 && resolvedTagIds.length === 0) {
+            resolvedTagIds = bundle.preferredTagIds;
+          }
+        }
+      } catch {
+        // non-blocking
+      }
+    }
+
+    // Score + sort: cosine-ish on vector if available, fallback to tag overlap
     const scored = places.map((p: any) => {
-      const tagMatchCount = p.place_tag_map.filter((tm: any) =>
-        resolvedTagIds.includes(tm.tag_id),
-      ).length;
-      const score = tagMatchCount * 2 + (p.popularity_score ?? 0) * 0.3;
+      const tagIds: number[] = (p.place_tag_map ?? []).map((tm: any) => tm.tag_id);
+      let interest = 0;
+      const sumVec = userVector.reduce((a, b) => a + b, 0);
+      if (userVector.length >= 10 && sumVec > 0) {
+        for (const t of tagIds) {
+          if (t >= 1 && t <= 10) interest += userVector[t - 1] ?? 0;
+        }
+        if (tagIds.length > 0) interest /= Math.sqrt(tagIds.length);
+      } else if (resolvedTagIds.length > 0) {
+        const overlap = tagIds.filter((id) => resolvedTagIds.includes(id)).length;
+        interest = overlap / Math.max(1, resolvedTagIds.length);
+      }
+
+      let softAdj = 0;
+      for (const sc of userSoft) {
+        if (sc.type === 'avoid_category') {
+          const target = Number(sc.value);
+          if (Number.isFinite(target) && tagIds.includes(target)) softAdj -= sc.strength * 5;
+        } else if (sc.type === 'prefer_indoor' && p.indoor_outdoor === 'indoor') {
+          softAdj += sc.strength * 2;
+        } else if (sc.type === 'prefer_outdoor' && p.indoor_outdoor === 'outdoor') {
+          softAdj += sc.strength * 2;
+        }
+      }
+
+      const cf = userCfBoosts.get(Number(p.place_id)) ?? 0;
+      const cfBoost = cf > 0 ? Math.min(cf, 5) * 1.5 : 0;
+
+      // Hybrid scoring: semantic embedding (mạnh hơn cho mô tả mơ hồ) + keyword exact match.
+      // Khi embedding có sim cao → semantic chiếm trọng số lớn; nếu không có embedding
+      // (place chưa backfill / model fail) → fall về expBoost từ keyword.
+      const sim = semSimMap.get(p.place_id.toString()) ?? 0;
+      const semBoost = 12 * sim;
+      const expBoost = 6 * descriptionMatchScore(p, expKws);
+
+      const score = interest * 10 + (p.popularity_score ?? 0) * 0.3 + softAdj + cfBoost + semBoost + expBoost;
       return { p, score };
     });
     scored.sort((a: any, b: any) => b.score - a.score);
@@ -108,7 +269,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
 
     return reply.send({ places: result });
   } catch (error: any) {
-    console.error('=== LỖI CANDIDATES ===', error);
+    req.log.error({ err: error }, 'getTripCandidates failed');
     return reply.status(500).send({ error: 'INTERNAL_SERVER_ERROR', message: error.message });
   }
 }
@@ -132,11 +293,16 @@ const MOCK_PLACES = [
 export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
     try {
         const payload = req.body as any;
+        const expKws: string[] = Array.isArray(payload.experienceKeywords)
+            ? payload.experienceKeywords.filter(
+                (s: any) => typeof s === 'string' && s.trim().length > 0,
+            )
+            : [];
 
-        // Lấy user từ firebase_uid trong header x-user-id
-        const firebaseUid = req.headers['x-user-id'] as string;
+        // user lấy từ Firebase token đã verify ở preHandler verifyToken
+        const firebaseUid = req.user?.uid;
         if (!firebaseUid) {
-            return reply.status(401).send({ error: 'Unauthorized: missing x-user-id header' });
+            return reply.status(401).send({ error: 'Unauthorized: missing Firebase token' });
         }
         const dbUser = await prisma.app_user.findUnique({ where: { firebase_uid: firebaseUid } });
         if (!dbUser) {
@@ -146,7 +312,17 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // Tính số ngày thực tế từ startDate / endDate
         const startDate = new Date(payload.startDate);
         const endDate = new Date(payload.endDate);
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            return reply.status(400).send({ error: 'startDate hoặc endDate không hợp lệ' });
+        }
+        if (endDate.getTime() < startDate.getTime()) {
+            return reply.status(400).send({ error: 'endDate phải >= startDate' });
+        }
+        const MAX_TRIP_DAYS = 30;
         const days = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 3600 * 24)) + 1);
+        if (days > MAX_TRIP_DAYS) {
+            return reply.status(400).send({ error: `Trip không quá ${MAX_TRIP_DAYS} ngày` });
+        }
 
         // Map preferences (string[]) sang tag IDs bằng cách tìm trong DB
         let preferredTagIds: number[] = payload.preferredTagIds || [];
@@ -164,15 +340,65 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
 
         // Lấy candidates từ DB
         const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
-        const places = await prisma.place.findMany({ include: { place_tag_map: true } });
+        const strictMode: boolean = payload.strictMode === true;
+        const destinationCity: string | undefined = payload.destinationCity;
+        const mobilityRestrictions: string[] | undefined = payload.mobilityRestrictions;
+
+        const placeInclude = { place_tag_map: true, place_opening_hour: true, place_peak_time: true } as const;
+        const CANDIDATE_DB_LIMIT = 300; // hạn chế load: top 300 theo popularity rồi rerank in-mem
+
+        // Build filter: strict → only anchor places. Còn lại filter theo city + mobility ở DB.
+        const buildWhere = (): any => {
+            if (strictMode && anchorPlaceIds.length > 0) {
+                return { place_id: { in: anchorPlaceIds.map(BigInt) } };
+            }
+            const ands: any[] = [];
+            if (destinationCity) {
+                // Tránh `address: null` (gây "lạc đoàn"). Cho phép match qua name/description
+                // để place không khai address nhưng có chứa tên city vẫn lọt.
+                ands.push({
+                    OR: [
+                        { address:     { contains: destinationCity, mode: 'insensitive' as const } },
+                        { name:        { contains: destinationCity, mode: 'insensitive' as const } },
+                        { description: { contains: destinationCity, mode: 'insensitive' as const } },
+                    ],
+                });
+            }
+            if (mobilityRestrictions?.includes('xe_lan')) {
+                ands.push({ wheelchair_access: true });
+            }
+            // anchor places phải luôn có trong pool (kể cả khi không match city)
+            if (anchorPlaceIds.length > 0) {
+                return { OR: [{ AND: ands }, { place_id: { in: anchorPlaceIds.map(BigInt) } }] };
+            }
+            return ands.length > 0 ? { AND: ands } : {};
+        };
+
+        let places = await prisma.place.findMany({
+            where: buildWhere(),
+            include: placeInclude,
+            orderBy: { popularity_score: 'desc' },
+            take: strictMode ? undefined : CANDIDATE_DB_LIMIT,
+        });
+
+        // Fallback: city filter quá hẹp → bỏ filter, giữ mobility
+        if (places.length === 0 && !strictMode && destinationCity) {
+            places = await prisma.place.findMany({
+                where: mobilityRestrictions?.includes('xe_lan') ? { wheelchair_access: true } : {},
+                include: placeInclude,
+                orderBy: { popularity_score: 'desc' },
+                take: CANDIDATE_DB_LIMIT,
+            });
+        }
         const candidates = places.map((p: any) => {
-            const tagMatchCount = p.place_tag_map.filter((tm: any) =>
-                preferredTagIds.includes(tm.tag_id)
-            ).length;
+            const tagIds: number[] = (p.place_tag_map ?? []).map((tm: any) => tm.tag_id);
+            const tagMatchCount = tagIds.filter((id) => preferredTagIds.includes(id)).length;
             const isAnchor = anchorPlaceIds.includes(Number(p.place_id));
+            const expMatch = descriptionMatchScore(p, expKws);
             return {
                 placeId:             Number(p.place_id),
                 name:                p.name,
+                description:         p.description ?? null,
                 lat:                 p.lat ?? 16.06,
                 lng:                 p.lng ?? 108.22,
                 avgVisitDurationMin: p.avg_visit_duration_min ?? 60,
@@ -181,49 +407,126 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 indoorOutdoor:       p.indoor_outdoor,
                 popularityScore:     p.popularity_score ?? 0,
                 terrainEasiness:     p.terrain_easiness ?? 1,
-                tags:                p.place_tag_map,
-                openingHours:        [],
-                matchScore:          tagMatchCount + (p.popularity_score || 0) * 0.3 + (isAnchor ? 1000 : 0),
+                tagIds,
+                tags:                tagIds.map((id) => ({ tagId: id })),
+                openingHours:        (p.place_opening_hour ?? []).map((h: any) => ({
+                    dayOfWeek: h.day_of_week,
+                    openTime:  h.open_time,
+                    closeTime: h.close_time,
+                })),
+                peakTimes:           (p.place_peak_time ?? []).map((pt: any) => ({
+                    startTime:      pt.start_time,
+                    endTime:        pt.end_time,
+                    emptinessLevel: pt.emptiness_level,
+                })),
+                matchScore:          tagMatchCount + (p.popularity_score || 0) * 0.3 + 2 * expMatch + (isAnchor ? 1000 : 0),
                 isAnchor,
             };
         }).sort((a: any, b: any) => b.matchScore - a.matchScore).slice(0, 100);
 
-        const weights = { wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1 };
-        const greedyPlan = generateGreedyPlan(days, payload.budgetTotal || 5000000, candidates, weights);
-        const userPreferences = {
-            preferredTagIds,
-            budgetRemaining: payload.budgetTotal || 5000000,
-            weights: { interest: 1, distance: 1.5, budget: 1, weather: 1 },
-        };
-        const optimizedPlan = optimizeWith2Opt(greedyPlan, userPreferences, candidates);
+        // Khi strictMode: tạo slots thẳng từ anchorPlaceIds theo thứ tự user chọn,
+        // bỏ qua greedy planner để tránh mất slot do thiếu lat/lng hoặc lọc sai
+        let optimizedPlan: any[];
+        if (strictMode && anchorPlaceIds.length > 0) {
+            const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
+            let curMin = 8 * 60; // 08:00
+            optimizedPlan = anchorPlaceIds
+                .map((id, i) => {
+                    const place = placeMap.get(id);
+                    if (!place) return null;
+                    const duration = place.avgVisitDurationMin || 60;
+                    const slotStart = new Date(startDate);
+                    slotStart.setHours(Math.floor(curMin / 60), curMin % 60, 0, 0);
+                    const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
+                    curMin += duration + 30; // 30 phút di chuyển giữa các điểm
+                    return {
+                        slotId:       `slot_0_${i + 1}`,
+                        tripId:       'temp_trip',
+                        dayIndex:     0,
+                        slotOrder:    i + 1,
+                        placeId:      place.placeId,
+                        plannedStart: slotStart.toISOString(),
+                        plannedEnd:   slotEnd.toISOString(),
+                        estimatedCost: place.minPrice || 0,
+                        activityType: 'sightseeing',
+                        rationale:    'Điểm do người dùng chọn',
+                        status:       'planned',
+                    };
+                })
+                .filter(Boolean);
+        } else {
+            // Chế độ AI: dùng greedy + 2-opt với scoring đầy đủ
+            const bundle = await fetchPreferenceBundle(dbUser.user_id);
 
-        // Lưu Trip vào DB
-        const newTrip = await prisma.trip.create({
-            data: {
-                user_id:          dbUser.user_id,
-                destination_city: payload.destinationCity || 'Da Nang',
-                start_date:       startDate,
-                end_date:         endDate,
-                budget_total:     payload.budgetTotal || 5000000,
-                status:           'draft',
-            },
+            // Payload preferences là explicit intent cho trip này → ưu tiên hơn survey.
+            // Survey chỉ dùng khi payload không nói gì.
+            const effectivePreferredTagIds = preferredTagIds.length > 0
+                ? preferredTagIds
+                : bundle.preferredTagIds;
+
+            const solverCtx: SolverContext = {
+                weights: bundle.weights,
+                preferenceVector: bundle.preferenceVector,
+                preferredTagIds: effectivePreferredTagIds,
+                softConstraints: bundle.softConstraints,
+                startDate,
+                budgetTotal: payload.budgetTotal || 5_000_000,
+                collaborativeBoosts: bundle.collaborativeBoosts,
+                experienceKeywords: expKws,
+            };
+
+            const greedyPlan = generateGreedyPlan(days, candidates as any, solverCtx);
+            optimizedPlan = optimizeWith2Opt(greedyPlan, solverCtx, candidates as any);
+        }
+
+        // Atomic: Trip + Slots phải insert cùng nhau, tránh orphan trip nếu slot insert fail.
+        const { newTrip, persistedSlots } = await prisma.$transaction(async (tx) => {
+            const newTrip = await tx.trip.create({
+                data: {
+                    user_id:          dbUser.user_id,
+                    destination_city: payload.destinationCity || 'Da Nang',
+                    start_date:       startDate,
+                    end_date:         endDate,
+                    budget_total:     payload.budgetTotal || 5000000,
+                    status:           'draft',
+                    raw_prompt:       payload.additionalNotes || null,
+                },
+            });
+
+            if (optimizedPlan.length > 0) {
+                await tx.trip_slot.createMany({
+                    data: optimizedPlan.map((slot: any) => ({
+                        trip_id:        newTrip.trip_id,
+                        day_index:      slot.dayIndex,
+                        slot_order:     slot.slotOrder,
+                        place_id:       BigInt(slot.placeId),
+                        planned_start:  new Date(slot.plannedStart),
+                        planned_end:    new Date(slot.plannedEnd),
+                        estimated_cost: slot.estimatedCost || 0,
+                        activity_type:  slot.activityType || 'sightseeing',
+                        status:         'planned',
+                        rationale:      slot.rationale || null,
+                    })),
+                });
+            }
+
+            const persistedSlots = await tx.trip_slot.findMany({
+                where: { trip_id: newTrip.trip_id },
+                orderBy: [{ day_index: 'asc' }, { slot_order: 'asc' }],
+            });
+
+            return { newTrip, persistedSlots };
         });
 
-        // Lưu các Slots vào DB
-        if (optimizedPlan.length > 0) {
-            await prisma.trip_slot.createMany({
-                data: optimizedPlan.map((slot: any) => ({
-                    trip_id:        newTrip.trip_id,
-                    day_index:      slot.dayIndex,
-                    slot_order:     slot.slotOrder,
-                    place_id:       BigInt(slot.placeId),
-                    planned_start:  new Date(slot.plannedStart),
-                    planned_end:    new Date(slot.plannedEnd),
-                    estimated_cost: slot.estimatedCost || 0,
-                    activity_type:  slot.activityType || 'sightseeing',
-                    status:         'planned',
-                    rationale:      slot.rationale || null,
-                })),
+        // Feedback loop: mỗi placeId trong slots = user "chấp nhận" gợi ý / chốt lựa chọn.
+        // Bandit sẽ học và preferenceVector sẽ nudge về phía tags của các place đó.
+        if (persistedSlots.length > 0) {
+            const armId = await getCurrentArmId(dbUser.user_id);
+            sendPoiAcceptedBatch({
+                userId: dbUser.user_id,
+                tripId: newTrip.trip_id,
+                armId,
+                placeIds: persistedSlots.map((s) => Number(s.place_id)),
             });
         }
 
@@ -240,10 +543,22 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             objectiveScore:  newTrip.objective_score,
             createdAt:       newTrip.created_at.toISOString(),
             updatedAt:       newTrip.updated_at.toISOString(),
-            slots:           optimizedPlan.map((slot: any) => ({ ...slot, tripId: newTrip.trip_id })),
+            slots: persistedSlots.map((s) => ({
+                slotId:        s.slot_id,
+                tripId:        s.trip_id,
+                dayIndex:      s.day_index,
+                slotOrder:     s.slot_order,
+                placeId:       Number(s.place_id),
+                plannedStart:  s.planned_start.toISOString(),
+                plannedEnd:    s.planned_end.toISOString(),
+                estimatedCost: s.estimated_cost,
+                activityType:  s.activity_type,
+                rationale:     s.rationale,
+                status:        s.status,
+            })),
         });
     } catch (error: any) {
-        console.error("=== LỖI CREATE TRIP ===", error);
+        req.log.error({ err: error }, 'createTrip failed');
         return reply.status(500).send({ error: error.message });
     }
 };

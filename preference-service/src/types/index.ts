@@ -38,6 +38,12 @@ export interface WeightsResponse {
   softConstraints: SoftConstraint[];
   currentArmId: number;
   armName: string;
+  preferenceVector: number[];
+  preferredTagIds: number[];
+  pace: number;
+  budgetPerDayMin: number;
+  budgetPerDayMax: number;
+  mobilityRestrictions: string[];
 }
 
 export interface SoftConstraint {

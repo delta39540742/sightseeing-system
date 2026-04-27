@@ -16,10 +16,32 @@ export async function getSurveyStatus(userId: string) {
   };
 }
 
+// ─── A1b: Lấy full survey để FE pre-fill khi user đã làm trước đó ──────────────
+
+export async function getSurvey(userId: string) {
+  const pref = await prisma.userPreference.findUnique({ where: { userId } });
+  if (!pref) return null;
+  return {
+    primaryPurpose:       pref.primaryPurpose,
+    preferredTagIds:      pref.preferredTagIds,
+    pace:                 pref.pace,
+    dailyScheduleType:    pref.dailyScheduleType,
+    foodPreferences:      pref.foodPreferences,
+    budgetPerDayMin:      pref.budgetPerDayMin,
+    budgetPerDayMax:      pref.budgetPerDayMax,
+    groupType:            pref.groupType,
+    mobilityRestrictions: pref.mobilityRestrictions,
+  };
+}
+
 // ─── A2: Tạo mới survey ───────────────────────────────────────────────────────
 
 export async function createSurvey(userId: string, payload: SurveyPayload) {
-  // Validate preferredTagIds max 3
+  // Validate preferredTagIds max 3, no duplicates, range [1..10]
+  const uniqueTagIds = [...new Set(payload.preferredTagIds)];
+  if (uniqueTagIds.length !== payload.preferredTagIds.length) {
+    throw new Error('preferredTagIds không được trùng lặp');
+  }
   if (payload.preferredTagIds.length > 3) {
     throw new Error('preferredTagIds tối đa 3 tags');
   }
@@ -131,12 +153,19 @@ export async function updateSurvey(userId: string, payload: Partial<SurveyPayloa
     mobilityRestrictions: payload.mobilityRestrictions ?? existing.mobilityRestrictions,
   };
 
-  // Validate
+  // Validate merged payload
   if (merged.preferredTagIds.length > 3) throw new Error('preferredTagIds tối đa 3 tags');
+  if (payload.preferredTagIds !== undefined && !merged.preferredTagIds.every((id) => id >= 1 && id <= 10)) {
+    throw new Error('preferredTagIds phải nằm trong [1..10]');
+  }
+  if (payload.pace !== undefined && (merged.pace < 0 || merged.pace > 1)) {
+    throw new Error('pace phải nằm trong [0,1]');
+  }
   if (merged.budgetPerDayMax < merged.budgetPerDayMin) throw new Error('budgetPerDayMax >= budgetPerDayMin');
 
   const preferenceVector = buildPreferenceVector(merged);
   const softConstraints = buildSoftConstraints(merged);
+  const newBase = calcBaseWeights(merged);
 
   await prisma.userPreference.update({
     where: { userId },
@@ -146,9 +175,25 @@ export async function updateSurvey(userId: string, payload: Partial<SurveyPayloa
     },
   });
 
-  // Cập nhật soft constraints trong objective weights
-  await prisma.userObjectiveWeights.update({
+  // Recalculate weights = newBaseWeights × currentArmWeights
+  const objWeights = await prisma.userObjectiveWeights.findUnique({
     where: { userId },
-    data: { softConstraints: softConstraints as any },
+    include: { arm: true },
   });
+
+  if (objWeights) {
+    const arm = objWeights.arm;
+    await prisma.userObjectiveWeights.update({
+      where: { userId },
+      data: {
+        softConstraints: softConstraints as any,
+        wInterest: newBase.wInterest * arm.wInterest,
+        wPace:     newBase.wPace     * arm.wPace,
+        wDistance: newBase.wDistance * arm.wDistance,
+        wBudget:   newBase.wBudget   * arm.wBudget,
+        wWeather:  newBase.wWeather  * arm.wWeather,
+        wRisk:     newBase.wRisk     * arm.wRisk,
+      },
+    });
+  }
 }

@@ -3,7 +3,13 @@ import cron from 'node-cron'
 import { monitorService, type TripData, type TripState } from '../services/monitorService'
 
 export async function monitorPlugin(fastify: FastifyInstance): Promise<void> {
-  cron.schedule('*/30 * * * *', () => monitorService.runMonitoring())
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      await monitorService.runMonitoring()
+    } catch (err) {
+      fastify.log.error({ err }, '[monitor cron] runMonitoring failed')
+    }
+  })
 
   fastify.post('/sync-trip', async (request, reply) => {
     const body = request.body as {
