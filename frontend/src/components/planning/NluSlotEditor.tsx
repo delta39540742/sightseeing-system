@@ -4,6 +4,7 @@ import type { NluSlots, NluParseResponse, ParsedNLPResult } from '@/types'
 import {
   normaliseSlots, slotsToParsedResult,
   TAG_OPTIONS, GROUP_OPTIONS, KNOWN_CITIES,
+  VIBE_OPTIONS, AMENITY_OPTIONS
 } from '@/utils/normaliseNluEdit'
 
 interface Props {
@@ -11,15 +12,18 @@ interface Props {
   onConfirm: (result: ParsedNLPResult) => void
 }
 
-type EditKey = 'destinationCity' | 'durationDays' | 'startDate' | 'budgetTotal' | 'groupType' | 'preferredTagNames'
+type EditKey = 'destinationCity' | 'durationDays' | 'startDate' | 'budgetTotal' | 'groupType' | 'preferredTagNames' | 'experienceKeywords' | 'vibe' | 'amenities'
 
 const FIELD_LABEL: Record<EditKey, string> = {
-  destinationCity:   'Điểm đến',
-  durationDays:      'Số ngày',
-  startDate:         'Ngày đi',
-  budgetTotal:       'Ngân sách',
-  groupType:         'Nhóm',
-  preferredTagNames: 'Sở thích',
+  destinationCity:    'Điểm đến',
+  durationDays:       'Số ngày',
+  startDate:          'Ngày đi',
+  budgetTotal:        'Ngân sách',
+  groupType:          'Nhóm',
+  preferredTagNames:  'Chủ đề',
+  experienceKeywords: 'Trải nghiệm',
+  vibe:               'Không khí',
+  amenities:          'Tiện nghi',
 }
 
 function displayValue(key: EditKey, slots: NluSlots): string {
@@ -35,6 +39,15 @@ function displayValue(key: EditKey, slots: NluSlots): string {
       )
       return names.length > 0 ? names.join(', ') : '—'
     }
+    case 'experienceKeywords': return slots.experienceKeywords.length > 0 ? slots.experienceKeywords.join(', ') : '—'
+    case 'vibe': {
+      const names = slots.vibe.map(v => VIBE_OPTIONS.find(o => o.value === v)?.label ?? v)
+      return names.length > 0 ? names.join(', ') : '—'
+    }
+    case 'amenities': {
+      const names = slots.amenities.map(a => AMENITY_OPTIONS.find(o => o.value === a)?.label ?? a)
+      return names.length > 0 ? names.join(', ') : '—'
+    }
   }
 }
 
@@ -46,6 +59,9 @@ function isMissing(key: EditKey, slots: NluSlots): boolean {
     case 'budgetTotal':       return slots.budgetTotal == null
     case 'groupType':         return !slots.groupType
     case 'preferredTagNames': return slots.preferredTagNames.length === 0
+    case 'experienceKeywords': return slots.experienceKeywords.length === 0
+    case 'vibe':              return slots.vibe.length === 0
+    case 'amenities':         return slots.amenities.length === 0
   }
 }
 
@@ -69,11 +85,15 @@ function FieldEditor({ editKey, slots, onSave, onCancel }: FieldEditorProps) {
     if (editKey === 'startDate')       return slots.startDate ?? ''
     if (editKey === 'budgetTotal')     return slots.budgetTotal != null ? String(slots.budgetTotal / 1_000_000) : ''
     if (editKey === 'groupType')       return slots.groupType ?? ''
+    if (editKey === 'experienceKeywords') return slots.experienceKeywords.join(', ')
     return ''
   })
-  const [tagsVal, setTagsVal] = useState<string[]>(
-    editKey === 'preferredTagNames' ? [...slots.preferredTagNames] : [],
-  )
+  const [tagsVal, setTagsVal] = useState<string[]>(() => {
+    if (editKey === 'preferredTagNames') return [...slots.preferredTagNames]
+    if (editKey === 'vibe') return [...slots.vibe]
+    if (editKey === 'amenities') return [...slots.amenities]
+    return []
+  })
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
@@ -196,11 +216,12 @@ function FieldEditor({ editKey, slots, onSave, onCancel }: FieldEditorProps) {
     )
   }
 
-  if (editKey === 'preferredTagNames') {
+  if (editKey === 'preferredTagNames' || editKey === 'vibe' || editKey === 'amenities') {
+    const options = editKey === 'preferredTagNames' ? TAG_OPTIONS : (editKey === 'vibe' ? VIBE_OPTIONS : AMENITY_OPTIONS)
     return (
       <div className="mt-1 space-y-1">
         <div className="flex flex-wrap gap-1">
-          {TAG_OPTIONS.map((t) => (
+          {options.map((t) => (
             <button
               key={t.value}
               type="button"
@@ -215,7 +236,25 @@ function FieldEditor({ editKey, slots, onSave, onCancel }: FieldEditorProps) {
           ))}
         </div>
         <div className="flex gap-1">
-          {btnCheck({ preferredTagNames: tagsVal })}
+          {btnCheck({ [editKey]: tagsVal })}
+          {btnCancel}
+        </div>
+      </div>
+    )
+  }
+
+  if (editKey === 'experienceKeywords') {
+    return (
+      <div className="flex flex-col gap-1 mt-1">
+        <textarea
+          autoFocus
+          value={textVal}
+          onChange={(e) => setTextVal(e.target.value)}
+          className="w-full px-2 py-1 border border-gray-200 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 h-20"
+          placeholder="Cách nhau bằng dấu phẩy..."
+        />
+        <div className="flex gap-1">
+          {btnCheck({ experienceKeywords: textVal.split(',').map(s => s.trim()).filter(Boolean) })}
           {btnCancel}
         </div>
       </div>
@@ -229,7 +268,8 @@ function FieldEditor({ editKey, slots, onSave, onCancel }: FieldEditorProps) {
 
 const FIELDS: EditKey[] = [
   'destinationCity', 'durationDays', 'startDate',
-  'budgetTotal', 'groupType', 'preferredTagNames',
+  'budgetTotal', 'groupType', 'preferredTagNames', 
+  'vibe', 'amenities', 'experienceKeywords',
 ]
 
 export function NluSlotEditor({ response, onConfirm }: Props) {

@@ -42,6 +42,23 @@ export const GROUP_OPTIONS: { value: GroupType; label: string }[] = [
   { value: 'business', label: 'Công tác' },
 ]
 
+export const VIBE_OPTIONS = [
+  { value: 'quiet',    label: 'Yên tĩnh' },
+  { value: 'lively',   label: 'Sôi động' },
+  { value: 'romantic', label: 'Lãng mạn' },
+  { value: 'modern',   label: 'Hiện đại' },
+  { value: 'vintage',  label: 'Hoài cổ' },
+  { value: 'luxurious', label: 'Sang trọng' },
+]
+
+export const AMENITY_OPTIONS = [
+  { value: 'wifi',    label: 'Wifi free' },
+  { value: 'parking', label: 'Chỗ đậu xe' },
+  { value: 'pool',    label: 'Bể bơi' },
+  { value: 'gym',     label: 'Phòng gym' },
+  { value: 'pet',     label: 'Thú cưng' },
+]
+
 const NUM_PEOPLE: Record<GroupType, number> = {
   solo: 1, couple: 2, family: 4, friends: 3, business: 2,
 }
@@ -105,11 +122,22 @@ export function normaliseSlots(raw: Partial<NluSlots>): NluSlots {
       ? raw.pace
       : null
 
+  const vibe = Array.isArray(raw.vibe)
+    ? raw.vibe.filter((x): x is string => typeof x === 'string')
+    : []
+
+  const amenities = Array.isArray(raw.amenities)
+    ? raw.amenities.filter((x): x is string => typeof x === 'string')
+    : []
+
+  const originalPrompt = typeof raw.originalPrompt === 'string' ? raw.originalPrompt : ''
+
   return {
     destinationCity, durationDays, startDate,
     preferredTagNames, experienceKeywords,
     budgetTotal, groupType,
     mobilityRestrictions, dietaryPreferences, pace,
+    vibe, amenities, originalPrompt,
   }
 }
 
@@ -128,5 +156,8 @@ export function slotsToParsedResult(slots: NluSlots): ParsedNLPResult {
     startDate: startStr,
     endDate:   format(addDays(parseISO(startStr), days - 1), 'yyyy-MM-dd'),
     numPeople,
+    vibe: slots.vibe,
+    amenities: slots.amenities,
+    originalPrompt: slots.originalPrompt,
   }
 }

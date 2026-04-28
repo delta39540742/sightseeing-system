@@ -142,6 +142,10 @@ export interface ParsedNLPResult {
   startDate: string
   endDate: string
   numPeople: number
+  // Expanded for vibe & amenities search
+  vibe?: string[]
+  amenities?: string[]
+  originalPrompt?: string
 }
 
 export interface NluSlots {
@@ -155,6 +159,10 @@ export interface NluSlots {
   mobilityRestrictions: string[]
   dietaryPreferences: string[]
   pace: number | null
+  // New fields
+  vibe: string[]
+  amenities: string[]
+  originalPrompt?: string
 }
 
 export interface NluParseResponse {

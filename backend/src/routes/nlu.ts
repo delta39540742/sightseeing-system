@@ -11,7 +11,8 @@ export async function nluPlugin(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await parseNlu(prompt.trim());
+      const today = new Date().toISOString().split('T')[0];
+      const result = await parseNlu(prompt.trim(), today);
       return result;
     } catch (err) {
       if (err instanceof NluUnavailableError) {

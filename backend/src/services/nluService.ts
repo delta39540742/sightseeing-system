@@ -15,10 +15,15 @@ export interface NluSlots {
   mobilityRestrictions: string[];
   dietaryPreferences: string[];
   pace: number | null;
+  // New fields
+  vibe: string[];
+  amenities: string[];
+  originalPrompt: string;
 }
 
 export interface NluParseRequest {
   prompt: string;
+  today?: string; // e.g. "2024-04-28"
 }
 
 export interface NluParseResponse {
@@ -37,7 +42,7 @@ const COLAB_TIMEOUT_MS = 30_000; // Colab chậm, cần thời gian
 
 // --- MAIN PROXY FUNCTION ---
 
-export async function parseNlu(prompt: string): Promise<NluParseResponse> {
+export async function parseNlu(prompt: string, today?: string): Promise<NluParseResponse> {
 
   if (!COLAB_NLU_URL) {
     throw new NluUnavailableError("COLAB_NLU_URL chưa được set trong file .env");
@@ -50,7 +55,7 @@ export async function parseNlu(prompt: string): Promise<NluParseResponse> {
   try {
     const res = await axios.post<unknown>(
       url,
-      { prompt } satisfies NluParseRequest,
+      { prompt, today } satisfies NluParseRequest,
       {
         timeout: COLAB_TIMEOUT_MS,
         headers: { "Content-Type": "application/json" },
@@ -96,6 +101,10 @@ function normalise(raw: Record<string, unknown>): NluParseResponse {
     mobilityRestrictions: stringArray(rawSlots.mobilityRestrictions),
     dietaryPreferences: stringArray(rawSlots.dietaryPreferences),
     pace: numberOrNull(rawSlots.pace),
+    // Map new fields from Colab response
+    vibe: stringArray(rawSlots.vibe),
+    amenities: stringArray(rawSlots.amenities),
+    originalPrompt: typeof rawSlots.originalPrompt === 'string' ? rawSlots.originalPrompt : '',
   };
 
   return {

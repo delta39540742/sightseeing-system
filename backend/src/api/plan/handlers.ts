@@ -75,11 +75,13 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     const {
       destinationCity, startDate, endDate,
       budgetTotal, preferences, mobilityRestrictions,
-      experienceKeywords,
+      experienceKeywords, vibe, amenities, originalPrompt,
     } = req.body as any;
     const expKws: string[] = Array.isArray(experienceKeywords)
       ? experienceKeywords.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
       : [];
+    const vibes: string[] = Array.isArray(vibe) ? vibe : [];
+    const ams: string[] = Array.isArray(amenities) ? amenities : [];
 
     // Map preference strings → tag IDs
     let resolvedTagIds: number[] = [];
@@ -152,7 +154,16 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     // Best-effort: nếu model chưa load xong / DB chưa backfill embedding → bỏ qua,
     // scoring vẫn rơi về descriptionMatchScore (keyword) như cũ.
     const semSimMap = new Map<string, number>();
-    const queryText = expKws.join(', ').trim();
+    
+    // Xây dựng query text giàu ngữ cảnh: Keywords + Vibes + Amenities + Original Prompt
+    const queryParts = [];
+    if (expKws.length > 0) queryParts.push(`Trải nghiệm: ${expKws.join(', ')}`);
+    if (vibes.length > 0) queryParts.push(`Không khí: ${vibes.join(', ')}`);
+    if (ams.length > 0) queryParts.push(`Tiện nghi: ${ams.join(', ')}`);
+    if (originalPrompt) queryParts.push(`Yêu cầu gốc: ${originalPrompt}`);
+    
+    const queryText = queryParts.join('. ').trim();
+    
     if (queryText.length > 0) {
       try {
         const queryVec = await embedText(queryText);
