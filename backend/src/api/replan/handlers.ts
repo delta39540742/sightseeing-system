@@ -107,15 +107,25 @@ export async function fetchTripRow(
   pool: Pool,
   tripId: string,
 ): Promise<TripRow | null> {
-  const r = await pool.query<TripRow>(
-    `SELECT trip_id, user_id, status, budget_total, title,
-            destination_city, start_date, end_date,
-            hotel_place_id, objective_score,
-            created_at, updated_at
-       FROM trip WHERE trip_id = $1`,
-    [tripId],
-  );
-  return r.rows[0] ?? null;
+  try {
+    const r = await pool.query<TripRow>(
+      `SELECT trip_id, user_id, status, budget_total, title,
+              destination_city, start_date, end_date,
+              hotel_place_id, objective_score,
+              created_at, updated_at
+         FROM trip WHERE trip_id = $1`,
+      [tripId],
+    );
+    
+    return r.rows[0] ?? null;
+  } catch (error) {
+    // Ghi log lỗi tại chỗ kèm theo tripId để dễ dàng truy vết
+    console.error(`[fetchTripRow] Error fetching trip_id ${tripId}:`, error);
+    
+    // Ném lỗi lên tầng trên (handler) xử lý.
+    // Nếu để return null ở đây, handler sẽ báo lỗi 404 sai sự thật.
+    throw error;
+  }
 }
 
 /** Loads a trip_event row for validation. */
@@ -123,11 +133,20 @@ export async function fetchEventRow(
   pool: Pool,
   eventId: string,
 ): Promise<EventRow | null> {
-  const r = await pool.query<EventRow>(
-    `SELECT event_id, trip_id, status FROM trip_event WHERE event_id = $1`,
-    [eventId],
-  );
-  return r.rows[0] ?? null;
+  try {
+    const r = await pool.query<EventRow>(
+      `SELECT event_id, trip_id, status FROM trip_event WHERE event_id = $1`,
+      [eventId],
+    );
+    
+    return r.rows[0] ?? null;
+  } catch (error) {
+    // Ghi log để dễ truy vết lỗi database
+    console.error(`[fetchEventRow] Error fetching event_id ${eventId}:`, error);
+    
+    // Ném lỗi lên trên để handler (ví dụ: makeReplanHandler) xử lý
+    throw error;
+  }
 }
 
 /** Loads a refreshed Trip (with slots) after the accept transaction. */
@@ -359,13 +378,32 @@ export function makePendingHandler(deps: ReplanDeps) {
     request: FastifyRequest<{ Params: TripParams }>,
     reply: FastifyReply,
   ): Promise<void> {
-    const { tripId } = request.params;
-    const pending = await deps.proposalStore.findMany({
-      tripId,
-      status: 'pending',
-      limit: 1,
-    });
-    return reply.status(200).send(pending[0] ?? null);
+    try {
+      const { tripId } = request.params;
+      
+      const pending = await deps.proposalStore.findMany({
+        tripId,
+        status: 'pending',
+        limit: 1
+      });
+      
+      return reply.status(200).send(pending[0] ?? null);
+      
+    } catch (error) {
+      // 1. Log in English
+      request.log.error({
+        err: error,
+        context: { tripId: request.params?.tripId },
+        msg: 'Failed to fetch pending proposal from database'
+      });
+
+      // 2. Client response in English
+      return reply.status(500).send({
+        success: false,
+        message: 'Unable to retrieve the pending proposal at this time. Please try again later.',
+        errorCode: 'FETCH_PENDING_PROPOSAL_ERROR'
+      });
+    }
   };
 }
 
@@ -383,6 +421,13 @@ export function makeReplanHandler(deps: ReplanDeps) {
     const { tripId } = request.params;
     const { triggeredByEventId, replanScope } = request.body;
     const userId = request.headers['x-user-id'] as string;
+    
+    if(!userId) {
+      return reply.status(400).send({
+        error: 'UNAUTHORIZED',
+        message: `User ${userId} not found`,
+      });
+    }
 
     // ── 1. Validate trip ─────────────────────────────────────────────────
     const tripRow = await fetchTripRow(deps.pool, tripId);
@@ -429,8 +474,14 @@ export function makeReplanHandler(deps: ReplanDeps) {
     }
 
     // ── 4. Load BeamSearchContext ─────────────────────────────────────────
-    const ctx = await deps.planLoader.load(tripId);
-
+    const ctx = await deps.planLoader.load(tripId).catch(error => {
+      console.error(`[PlanLoader] Cannot load trip ${tripId}:`, error.message);
+      return reply.status(500).send({
+        error: 'TRIP_LOAD_FAILED',
+        message: `Trip cannot load trip ${tripId}`
+      })
+    });
+    
     if (replanScope === 'remaining_day') {
       const today = ctx.initialState.dayIndex;
       ctx.remainingSlots = ctx.remainingSlots.filter(
@@ -531,6 +582,13 @@ export function makeAcceptHandler(deps: ReplanDeps) {
     const { tripId, proposalId } = request.params;
     const userId = request.headers['x-user-id'] as string;
 
+    if(!userId) {
+      return reply.status(400).send({
+        error: 'UNAUTHORIZED',
+        message: `User ${userId} not found`,
+      });
+    }
+
     const proposal = await validateProposal(
       deps.proposalStore,
       tripId,
@@ -578,6 +636,13 @@ export function makeRejectHandler(deps: ReplanDeps) {
     const { tripId, proposalId } = request.params;
     const { reason } = request.body ?? {};
     const userId = request.headers['x-user-id'] as string;
+
+    if(!userId) {
+      return reply.status(400).send({
+        error: 'UNAUTHORIZED',
+        message: `User ${userId} not found`,
+      });
+    }
 
     const proposal = await validateProposal(
       deps.proposalStore,

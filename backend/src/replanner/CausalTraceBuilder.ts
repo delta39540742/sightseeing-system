@@ -26,6 +26,9 @@ export class CausalTraceBuilder {
   }
 
   finalize(): CausalTrace {
+    if (!this.tripId || this.startTime === 0) {
+      throw new Error('CausalTraceBuilder: phải gọi begin() trước khi finalize()');
+    }
     return {
       tripId: this.tripId,
       triggeredByEventId: this.triggeredByEventId,

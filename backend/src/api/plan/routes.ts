@@ -12,6 +12,7 @@ const candidatesBodySchema = {
     budgetTotal:          { type: 'number', minimum: 0 },
     preferences:          { type: 'array', items: { type: 'string' }, maxItems: 20 },
     mobilityRestrictions: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+    experienceKeywords: { type: 'array', items: { type: 'string' }, maxItems: 10 }
   },
   additionalProperties: false,
 } as const;

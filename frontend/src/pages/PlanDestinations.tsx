@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   MapPin, Send, X, ArrowRight, Route, Calendar, Wallet,
@@ -47,7 +47,10 @@ const DEFAULT_HASHTAGS = ['Đà Nẵng', 'Hội An', 'Phú Quốc']
 
 export default function PlanDestinations() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, openLoginDrawer } = useAuthStore()
+
+  const navState = location.state as { selectedPlaces?: Place[]; planRequest?: PlanRequest | null } | null
 
   const [input, setInput] = useState('')
   const [isParsing, setIsParsing] = useState(false)
@@ -57,8 +60,8 @@ export default function PlanDestinations() {
       text: 'Chào bạn! Tôi có thể giúp bạn tìm những địa điểm tuyệt vời. Bạn muốn bắt đầu từ đâu?',
     },
   ])
-  const [planRequest, setPlanRequest] = useState<PlanRequest | null>(null)
-  const [selectedPlaces, setSelectedPlaces] = useState<Place[]>([])
+  const [planRequest, setPlanRequest] = useState<PlanRequest | null>(navState?.planRequest ?? null)
+  const [selectedPlaces, setSelectedPlaces] = useState<Place[]>(navState?.selectedPlaces ?? [])
   const [dismissedIds, setDismissedIds] = useState<number[]>([])
   const [conflicts, setConflicts] = useState<ConflictWarning[]>([])
   const [showNearby, setShowNearby] = useState(false)

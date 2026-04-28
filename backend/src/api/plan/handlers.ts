@@ -98,7 +98,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     // Budget per day (fallback khi thiếu ngày)
     const start = startDate ? new Date(startDate) : new Date();
     const end = endDate ? new Date(endDate) : new Date(start.getTime() + 2 * 86_400_000);
-    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000) + 1);
+    const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000));
     const budget = budgetTotal ?? 5_000_000;
     const avgBudgetPerDay = budget / days;
 
@@ -276,7 +276,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
 
 // ---------------------------------------------------------------------------
 // Mock places — chỉ dùng khi DB hoàn toàn rỗng (để test UI)
-// ---------------------------------------------------------------------------
+// -------------------------MOCK_PLACES--------------------------------------------------
 const MOCK_PLACES = [
   { placeId: 9001, name: 'Bãi biển Mỹ Khê', description: 'Bãi biển dài nhất Đà Nẵng, cát trắng mịn.', lat: 16.0544, lng: 108.2474, indoorOutdoor: 'outdoor', avgVisitDurationMin: 120, minPrice: 0, priceType: null, imageUrl: null, rating: 4.7, tags: [{ tagId: 1, name: 'beach' }], openingHours: [] },
   { placeId: 9002, name: 'Bán đảo Sơn Trà', description: 'Khu bảo tồn thiên nhiên với đàn voọc chà vá chân nâu.', lat: 16.1096, lng: 108.2748, indoorOutdoor: 'outdoor', avgVisitDurationMin: 180, minPrice: 0, priceType: null, imageUrl: null, rating: 4.8, tags: [{ tagId: 2, name: 'nature' }], openingHours: [] },
@@ -429,20 +429,41 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         let optimizedPlan: any[];
         if (strictMode && anchorPlaceIds.length > 0) {
             const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
-            let curMin = 8 * 60; // 08:00
+        
+            let curDayIndex = 0;
+            const DAY_START_MIN = 8 * 60;  // 08:00 sáng
+            const DAY_END_MIN = 22 * 60;   // 22:00 đêm (bạn có thể tùy chỉnh lại)
+
+            let curMin = DAY_START_MIN;
+
             optimizedPlan = anchorPlaceIds
                 .map((id, i) => {
                     const place = placeMap.get(id);
                     if (!place) return null;
+
                     const duration = place.avgVisitDurationMin || 60;
+
+                    // Kiểm tra nếu tham quan điểm này làm lố giờ kết thúc ngày
+                    // thì chuyển sang 08:00 sáng của ngày hôm sau
+                    if (curMin + duration > DAY_END_MIN) {
+                        curDayIndex++;
+                        curMin = DAY_START_MIN;
+                    }
+
                     const slotStart = new Date(startDate);
+                    // Cộng số ngày tương ứng với curDayIndex (Date API tự động xử lý qua tháng/năm)
+                    slotStart.setDate(slotStart.getDate() + curDayIndex);
                     slotStart.setHours(Math.floor(curMin / 60), curMin % 60, 0, 0);
+
                     const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
-                    curMin += duration + 30; // 30 phút di chuyển giữa các điểm
+
+                    // Cập nhật thời gian cho điểm tiếp theo (cộng thêm 30 phút di chuyển)
+                    curMin += duration + 30;
+
                     return {
-                        slotId:       `slot_0_${i + 1}`,
+                        slotId:       `slot_${curDayIndex}_${i + 1}`,
                         tripId:       'temp_trip',
-                        dayIndex:     0,
+                        dayIndex:     curDayIndex,
                         slotOrder:    i + 1,
                         placeId:      place.placeId,
                         plannedStart: slotStart.toISOString(),
@@ -453,7 +474,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                         status:       'planned',
                     };
                 })
-                .filter(Boolean);
+                .filter(Boolean); // Loại bỏ các item null nếu không tìm thấy place trong map
         } else {
             // Chế độ AI: dùng greedy + 2-opt với scoring đầy đủ
             const bundle = await fetchPreferenceBundle(dbUser.user_id);
@@ -470,7 +491,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 preferredTagIds: effectivePreferredTagIds,
                 softConstraints: bundle.softConstraints,
                 startDate,
-                budgetTotal: payload.budgetTotal || 5_000_000,
+                budgetTotal: payload.budgetTotal ?? 5_000_000,
                 collaborativeBoosts: bundle.collaborativeBoosts,
                 experienceKeywords: expKws,
             };
@@ -487,7 +508,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                     destination_city: payload.destinationCity || 'Da Nang',
                     start_date:       startDate,
                     end_date:         endDate,
-                    budget_total:     payload.budgetTotal || 5000000,
+                    budget_total:     payload.budgetTotal ?? 5000000,
                     status:           'draft',
                     raw_prompt:       payload.additionalNotes || null,
                 },

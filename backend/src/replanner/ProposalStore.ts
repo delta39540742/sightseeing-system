@@ -56,10 +56,11 @@ export class ProposalStore {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filter.limit ? `LIMIT $${idx++}` : '';
-    if (filter.limit) params.push(filter.limit);
-    const offset = filter.offset ? `OFFSET $${idx++}` : '';
-    if (filter.offset) params.push(filter.offset);
+    const limit = filter.limit !== undefined ? `LIMIT $${idx++}` : '';
+    if (filter.limit !== undefined) params.push(filter.limit);
+
+    const offset = filter.offset !== undefined ? `OFFSET $${idx++}` : '';
+    if (filter.offset !== undefined) params.push(filter.offset);
 
     const res = await this.pool.query(
       `SELECT * FROM replan_proposal ${where} ORDER BY created_at DESC ${limit} ${offset}`,

@@ -40,7 +40,9 @@ const TRAVEL_BUFFER  = 5;
 const URBAN_KMH      = 25;
 const FOOD_TAG_ID    = 4;
 const DIVERSITY_LOOKBACK = 2;
-
+const DEFAULT_WEIGHTS = {
+  wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
+};
 // ─── Geo helpers ────────────────────────────────────────────────────────────
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -262,7 +264,7 @@ function scoreCandidate(
   const cost = place.minPrice || 0;
   if (cost > st.budgetRemaining) return NOT_FEASIBLE;
 
-  const w = ctx.weights;
+  const w = ctx.weights ?? DEFAULT_WEIGHTS;
   const interest = interestScore(place, ctx);
   const popularity = place.popularityScore ?? 0;
   const terrain = place.terrainEasiness ?? 1;
@@ -428,7 +430,7 @@ export function calculateItineraryScore(
     const place = findPlace(slots[i]!.placeId, candidates);
     if (!place) continue;
 
-    const w = ctx.weights;
+    const w = ctx.weights ?? DEFAULT_WEIGHTS;
     let s = 0;
 
     s += w.wInterest * interestScore(place, ctx) * 10;

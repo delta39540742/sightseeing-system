@@ -23,7 +23,7 @@ function prefBaseUrl(): string {
 
 /**
  * Lấy current_arm_id của user. Trả DEFAULT_ARM_ID nếu chưa có row
- * (user chưa làm survey) hoặc query lỗi.
+ * (user chưa làm survey), arm_id không hợp lệ (<= 0), hoặc query lỗi.
  */
 export async function getCurrentArmId(userId: string): Promise<number> {
   try {
@@ -31,28 +31,49 @@ export async function getCurrentArmId(userId: string): Promise<number> {
       where: { user_id: userId },
       select: { current_arm_id: true },
     });
-    return w?.current_arm_id ?? DEFAULT_ARM_ID;
-  } catch {
+    
+    const armId = w?.current_arm_id;
+    
+    // Kiểm tra chặn cả null, undefined và các giá trị <= 0
+    if (armId === null || armId === undefined || armId <= 0) {
+      return DEFAULT_ARM_ID;
+    }
+    
+    return armId;
+  } catch (error) {
+    // Log lỗi để phục vụ debug thay vì nuốt hoàn toàn
+    console.error(`[getCurrentArmId] Lỗi database khi lấy armId cho user ${userId}:`, error);
     return DEFAULT_ARM_ID;
   }
 }
 
 /**
- * Fire-and-forget gửi reward tới preference-service.
- * Không block response — preference-service down chỉ log.
+ * Gửi reward tới preference-service.
+ * Trả về Promise để có thể await khi xử lý batch,
+ * nhưng khi gọi lẻ tẻ bên ngoài vẫn có thể gọi theo kiểu fire-and-forget.
  */
-export function sendReward(payload: RewardPayload): void {
-  fetch(`${prefBaseUrl()}/api/preferences/internal/reward`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  }).catch((err) => console.error('[preference reward]', payload.interactionType, err));
+export async function sendReward(payload: RewardPayload): Promise<void> {
+  try {
+    const res = await fetch(`${prefBaseUrl()}/api/preferences/internal/reward`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    // Kiểm tra phản hồi HTTP từ server
+    if (!res.ok) {
+      console.error(`[preference reward] Lỗi HTTP ${res.status}: ${res.statusText} - Payload:`, payload);
+    }
+  } catch (err) {
+    // Catch các lỗi mạng, kết nối
+    console.error('[preference reward] Lỗi Network/Fetch:', payload.interactionType, err);
+  }
 }
 
 /**
- * Batch gửi poi_accepted cho danh sách place đã được AI gợi ý và user chấp nhận
- * (tức là đã được persist vào trip_slot). Mỗi placeId duy nhất gửi một lần để
- * tránh trùng (nếu trip nhiều ngày và có cùng địa điểm 2 lần).
+ * Batch gửi poi_accepted cho danh sách place đã được AI gợi ý và user chấp nhận.
+ * Xử lý ngầm (fire-and-forget đối với caller) nhưng giới hạn số lượng request 
+ * đồng thời để tránh làm quá tải hệ thống.
  */
 export function sendPoiAcceptedBatch(args: {
   userId: string;
@@ -61,13 +82,26 @@ export function sendPoiAcceptedBatch(args: {
   placeIds: number[];
 }): void {
   const unique = Array.from(new Set(args.placeIds));
-  for (const placeId of unique) {
-    sendReward({
-      userId: args.userId,
-      tripId: args.tripId,
-      armId: args.armId,
-      interactionType: 'poi_accepted',
-      placeId,
-    });
-  }
+
+  // Chạy ngầm (IIFE) để không block response trả về cho user
+  (async () => {
+    const CONCURRENCY_LIMIT = 5; // Số lượng request song song tối đa
+    
+    for (let i = 0; i < unique.length; i += CONCURRENCY_LIMIT) {
+      const chunk = unique.slice(i, i + CONCURRENCY_LIMIT);
+      
+      // Đợi hoàn thành batch hiện tại trước khi gửi batch tiếp theo
+      await Promise.all(
+        chunk.map((placeId) =>
+          sendReward({
+            userId: args.userId,
+            tripId: args.tripId,
+            armId: args.armId,
+            interactionType: 'poi_accepted',
+            placeId,
+          })
+        )
+      );
+    }
+  })();
 }
