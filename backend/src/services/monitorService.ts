@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { pool } from '../lib/prisma'
 
 export interface TripSlot {
   id: string
@@ -18,6 +19,7 @@ export interface TripState {
 }
 
 export interface MonitorAlert {
+  eventId?: string
   type: string
   reason: string
   severity: number
@@ -46,7 +48,7 @@ export class MonitorService {
     return this.lastAlert
   }
 
-  private analyzeImpact(type: string, reason: string, severity: number) {
+  private async analyzeImpact(type: string, reason: string, severity: number) {
     if (!this.currentTrip || !this.currentState) return
     const futureSlots = this.currentTrip.slots.slice(this.currentState.currentSlotIndex)
     let affectedIds: string[] = []
@@ -66,7 +68,29 @@ export class MonitorService {
         break
     }
 
+    // Persist to trip_event table
+    let eventId: string | undefined = undefined
+    try {
+      const res = await pool.query(
+        `INSERT INTO trip_event (trip_id, event_type, severity, source, payload, affected_slot_ids, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'open')
+         RETURNING event_id`,
+        [
+          this.currentTrip.tripId,
+          type,
+          severity,
+          'monitor_service',
+          JSON.stringify({ reason, timestamp: new Date().toISOString() }),
+          affectedIds,
+        ]
+      )
+      eventId = res.rows[0]?.event_id
+    } catch (err) {
+      console.error('[MonitorService] Failed to persist trip_event:', err)
+    }
+
     this.lastAlert = {
+      eventId,
       type,
       reason,
       severity: parseFloat(severity.toFixed(2)),
@@ -83,36 +107,36 @@ export class MonitorService {
       const url = `https://api.openweathermap.org/data/2.5/weather?lat=${this.lat}&lon=${this.lon}&appid=${apiKey}&units=metric`
       const res = await axios.get(url)
       const rain: number = res.data.rain?.['1h'] ?? 0
-      if (rain >= 5) this.analyzeImpact('rain_heavy', `Mưa lớn thực tế: ${rain}mm/h`, 0.8)
+      if (rain >= 5) await this.analyzeImpact('rain_heavy', `Mưa lớn thực tế: ${rain}mm/h`, 0.8)
     } catch {
       // weather API unreachable — skip silently
     }
   }
 
-  private collectTrafficData() {
+  private async collectTrafficData() {
     if (!this.currentState) return
     const now = new Date().getHours()
     const delay = now - this.currentState.plannedArrivalTime
     const realDelay = delay > -12 && delay < 12 ? delay : 0
     if (realDelay > 0.5) {
-      this.analyzeImpact('traffic_jam', `Trễ lịch trình: ${(realDelay * 60).toFixed(0)} phút`, 0.7)
+      await this.analyzeImpact('traffic_jam', `Trễ lịch trình: ${(realDelay * 60).toFixed(0)} phút`, 0.7)
     }
   }
 
-  private collectClosingData() {
+  private async collectClosingData() {
     if (!this.currentTrip || !this.currentState) return
     const now = new Date().getHours()
     const nextSlot = this.currentTrip.slots[this.currentState.currentSlotIndex]
     if (nextSlot && now < nextSlot.closeTime && now + 1 >= nextSlot.closeTime) {
-      this.analyzeImpact('closing_soon', `${nextSlot.name} sắp đóng cửa!`, 0.9)
+      await this.analyzeImpact('closing_soon', `${nextSlot.name} sắp đóng cửa!`, 0.9)
     }
   }
 
-  runMonitoring() {
+  async runMonitoring() {
     if (!this.currentTrip) return
-    this.collectWeatherData()
-    this.collectTrafficData()
-    this.collectClosingData()
+    await this.collectWeatherData()
+    await this.collectTrafficData()
+    await this.collectClosingData()
   }
 
   injectMockAlert(type: string, reason: string, severity: number, affectedSlotIds: string[]) {

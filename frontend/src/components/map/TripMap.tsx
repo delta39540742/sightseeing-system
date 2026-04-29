@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, useState } from 'react'
+import React, { useEffect, useRef, useMemo, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, Popup, CircleMarker, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { TripSlot, Place } from '@/types'
@@ -153,7 +153,7 @@ function createMarkerIcon(
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function TripMap({
+export const TripMap = React.memo(function TripMap({
   slots,
   pendingSlots,
   focusedSlotId,
@@ -319,4 +319,4 @@ export function TripMap({
       {onMapClick && <MapClickHandler onClick={onMapClick} />}
     </MapContainer>
   )
-}
+});

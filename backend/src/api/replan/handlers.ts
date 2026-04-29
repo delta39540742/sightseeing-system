@@ -422,6 +422,7 @@ export function makeReplanHandler(deps: ReplanDeps) {
     const { triggeredByEventId, replanScope } = request.body;
     const userId = request.headers['x-user-id'] as string;
     
+    //console.log(`>>>> eventId: ${triggeredByEventId}`);
     if(!userId) {
       return reply.status(400).send({
         error: 'UNAUTHORIZED',
@@ -437,6 +438,7 @@ export function makeReplanHandler(deps: ReplanDeps) {
         message: `Trip ${tripId} not found`,
       });
     }
+    console.log(`>>>>> tripRow.status: ${tripRow.status}`);
     if (!VALID_REPLAN_STATUSES.includes(tripRow.status)) {
       return reply.status(422).send({
         error: 'INVALID_STATUS',

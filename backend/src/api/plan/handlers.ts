@@ -520,7 +520,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                     start_date:       startDate,
                     end_date:         endDate,
                     budget_total:     payload.budgetTotal ?? 5000000,
-                    status:           'draft',
+                    status:           'confirmed', // TODO: Verify compatibility with the rest of the software
                     raw_prompt:       payload.additionalNotes || null,
                 },
             });

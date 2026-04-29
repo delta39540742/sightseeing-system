@@ -11,14 +11,17 @@ import { toast } from '@/store/toastStore'
 import { monitorService } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
 import { PageSpinner } from '@/components/ui/Spinner'
+import { TripMap } from '@/components/map/TripMap'
 import { format, parseISO, isBefore, isAfter } from 'date-fns'
 import { vi } from 'date-fns/locale'
+import { useMemo, useState } from 'react'
 
 export default function TripTracking() {
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
-  const { setTrip, trip } = useTripStore()
+  const { setTrip, trip, focusedSlotId } = useTripStore()
   const queryClient = useQueryClient()
+  const [now] = useState(new Date()) // Pin 'now' to prevent recalculation on every render
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
@@ -47,21 +50,30 @@ export default function TripTracking() {
     )
   }
 
-  const now = new Date()
-  const sortedSlots = [...trip.slots].sort(
-    (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
-  )
-
-  const completedSlots = sortedSlots.filter((s) =>
-    s.status === 'completed' || isBefore(parseISO(s.plannedEnd), now)
-  )
-  const currentSlot = sortedSlots.find((s) =>
-    !isBefore(parseISO(s.plannedEnd), now) && !isAfter(parseISO(s.plannedStart), now)
-  ) ?? sortedSlots.find((s) => s.status !== 'completed' && isAfter(parseISO(s.plannedStart), now))
-
-  const upcomingSlots = sortedSlots.filter((s) =>
-    s !== currentSlot && !completedSlots.includes(s) && isAfter(parseISO(s.plannedStart), now)
-  ).slice(0, 3)
+  const sortedSlots = useMemo(() => {
+    if (!trip) return []
+    return [...trip.slots].sort(
+      (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
+    )
+  }, [trip?.slots])
+  
+  const { completedSlots, currentSlot, upcomingSlots } = useMemo(() => {
+    if (!sortedSlots.length) return { completedSlots: [], currentSlot: null, upcomingSlots: [] }
+    
+    const completed = sortedSlots.filter((s) =>
+      s.status === 'completed' || isBefore(parseISO(s.plannedEnd), now)
+    )
+    
+    const current = sortedSlots.find((s) =>
+      !isBefore(parseISO(s.plannedEnd), now) && !isAfter(parseISO(s.plannedStart), now)
+    ) ?? sortedSlots.find((s) => s.status !== 'completed' && isAfter(parseISO(s.plannedStart), now))
+    
+    const upcoming = sortedSlots.filter((s) =>
+      s !== current && !completed.includes(s) && isAfter(parseISO(s.plannedStart), now)
+    ).slice(0, 3)
+    
+    return { completedSlots: completed, currentSlot: current, upcomingSlots: upcoming }
+  }, [sortedSlots, now])
 
   const hasIncident = !!(incidentData && 'type' in incidentData && incidentData.type)
   const incidentReason = hasIncident && 'reason' in incidentData ? incidentData.reason : null
@@ -246,8 +258,11 @@ export default function TripTracking() {
         {/* Right: Map */}
         <section className="w-full md:w-7/12 lg:w-8/12 h-64 md:h-[calc(100vh-64px)] relative bg-slate-200 overflow-hidden">
           <div className="absolute inset-0">
-            <img className="w-full h-full object-cover" src={mapImageUrl} alt="Trip map" />
-            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none" />
+            <TripMap 
+              slots={trip.slots}
+              focusedSlotId={focusedSlotId}
+              className="w-full h-full rounded-none"
+            />
           </div>
 
           {/* Search bar */}

@@ -40,6 +40,7 @@ export default function TripDetail() {
   const [addPlaceSheet, setAddPlaceSheet] = useState(false)
   const [addSlotDay, setAddSlotDay] = useState<number | undefined>(undefined)
   const [searchQuery, setSearchQuery] = useState('')
+  const [dismissedIncidentId, setDismissedIncidentId] = useState<string | null>(null)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
@@ -103,7 +104,8 @@ export default function TripDetail() {
     setReplanScopeSheet(false)
     setIsReplanning(true)
     try {
-      await tripService.replan(tripId, scope)
+      const triggeredByEventId = incidentData && 'eventId' in incidentData ? incidentData.eventId : undefined
+      await tripService.replan(tripId, scope, triggeredByEventId)
       setReplanModal(true)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
@@ -211,17 +213,27 @@ export default function TripDetail() {
           {/* Timeline (left on desktop) */}
           <div className={`w-full md:w-[380px] md:flex flex-col h-full bg-white border-r border-gray-100 ${mobileTab === 'list' ? 'flex' : 'hidden'}`}>
             {incidentData && 'type' in incidentData && incidentData.type && (
-              <div className="pt-3">
-                <ConflictBanner
-                  conflict={{
-                    type: 'time',
-                    message: ('reason' in incidentData ? incidentData.reason : null) || 'Cảnh báo hệ thống',
-                    cause: incidentData.type,
-                    suggestion: 'Lộ trình có thể không tối ưu do thay đổi ngoại cảnh.',
-                  }}
-                  onViewProposal={() => navigate(`/trip/${tripId}/replan`)}
-                />
-              </div>
+              (() => {
+                const eventId = 'eventId' in incidentData ? incidentData.eventId : (incidentData as any).timestamp;
+                if (dismissedIncidentId === eventId) return null;
+
+                return (
+                  <div className="pt-3">
+                    <ConflictBanner
+                      conflict={{
+                        type: 'time',
+                        message: ('reason' in incidentData ? incidentData.reason : null) || 'Cảnh báo hệ thống',
+                        cause: incidentData.type,
+                        suggestion: 'Lộ trình có thể không tối ưu do thay đổi ngoại cảnh.',
+                      }}
+                      onViewProposal={() => navigate(`/trip/${tripId}/replan`, { 
+                        state: { triggeredByEventId: 'eventId' in incidentData ? incidentData.eventId : undefined } 
+                      })}
+                      onDismiss={() => setDismissedIncidentId(eventId)}
+                    />
+                  </div>
+                );
+              })()
             )}
             <Timeline onAddSlot={handleOpenAddSlot} />
 

@@ -1,6 +1,7 @@
 import { api } from './api'
 
 export interface MonitorAlert {
+  eventId?: string
   type: string
   reason: string
   severity: number

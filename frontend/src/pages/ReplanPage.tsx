@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, CloudLightning, X, Sparkles, CheckCircle,
@@ -6,20 +6,29 @@ import {
 } from 'lucide-react'
 import { tripService } from '@/services/tripService'
 import { monitorService } from '@/services/monitorService'
+import { placeService } from '@/services/placeService'
 import { useReplanProposal } from '@/components/replan/useReplanProposal'
 import { useTripStore } from '@/store/tripStore'
 import { PageSpinner } from '@/components/ui/Spinner'
+import { TripMap } from '@/components/map/TripMap'
 import { toast } from '@/store/toastStore'
 import { format, parseISO } from 'date-fns'
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { Place } from '@/types'
 
-const mapImageUrl = 'https://lh3.googleusercontent.com/aida-public/AB6AXuC81YaL1fjGGtUToby4zSV0ZYyhWYuerqlQLpKVa5wsOHZJmONFO6yRG4VNvdayZ6B7PicS7jo1Lxzsj6bX9Pjq8ZKxiGkAThieC--cCmaMcOu9f8w40c_In7b26LAKuMo4DFjBzcu7PYiEiVWt9E_eKwgVqbkVuh85wu0X8Y0V4aKT5ojvCbS8cP0AE1EHEg74cJK0Y4qbqdJXd3IRWaUvQVVfGhv364IU6_4_yIFGjEeh4Cq0adGdWHz5MxXy2x1SuIIfPsiecnA'
 
 export default function ReplanPage() {
+  const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null)
+  const [showIncident, setShowIncident] = useState(true)
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const { setTrip, trip } = useTripStore()
+
+  const triggeredByEventId = useMemo(() => 
+    (location.state as { triggeredByEventId?: string })?.triggeredByEventId
+  , [location.state])
 
   const { data, isLoading } = useQuery({
     queryKey: ['trip', tripId],
@@ -33,12 +42,26 @@ export default function ReplanPage() {
     enabled: !!tripId,
   })
 
+  // Fetch all places for the destination city to ensure we have coordinates for proposed places
+  const { data: cityPlaces } = useQuery({
+    queryKey: ['city-places', trip?.destinationCity],
+    queryFn: () => tripService.candidates({
+      destinationCity: trip!.destinationCity,
+      startDate: trip!.startDate,
+      endDate: trip!.endDate,
+      budgetTotal: trip!.budgetTotal
+    }),
+    enabled: !!trip?.destinationCity,
+  })
+
   const { proposal, isLoading: proposalLoading, accept, reject } = useReplanProposal(tripId!)
 
   const { mutate: triggerReplan, isPending: isReplanning } = useMutation({
-    mutationFn: () => tripService.replan(tripId!, 'remaining_trip'),
+    mutationFn: () => tripService.replan(tripId!, 'remaining_trip', triggeredByEventId),
     onError: (err: unknown) => {
       const status = (err as { response?: { status?: number } })?.response?.status
+      // TODO: delete debug log
+      console.log(`>>>>>>> error: ${err}`);
       if (status !== 409) toast.error('Không thể tạo đề xuất. Thử lại sau.')
     },
   })
@@ -71,16 +94,43 @@ export default function ReplanPage() {
     navigate(-1)
   }
 
-  if (isLoading || proposalLoading || isReplanning) return <PageSpinner />
-
   const slots = trip?.slots ?? []
-  const sortedSlots = [...slots].sort(
-    (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
-  )
-  const originalSlots = sortedSlots.slice(0, 3)
+  const sortedSlots = useMemo(() => {
+    return [...slots].sort(
+      (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
+    )
+  }, [slots])
+  
+  const originalSlots = useMemo(() => sortedSlots.slice(0, 3), [sortedSlots])
+
+  // Build a comprehensive places map
+  const placesMap = useMemo(() => {
+    const map = new Map<number, Place>()
+    // 1. From original trip slots
+    slots.forEach(s => {
+      if (s.place) map.set(s.placeId, s.place)
+    })
+    // 2. From city candidates (if any new places are proposed)
+    cityPlaces?.forEach(p => {
+      map.set(p.placeId, p)
+    })
+    return map
+  }, [slots, cityPlaces])
+
   // placeId → name lookup from current trip slots
-  const placeNameMap = new Map(slots.filter(s => s.place).map(s => [s.placeId, s.place!.name]))
-  const proposedSlots = proposal?.newPlanSnapshot ?? []
+  const placeNameMap = useMemo(() => 
+    new Map(Array.from(placesMap.entries()).map(([id, p]) => [id, p.name]))
+  , [placesMap])
+  
+  const rawProposedSlots = proposal?.newPlanSnapshot ?? []
+  const proposedSlots = useMemo(() => {
+    return rawProposedSlots.map(slot => ({
+      ...slot,
+      place: placesMap.get(slot.placeId)
+    }))
+  }, [rawProposedSlots, placesMap])
+
+  if (isLoading || proposalLoading || isReplanning) return <PageSpinner />
 
   return (
     <div className="bg-slate-50 font-sans text-slate-900 min-h-screen">
@@ -105,7 +155,7 @@ export default function ReplanPage() {
 
       <main className="max-w-7xl mx-auto px-6 py-10">
         {/* Incident Banner */}
-        {hasIncident && (
+        {hasIncident && showIncident && (
           <div className="mb-10 bg-red-50 border-2 border-red-500 p-6 rounded-xl flex items-start gap-6">
             <div className="bg-red-600 text-white p-2 rounded-full shrink-0">
               <CloudLightning className="w-5 h-5" />
@@ -116,7 +166,10 @@ export default function ReplanPage() {
                 {incidentReason ?? 'Phát hiện sự kiện ảnh hưởng đến lịch trình của bạn. Chúng tôi đề xuất điều chỉnh để tránh gián đoạn.'}
               </p>
             </div>
-            <button className="text-red-800/50 hover:text-red-800">
+            <button 
+              onClick={() => setShowIncident(false)}
+              className="text-red-800/50 hover:text-red-800 p-1 hover:bg-red-100 rounded-md transition-colors"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -142,11 +195,15 @@ export default function ReplanPage() {
                   </div>
                   <div className="p-6 space-y-4">
                     {originalSlots.length > 0 ? originalSlots.map((slot, i) => (
-                      <div key={slot.slotId} className={`flex items-center gap-4 ${i === 0 && hasIncident ? 'opacity-50 line-through' : ''}`}>
-                        <div className="w-14 text-sm font-bold text-slate-400 shrink-0">
+                      <div 
+                        key={slot.slotId} 
+                        className={`flex items-center gap-4 transition-all cursor-pointer group ${i === 0 && hasIncident ? 'opacity-50 line-through' : ''}`}
+                        onClick={() => setFocusedSlotId(slot.slotId)}
+                      >
+                        <div className="w-14 text-sm font-bold text-slate-400 shrink-0 group-hover:text-slate-600">
                           {format(parseISO(slot.plannedStart), 'HH:mm')}
                         </div>
-                        <div className={`p-3 rounded-lg flex-1 font-bold text-sm ${i === 0 && hasIncident ? 'bg-slate-50 border border-slate-200' : 'bg-white border-2 border-slate-100'}`}>
+                        <div className={`p-3 rounded-lg flex-1 font-bold text-sm transition-all ${focusedSlotId === slot.slotId ? 'bg-slate-100 border-slate-300 ring-2 ring-slate-100' : (i === 0 && hasIncident ? 'bg-slate-50 border border-slate-200' : 'bg-white border-2 border-slate-100 hover:border-slate-300')}`}>
                           {slot.place?.name ?? `Địa điểm ${i + 1}`}
                         </div>
                       </div>
@@ -168,9 +225,20 @@ export default function ReplanPage() {
                         <div className="w-14 text-sm font-bold text-blue-600 shrink-0">
                           {slot.plannedStart ? format(parseISO(slot.plannedStart), 'HH:mm') : '--:--'}
                         </div>
-                        <div className="p-3 bg-blue-50 border-2 border-blue-300 text-blue-900 rounded-lg flex-1 font-bold text-sm flex items-center justify-between">
+                        <div 
+                          className={`p-3 bg-blue-50 border-2 text-blue-900 rounded-lg flex-1 font-bold text-sm flex items-center justify-between transition-all cursor-pointer ${focusedSlotId === slot.slotId ? 'border-blue-500 ring-2 ring-blue-200' : 'border-blue-300 hover:border-blue-400'}`}
+                          onClick={() => setFocusedSlotId(slot.slotId)}
+                        >
                           <span>{placeNameMap.get(slot.placeId) ?? `Địa điểm đề xuất ${i + 1}`}</span>
-                          <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] rounded uppercase">Thay thế</span>
+                          <button 
+                            className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] rounded uppercase transition-colors shadow-sm active:scale-95"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFocusedSlotId(slot.slotId);
+                            }}
+                          >
+                            Thay thế
+                          </button>
                         </div>
                       </div>
                     )) : (
@@ -236,19 +304,15 @@ export default function ReplanPage() {
           {/* Right: Map + Actions */}
           <div className="lg:col-span-4 space-y-6">
             {/* Map */}
-            <div className="bg-white border-2 border-slate-100 rounded-xl overflow-hidden shadow-sm">
-              <div className="relative h-64 w-full bg-slate-100">
-                <img alt="Map" className="w-full h-full object-cover grayscale-[0.2]" src={mapImageUrl} />
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <svg className="w-full h-full p-8" viewBox="0 0 100 100">
-                    <path d="M20 20 L50 20 L80 50" fill="none" stroke="#94a3b8" strokeDasharray="4" strokeWidth="3" />
-                    <path d="M20 20 L30 50 L60 80 L90 70" fill="none" stroke="#2563eb" strokeWidth="4" />
-                    <circle cx="20" cy="20" fill="#1e3a6e" r="4" />
-                    <circle cx="30" cy="50" fill="#2563eb" r="4" />
-                    <circle cx="80" cy="50" fill="#94a3b8" r="4" />
-                  </svg>
-                </div>
-                <div className="absolute bottom-4 right-4 bg-white px-3 py-1.5 rounded-full shadow-lg border border-slate-200 flex items-center gap-2">
+            <div className="bg-white border-2 border-slate-100 rounded-xl overflow-hidden shadow-sm flex flex-col">
+              <div className="relative h-80 w-full bg-slate-100">
+                <TripMap 
+                  slots={slots}
+                  pendingSlots={proposedSlots.length > 0 ? (proposedSlots as any) : null}
+                  focusedSlotId={focusedSlotId}
+                  className="w-full h-full"
+                />
+                <div className="absolute bottom-4 right-4 bg-white px-3 py-1.5 rounded-full shadow-lg border border-slate-200 flex items-center gap-2 z-[1000]">
                   <span className="w-3 h-3 rounded-full bg-blue-600" />
                   <span className="text-xs font-bold">Lộ trình mới</span>
                 </div>
