@@ -7,6 +7,7 @@ import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
 const DEFAULT_WEIGHTS = {
   wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
+  wStability: 0.05, wPotentialBias: 0.10, wProximity: 0,
 };
 
 interface PreferenceBundle {

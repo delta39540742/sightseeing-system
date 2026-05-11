@@ -13,6 +13,8 @@ import tripRoutes from './api/plan/routes';
 
 import { replanPlugin } from './api/replan/routes';
 import { monitorPlugin } from './routes/monitor';
+import { demoSimulatePlugin } from './api/demo/simulate';
+import { demoHistoryPlugin } from './api/demo/history';
 import {
   PlanLoader,
   StateEvolver,
@@ -137,6 +139,8 @@ async function start() {
   await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
   await fastify.register(tripRoutes, { prefix: '/api/plan' });
   await fastify.register(monitorPlugin, { prefix: '/api/monitor' });
+  await fastify.register(demoSimulatePlugin, { prefix: '/api/demo', pool });
+  await fastify.register(demoHistoryPlugin, { prefix: '/api/demo', pool });
 
   fastify.get('/health', async () => ({ status: 'ok', message: 'TDTT Backend is running' }));
 

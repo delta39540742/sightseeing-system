@@ -75,8 +75,10 @@ export const tripService = {
       .post<{ places: Place[] }>('/plan/candidates', toIsoDateTimeRange(req))
       .then((r) => r.data.places),
 
-  listPlaces: (params?: { page?: number; limit?: number }) =>
-    api.get<{ success: boolean; data: any[] }>('/places', { params }).then((r) =>
+  listPlaces: (params?: { page?: number; limit?: number; ids?: number[] }) =>
+    api.get<{ success: boolean; data: any[] }>('/places', {
+      params: params?.ids ? { ...params, ids: params.ids.join(',') } : params,
+    }).then((r) =>
       r.data.data.map(
         (p): Place => ({
           placeId: Number(p.place_id),
@@ -95,10 +97,16 @@ export const tripService = {
       ),
     ),
 
-  replan: (tripId: string, replanScope: ReplanScope, triggeredByEventId?: string) =>
+  replan: (
+    tripId: string,
+    replanScope: ReplanScope,
+    triggeredByEventId?: string,
+    currentLocation?: { lat: number; lng: number },
+  ) =>
     api.post(`/trips/${tripId}/replan`, {
       replanScope,
       ...(triggeredByEventId ? { triggeredByEventId } : {}),
+      ...(currentLocation ? { currentLocation } : {}),
     }).then((r) => r.data),
 
   getPendingReplan: (tripId: string) =>

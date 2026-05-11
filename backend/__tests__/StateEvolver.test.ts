@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import StateEvolver, {
   type EvolveContext,
   type ReplanContext,
   type WeatherSnapshot,
+  clamp,
+  dot,
+  tagVectorOf,
 } from '../src/replanner/StateEvolver';
 import type { TripState, TripSlot, Place, UserPreference } from '@app/types';
 
@@ -10,14 +13,13 @@ import type { TripState, TripSlot, Place, UserPreference } from '@app/types';
 // Test fixture factories
 // ---------------------------------------------------------------------------
 
-/** Creates a minimal TripState with sane defaults. Override via partial. */
 function makeState(overrides: Partial<TripState> = {}): TripState {
   return {
     tripId: 'trip-001',
     dayIndex: 0,
     slotOrder: 0,
-    timeRemainingMin: 480,   // 8 h remaining
-    budgetRemaining: 500_000, // 500k VND
+    timeRemainingMin: 480,
+    budgetRemaining: 500_000,
     fatigue: 0.2,
     currentLat: 16.0614,
     currentLng: 108.2273,
@@ -28,11 +30,6 @@ function makeState(overrides: Partial<TripState> = {}): TripState {
   };
 }
 
-/**
- * Creates a minimal Place.
- * Default: indoor, terrainEasiness = 0.8, avgVisitDurationMin = 60,
- *          no tags, coords at Cầu Rồng.
- */
 function makePlace(overrides: Partial<Place> = {}): Place {
   return {
     placeId: 1,
@@ -62,7 +59,6 @@ function makePlace(overrides: Partial<Place> = {}): Place {
   };
 }
 
-/** Creates a sightseeing TripSlot with a given placeId and cost. */
 function makeSlot(overrides: Partial<TripSlot> = {}): TripSlot {
   return {
     slotId: 'slot-001',
@@ -83,7 +79,6 @@ function makeSlot(overrides: Partial<TripSlot> = {}): TripSlot {
   };
 }
 
-/** Creates a UserPreference with an all-zero preferenceVector (no interest match). */
 function makeUser(preferenceVector: number[] = new Array(10).fill(0)): UserPreference {
   return {
     userId: 'user-001',
@@ -102,12 +97,7 @@ function makeUser(preferenceVector: number[] = new Array(10).fill(0)): UserPrefe
 }
 
 const CLEAR_WEATHER: WeatherSnapshot = { rainMmPerH: 0 };
-const HEAVY_RAIN: WeatherSnapshot = { rainMmPerH: 10 };
 
-/**
- * Helper: build a minimal EvolveContext.
- * Defaults: 10 min travel, indoor place, clear weather, zero preference vector.
- */
 function makeCtx(overrides: Partial<EvolveContext> = {}): EvolveContext {
   return {
     travelTimeMin: 10,
@@ -119,391 +109,354 @@ function makeCtx(overrides: Partial<EvolveContext> = {}): EvolveContext {
 }
 
 // ---------------------------------------------------------------------------
-// Suite 1: evolve()
+// Main Test Suites
 // ---------------------------------------------------------------------------
 
-describe('StateEvolver.evolve', () => {
+describe('StateEvolver', () => {
   let evolver: StateEvolver;
 
   beforeEach(() => {
     evolver = new StateEvolver();
   });
 
-  it('decreases timeRemainingMin by travelTimeMin + duration', () => {
-    const s = makeState({ timeRemainingMin: 480 });
-    const slot = makeSlot();
-    const ctx = makeCtx({ travelTimeMin: 20, actualDurationMin: 90 });
-
-    const next = evolver.evolve(s, slot, ctx);
-
-    // 480 − (20 + 90) = 370
-    expect(next.timeRemainingMin).toBe(370);
-  });
-
-  it('falls back to place.avgVisitDurationMin when actualDurationMin is omitted', () => {
-    const s = makeState({ timeRemainingMin: 480 });
-    const place = makePlace({ avgVisitDurationMin: 45 });
-    const ctx = makeCtx({ travelTimeMin: 15, place, actualDurationMin: undefined });
-
-    const next = evolver.evolve(s, makeSlot(), ctx);
-
-    expect(next.timeRemainingMin).toBe(480 - 15 - 45);
-  });
-
-  it('decreases budgetRemaining by slot.estimatedCost', () => {
-    const s = makeState({ budgetRemaining: 500_000 });
-    const slot = makeSlot({ estimatedCost: 80_000 });
-    const ctx = makeCtx();
-
-    const next = evolver.evolve(s, slot, ctx);
-
-    expect(next.budgetRemaining).toBe(420_000);
-  });
-
-  it('uses actualCost when provided, overriding estimatedCost', () => {
-    const s = makeState({ budgetRemaining: 500_000 });
-    const slot = makeSlot({ estimatedCost: 80_000 });
-    const ctx = makeCtx({ actualCost: 120_000 });
-
-    const next = evolver.evolve(s, slot, ctx);
-
-    expect(next.budgetRemaining).toBe(380_000);
-  });
-
-  it('increases fatigue more for an outdoor slot visited in heavy rain', () => {
-    const base = makeState({ fatigue: 0.2 });
-    const slot = makeSlot({ activityType: 'sightseeing' });
-    const outdoorPlace = makePlace({ indoorOutdoor: 'outdoor', terrainEasiness: 0.8 });
-    const indoorPlace = makePlace({ indoorOutdoor: 'indoor', terrainEasiness: 0.8 });
-
-    const ctxRainyOutdoor = makeCtx({
-      place: outdoorPlace,
-      weatherAtSlot: HEAVY_RAIN,
-      travelTimeMin: 0,
-      actualDurationMin: 60,
-    });
-    const ctxIndoor = makeCtx({
-      place: indoorPlace,
-      weatherAtSlot: HEAVY_RAIN,
-      travelTimeMin: 0,
-      actualDurationMin: 60,
+  // ===========================================================================
+  // Nhóm Test cho các Hàm Phụ Trợ (Helper Functions)
+  // ===========================================================================
+  describe('0. Helper Functions (Standalone)', () => {
+    describe('clamp(x, lo, hi)', () => {
+      it('x nằm giữa khoảng lo và hi (trả về x)', () => {
+        expect(clamp(5, 0, 10)).toBe(5);
+      });
+      it('x nhỏ hơn lo (trả về lo)', () => {
+        expect(clamp(-5, 0, 10)).toBe(0);
+      });
+      it('x lớn hơn hi (trả về hi)', () => {
+        expect(clamp(15, 0, 10)).toBe(10);
+      });
+      it('x bằng đúng lo hoặc bằng đúng hi', () => {
+        expect(clamp(0, 0, 10)).toBe(0);
+        expect(clamp(10, 0, 10)).toBe(10);
+      });
     });
 
-    const nextOutdoor = evolver.evolve(base, slot, ctxRainyOutdoor);
-    const nextIndoor = evolver.evolve(base, slot, ctxIndoor);
-
-    expect(nextOutdoor.fatigue).toBeGreaterThan(nextIndoor.fatigue);
-  });
-
-  it('decreases fatigue for a meal slot (recovery)', () => {
-    // Start at moderate fatigue; with zero travel and easy terrain the
-    // fatigueDelta without meal adjustment = 0. With meal: delta = −0.12 → fatigue goes down.
-    const s = makeState({ fatigue: 0.5 });
-    const slot = makeSlot({ activityType: 'meal' });
-    const ctx = makeCtx({
-      travelTimeMin: 0,
-      actualDurationMin: 60,
-      place: makePlace({ terrainEasiness: 1.0 }), // no terrain load
-      weatherAtSlot: CLEAR_WEATHER,
+    describe('dot(a, b)', () => {
+      it('Hai mảng cùng độ dài, tích vô hướng dương', () => {
+        expect(dot([1, 2], [3, 4])).toBe(1*3 + 2*4); // 3 + 8 = 11
+      });
+      it('Mảng a dài hơn mảng b', () => {
+        expect(dot([1, 2, 3], [4, 5])).toBe(1*4 + 2*5 + 3*0); // 4 + 10 = 14
+      });
+      it('Mảng b dài hơn mảng a', () => {
+        expect(dot([1, 2], [3, 4, 5])).toBe(1*3 + 2*4 + 0*5); // 3 + 8 = 11
+      });
+      it('Một trong hai mảng rỗng [] (trả về 0)', () => {
+        expect(dot([], [1, 2])).toBe(0);
+        expect(dot([1, 2], [])).toBe(0);
+      });
+      it('Hai mảng chứa giá trị 0 hoặc số âm', () => {
+        expect(dot([1, -1, 0], [2, 3, 5])).toBe(1*2 + (-1)*3 + 0*5); // 2 - 3 = -1
+      });
     });
 
-    const next = evolver.evolve(s, slot, ctx);
+    describe('tagVectorOf(place)', () => {
+      it('place.tags là undefined hoặc null (trả về mảng 10 số 0)', () => {
+        const v1 = tagVectorOf(makePlace({ tags: undefined as any }));
+        expect(v1).toHaveLength(10);
+        expect(v1.every(x => x === 0)).toBe(true);
 
-    expect(next.fatigue).toBeLessThan(s.fatigue);
+        const v2 = tagVectorOf(makePlace({ tags: null as any }));
+        expect(v2).toHaveLength(10);
+        expect(v2.every(x => x === 0)).toBe(true);
+      });
+      it('place.tags là mảng rỗng []', () => {
+        const v = tagVectorOf(makePlace({ tags: [] }));
+        expect(v.every(x => x === 0)).toBe(true);
+      });
+      it('Các tagId nằm chính xác ở biên: 1 và 10', () => {
+        const place = makePlace({ tags: [{ tagId: 1, name: 'a', displayName: 'a' }, { tagId: 10, name: 'b', displayName: 'b' }] });
+        const v = tagVectorOf(place);
+        expect(v[0]).toBe(1);
+        expect(v[9]).toBe(1);
+      });
+      it('Các tagId nằm ngoài khoảng: 0, -1, 11, 99 (bị bỏ qua)', () => {
+        const place = makePlace({ tags: [{ tagId: 0, name: '0', displayName: '0' }, { tagId: -1, name: '-1', displayName: '-1' }, { tagId: 11, name: '11', displayName: '11' }] });
+        const v = tagVectorOf(place);
+        expect(v.every(x => x === 0)).toBe(true);
+      });
+      it('Có các tagId trùng lặp trong mảng tags (vẫn gán v[id-1] = 1)', () => {
+        const place = makePlace({ tags: [{ tagId: 5, name: 'x', displayName: 'x' }, { tagId: 5, name: 'x', displayName: 'x' }] });
+        const v = tagVectorOf(place);
+        expect(v[4]).toBe(1);
+      });
+    });
   });
 
-  it('decreases fatigue more for a rest slot than a meal slot', () => {
-    const s = makeState({ fatigue: 0.5 });
-    const baseCtx = makeCtx({
-      travelTimeMin: 0,
-      actualDurationMin: 60,
-      place: makePlace({ terrainEasiness: 1.0 }),
-      weatherAtSlot: CLEAR_WEATHER,
+  // ===========================================================================
+  // 1. Nhóm Test: Tính Bất biến và Giá trị Cơ bản (Immutability & Basic Updates)
+  // ===========================================================================
+  describe('1. Immutability & Basic Updates', () => {
+    it('Trạng thái không bị thay đổi (No Mutation)', () => {
+      const oldState = makeState({ timeRemainingMin: 400 });
+      const newState = evolver.evolve(oldState, makeSlot(), makeCtx());
+      expect(newState).not.toBe(oldState);
+      expect(oldState.timeRemainingMin).toBe(400);
     });
 
-    const mealSlot = makeSlot({ activityType: 'meal' });
-    const restSlot = makeSlot({ activityType: 'rest' });
-
-    const afterMeal = evolver.evolve(s, mealSlot, baseCtx);
-    const afterRest = evolver.evolve(s, restSlot, baseCtx);
-
-    expect(afterRest.fatigue).toBeLessThan(afterMeal.fatigue);
-  });
-
-  it('clamps fatigue to 0 when it would go below 0', () => {
-    // Rest slot with low starting fatigue can produce negative delta
-    const s = makeState({ fatigue: 0.05 });
-    const slot = makeSlot({ activityType: 'rest' });
-    const ctx = makeCtx({
-      travelTimeMin: 0,
-      actualDurationMin: 60,
-      place: makePlace({ terrainEasiness: 1.0 }),
+    it('Cập nhật thông tin slotOrder: oldState.slotOrder + 1', () => {
+      const oldState = makeState({ slotOrder: 5 });
+      const newState = evolver.evolve(oldState, makeSlot(), makeCtx());
+      expect(newState.slotOrder).toBe(6);
     });
 
-    const next = evolver.evolve(s, slot, ctx);
-
-    expect(next.fatigue).toBeGreaterThanOrEqual(0);
+    it('Cập nhật tọa độ & nguồn', () => {
+      const place = makePlace({ lat: 10.5, lng: 20.5 });
+      const ctx = makeCtx({ place });
+      const newState = evolver.evolve(makeState(), makeSlot(), ctx);
+      expect(newState.currentLat).toBe(10.5);
+      expect(newState.currentLng).toBe(20.5);
+      expect(newState.source).toBe('simulated');
+    });
   });
 
-  it('clamps fatigue to 1 when it would exceed 1', () => {
-    // Start near cap, heavy travel + hard outdoor terrain should push past 1
-    const s = makeState({ fatigue: 0.9 });
-    const slot = makeSlot({ activityType: 'sightseeing' });
-    const ctx = makeCtx({
-      travelTimeMin: 300,                              // 5 h travel → travelLoad = 2.5
-      actualDurationMin: 180,                          // 3 h visit
-      place: makePlace({ terrainEasiness: 0.0, indoorOutdoor: 'outdoor' }),
-      weatherAtSlot: HEAVY_RAIN,
+  // ===========================================================================
+  // 2. Nhóm Test: Logic Thời gian và Ngân sách (Time & Budget Allocation)
+  // ===========================================================================
+  describe('2. Time & Budget Allocation', () => {
+    it('Trường hợp có ctx.actualCost: Ngân sách bị trừ đúng số tiền thực tế', () => {
+      const s = makeState({ budgetRemaining: 100_000 });
+      const ctx = makeCtx({ actualCost: 30_000 });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.budgetRemaining).toBe(70_000);
     });
 
-    const next = evolver.evolve(s, slot, ctx);
-
-    expect(next.fatigue).toBeLessThanOrEqual(1);
-  });
-
-  it('increases moodProxy when preferenceVector matches place tags', () => {
-    // User has interest in tag 3; place has tag 3 → interestMatch = 1
-    const prefVec = new Array(10).fill(0);
-    prefVec[2] = 1; // tagId 3
-    const user = makeUser(prefVec);
-
-    const place = makePlace({
-      tags: [{ tagId: 3, name: 'culture', displayName: 'Văn hóa' }],
+    it('Trường hợp không có actualCost: Ngân sách bị trừ dựa trên slot.estimatedCost', () => {
+      const s = makeState({ budgetRemaining: 100_000 });
+      const slot = makeSlot({ estimatedCost: 40_000 });
+      const next = evolver.evolve(s, slot, makeCtx({ actualCost: undefined }));
+      expect(next.budgetRemaining).toBe(60_000);
     });
 
-    const s = makeState({ moodProxy: 0.5 });
-    const ctx = makeCtx({
-      user,
-      place,
-      travelTimeMin: 0,
-      actualDurationMin: 60,
-      weatherAtSlot: CLEAR_WEATHER,
+    it('Trường hợp có ctx.actualDurationMin: Thời gian bị trừ đúng bằng travelTimeMin + actualDurationMin', () => {
+      const s = makeState({ timeRemainingMin: 200 });
+      const ctx = makeCtx({ travelTimeMin: 20, actualDurationMin: 80 });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.timeRemainingMin).toBe(100); // 200 - (20 + 80)
     });
 
-    const next = evolver.evolve(s, makeSlot(), ctx);
+    it('Trường hợp không có actualDurationMin: Thời gian bị trừ dựa trên place.avgVisitDurationMin', () => {
+      const s = makeState({ timeRemainingMin: 200 });
+      const place = makePlace({ avgVisitDurationMin: 45 });
+      const ctx = makeCtx({ travelTimeMin: 15, actualDurationMin: undefined, place });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.timeRemainingMin).toBe(140); // 200 - (15 + 45)
+    });
 
-    // moodDelta = 0.08 × 1 − 0 − 0 = +0.08
-    expect(next.moodProxy).toBeGreaterThan(s.moodProxy);
+    it('timeRemainingMin có thể âm — isFeasible sẽ phát hiện và loại plan', () => {
+      // [Bug 2 fix] Math.max(0,...) đã bị xóa. Giá trị âm được giữ nguyên để
+      // isFeasible() có thể phát hiện vi phạm thời gian thay vì che khuất nó.
+      const s = makeState({ timeRemainingMin: 30 });
+      const ctx = makeCtx({ travelTimeMin: 50, actualDurationMin: 60 });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.timeRemainingMin).toBe(-80); // 30 - (50 + 60) = -80
+      expect(evolver.isFeasible(next)).toBe(false);
+    });
+
+    it('Kiểm tra budgetRemaining khi chi phí vượt quá ngân sách (trả về số âm)', () => {
+      const s = makeState({ budgetRemaining: 10_000 });
+      const next = evolver.evolve(s, makeSlot(), makeCtx({ actualCost: 50_000 }));
+      expect(next.budgetRemaining).toBe(-40_000);
+    });
   });
 
-  it('does not increase moodProxy when place has no matching tags', () => {
-    // User is interested in tag 1; place has no tags → interestMatch = 0
-    const prefVec = new Array(10).fill(0);
-    prefVec[0] = 1;
-    const user = makeUser(prefVec);
-    const place = makePlace({ tags: [] });
+  // ===========================================================================
+  // 3. Nhóm Test: Logic Thể lực (Fatigue Dynamics)
+  // ===========================================================================
+  describe('3. Fatigue Dynamics', () => {
+    it('Tăng mệt mỏi do di chuyển & địa hình (0.05 và 0.10)', () => {
+      const s = makeState({ fatigue: 0.2 });
+      const ctx = makeCtx({
+        travelTimeMin: 120, // travelLoad = 1.0 -> +0.05
+        actualDurationMin: 60,
+        place: makePlace({ terrainEasiness: 0.5 }), // terrainLoad = 0.5 * 1.0 = 0.5 -> +0.05
+      });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.fatigue).toBeCloseTo(0.3, 5);
+    });
 
-    const s = makeState({ moodProxy: 0.5, fatigue: 0.2 });
-    const ctx = makeCtx({ user, place, travelTimeMin: 0, actualDurationMin: 60 });
+    it('Phục hồi thể lực: meal (-0.12)', () => {
+      const s = makeState({ fatigue: 0.5 });
+      const slot = makeSlot({ activityType: 'meal' });
+      const ctx = makeCtx({ travelTimeMin: 0, actualDurationMin: 60, place: makePlace({ terrainEasiness: 1.0 }) });
+      const next = evolver.evolve(s, slot, ctx);
+      expect(next.fatigue).toBeCloseTo(0.38, 5);
+    });
 
-    const next = evolver.evolve(s, makeSlot(), ctx);
+    it('Phục hồi thể lực: rest (-0.20)', () => {
+      const s = makeState({ fatigue: 0.5 });
+      const slot = makeSlot({ activityType: 'rest' });
+      const ctx = makeCtx({ travelTimeMin: 0, actualDurationMin: 60, place: makePlace({ terrainEasiness: 1.0 }) });
+      const next = evolver.evolve(s, slot, ctx);
+      expect(next.fatigue).toBeCloseTo(0.3, 5);
+    });
 
-    // moodDelta = 0 − fatiguePenalty(0.2≤0.7→0) − 0 = 0 → mood unchanged
-    expect(next.moodProxy).toBeCloseTo(s.moodProxy, 5);
+    it('Biên giới hạn: fatigue kẹp về 0', () => {
+      const s = makeState({ fatigue: 0.05 });
+      const slot = makeSlot({ activityType: 'rest' });
+      const next = evolver.evolve(s, slot, makeCtx({ travelTimeMin: 0, actualDurationMin: 0, place: makePlace({ terrainEasiness: 1.0 }) }));
+      expect(next.fatigue).toBe(0);
+    });
+
+    it('Biên giới hạn: fatigue kẹp về 1', () => {
+      const s = makeState({ fatigue: 0.95 });
+      const ctx = makeCtx({ travelTimeMin: 300, actualDurationMin: 180, place: makePlace({ terrainEasiness: 0.0 }) });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.fatigue).toBe(1);
+    });
   });
 
-  it('preserves purity: same inputs always produce the same output', () => {
-    const s = makeState();
-    const slot = makeSlot();
-    const ctx = makeCtx({ travelTimeMin: 15, actualDurationMin: 45 });
+  // ===========================================================================
+  // 4. Nhóm Test: Logic Thời tiết (Weather Impacts)
+  // ===========================================================================
+  describe('4. Weather Impacts', () => {
+    it('Trời mưa & Hoạt động ngoài trời (Worst-case): fatigue +0.15, mood -0.08', () => {
+      const s = makeState({ fatigue: 0.2, moodProxy: 0.6 });
+      const ctx = makeCtx({
+        weatherAtSlot: { rainMmPerH: 5 },
+        place: makePlace({ indoorOutdoor: 'outdoor', terrainEasiness: 1.0 }),
+        travelTimeMin: 0,
+        actualDurationMin: 60,
+      });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.fatigue).toBeCloseTo(0.35, 5);
+      expect(next.moodProxy).toBeCloseTo(0.52, 5);
+    });
 
-    const result1 = evolver.evolve(s, slot, ctx);
-    const result2 = evolver.evolve(s, slot, ctx);
+    it('Trời mưa nhưng ở trong nhà (Safe Weather)', () => {
+      const s = makeState({ fatigue: 0.2, moodProxy: 0.6 });
+      const ctx = makeCtx({
+        weatherAtSlot: { rainMmPerH: 5 },
+        place: makePlace({ indoorOutdoor: 'indoor', terrainEasiness: 1.0 }),
+        travelTimeMin: 0,
+        actualDurationMin: 60,
+      });
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      expect(next.fatigue).toBe(0.2);
+      expect(next.moodProxy).toBe(0.6);
+    });
 
-    // All numeric fields must be identical
-    expect(result1.timeRemainingMin).toBe(result2.timeRemainingMin);
-    expect(result1.budgetRemaining).toBe(result2.budgetRemaining);
-    expect(result1.fatigue).toBe(result2.fatigue);
-    expect(result1.moodProxy).toBe(result2.moodProxy);
-    expect(result1.slotOrder).toBe(result2.slotOrder);
-    expect(result1.currentLat).toBe(result2.currentLat);
-    expect(result1.currentLng).toBe(result2.currentLng);
+    it('Trời đẹp (rain < 5)', () => {
+      const ctx = makeCtx({ weatherAtSlot: { rainMmPerH: 4.9 }, place: makePlace({ indoorOutdoor: 'outdoor', terrainEasiness: 1.0 }), travelTimeMin: 0, actualDurationMin: 60 });
+      const next = evolver.evolve(makeState({ fatigue: 0.2 }), makeSlot(), ctx);
+      expect(next.fatigue).toBe(0.2);
+    });
   });
 
-  it('does not mutate the original state', () => {
-    const s = makeState({ timeRemainingMin: 480, budgetRemaining: 500_000 });
-    const frozen = Object.freeze({ ...s }); // shallow freeze
+  // ===========================================================================
+  // 5. Nhóm Test: Logic Tâm trạng (Mood & Interest Match)
+  // ===========================================================================
+  describe('5. Mood & Interest Match', () => {
+    it('Khớp sở thích (High Interest Match): moodProxy +0.08 * interestMatch', () => {
+      const prefVec = new Array(10).fill(0); prefVec[0] = 1; prefVec[1] = 1;
+      const user = makeUser(prefVec);
+      const place = makePlace({ tags: [{ tagId: 1, name: 'a', displayName: 'a' }, { tagId: 2, name: 'b', displayName: 'b' }] });
+      const s = makeState({ moodProxy: 0.5, fatigue: 0.2 });
+      const next = evolver.evolve(s, makeSlot(), makeCtx({ user, place, travelTimeMin: 0, actualDurationMin: 0 }));
+      expect(next.moodProxy).toBeCloseTo(0.66, 5); // 0.5 + 0.16
+    });
 
-    evolver.evolve(frozen as TripState, makeSlot(), makeCtx());
+    it('Lệch sở thích (Zero Interest Match)', () => {
+      const prefVec = new Array(10).fill(0); prefVec[0] = 1;
+      const user = makeUser(prefVec);
+      const place = makePlace({ tags: [] });
+      const next = evolver.evolve(makeState({ moodProxy: 0.5, fatigue: 0.2 }), makeSlot(), makeCtx({ user, place }));
+      expect(next.moodProxy).toBe(0.5);
+    });
 
-    // If evolve had mutated s, the frozen copy would throw — reaching here means purity held.
-    expect(frozen.timeRemainingMin).toBe(480);
-    expect(frozen.budgetRemaining).toBe(500_000);
+    it('Phạt tâm trạng do kiệt sức (Fatigue Penalty on Mood): (fatigue - 0.7) * 0.3', () => {
+      const s = makeState({ fatigue: 0.8, moodProxy: 0.6 });
+      const next = evolver.evolve(s, makeSlot(), makeCtx({ travelTimeMin: 0, actualDurationMin: 0, place: makePlace({ terrainEasiness: 1.0 }) }));
+      expect(next.moodProxy).toBeCloseTo(0.57, 5); // 0.6 - 0.03
+    });
+
+    it('Biên giới hạn: mood kẹp về 0 và 1', () => {
+      const sH = makeState({ moodProxy: 0.95 });
+      const ctxH = makeCtx({ user: makeUser(new Array(10).fill(1)), place: makePlace({ tags: Array.from({ length: 5 }, (_, i) => ({ tagId: i + 1, name: 't', displayName: 't' })) }) });
+      expect(evolver.evolve(sH, makeSlot(), ctxH).moodProxy).toBe(1);
+
+      const sL = makeState({ moodProxy: 0.05, fatigue: 0.95 });
+      expect(evolver.evolve(sL, makeSlot(), makeCtx({ travelTimeMin: 0, actualDurationMin: 0, place: makePlace({ terrainEasiness: 1.0 }) })).moodProxy).toBe(0);
+    });
   });
 
-  it('increments slotOrder by 1', () => {
-    const s = makeState({ slotOrder: 4 });
-    const next = evolver.evolve(s, makeSlot(), makeCtx());
-    expect(next.slotOrder).toBe(5);
+  // ===========================================================================
+  // 6. Nhóm Test: Dữ liệu Khuyết / Nullish Fallback (Robustness)
+  // ===========================================================================
+  describe('6. Robustness & Nullish Fallback', () => {
+    it('Thiếu tags: place.tags là undefined hoặc null', () => {
+      expect(() => tagVectorOf(makePlace({ tags: undefined as any }))).not.toThrow();
+      expect(() => tagVectorOf(makePlace({ tags: null as any }))).not.toThrow();
+    });
+
+    it('Thiếu độ khó địa hình: fallback về 0.8', () => {
+      const place = makePlace({ terrainEasiness: undefined as any });
+      const next = evolver.evolve(makeState({ fatigue: 0 }), makeSlot(), makeCtx({ place, travelTimeMin: 0, actualDurationMin: 60 }));
+      expect(next.fatigue).toBeCloseTo(0.02, 5); // terrainLoad = 0.2 -> delta = 0.02
+    });
   });
 
-  it('updates currentLat/Lng to the visited place coordinates', () => {
-    const place = makePlace({ lat: 16.0003, lng: 108.2600 });
-    const ctx = makeCtx({ place });
+  // ===========================================================================
+  // Core evolve: Môi trường & Bất biến
+  // ===========================================================================
+  describe('Core evolve: Environment & Invariants', () => {
+    it('Tính bất biến tuyệt đối (frozenState)', () => {
+      const s = makeState();
+      Object.freeze(s);
+      expect(() => evolver.evolve(s, makeSlot(), makeCtx())).not.toThrow();
+    });
 
-    const next = evolver.evolve(makeState(), makeSlot(), ctx);
-
-    expect(next.currentLat).toBe(16.0003);
-    expect(next.currentLng).toBe(108.2600);
+    it('Dữ liệu sinh tự động: capturedAt là ISO valid, source là "simulated"', () => {
+      const next = evolver.evolve(makeState(), makeSlot(), makeCtx());
+      expect(new Date(next.capturedAt).toISOString()).toBe(next.capturedAt);
+      expect(next.source).toBe('simulated');
+    });
   });
 
-  it('sets source to "simulated"', () => {
-    const s = makeState({ source: 'simulated' });
-    const next = evolver.evolve(s, makeSlot(), makeCtx());
-    expect(next.source).toBe('simulated');
-  });
-});
+  // ===========================================================================
+  // Core evolve: Ranh giới Ngưỡng (Threshold Boundaries)
+  // ===========================================================================
+  describe('Core evolve: Threshold Boundaries', () => {
+    it('Biên thời tiết (Rain Threshold): 4.9 vs 5.0', () => {
+      const p = makePlace({ indoorOutdoor: 'outdoor', terrainEasiness: 1.0 });
+      const s = makeState({ fatigue: 0.2 });
+      expect(evolver.evolve(s, makeSlot(), makeCtx({ weatherAtSlot: { rainMmPerH: 4.9 }, place: p, travelTimeMin: 0, actualDurationMin: 60 })).fatigue).toBe(0.2);
+      expect(evolver.evolve(s, makeSlot(), makeCtx({ weatherAtSlot: { rainMmPerH: 5.0 }, place: p, travelTimeMin: 0, actualDurationMin: 60 })).fatigue).toBeCloseTo(0.35, 5);
+    });
 
-// ---------------------------------------------------------------------------
-// Suite 2: isFeasible()
-// ---------------------------------------------------------------------------
-
-describe('StateEvolver.isFeasible', () => {
-  let evolver: StateEvolver;
-
-  beforeEach(() => {
-    evolver = new StateEvolver();
-  });
-
-  it('returns true for a healthy state', () => {
-    const s = makeState({ timeRemainingMin: 60, budgetRemaining: 100_000, fatigue: 0.5 });
-    expect(evolver.isFeasible(s)).toBe(true);
+    it('Biên kiệt sức (Fatigue Threshold): 0.7 vs 0.71', () => {
+      const ctx = makeCtx({ travelTimeMin: 0, actualDurationMin: 0, place: makePlace({ terrainEasiness: 1.0 }) });
+      expect(evolver.evolve(makeState({ fatigue: 0.7, moodProxy: 0.6 }), makeSlot(), ctx).moodProxy).toBe(0.6);
+      expect(evolver.evolve(makeState({ fatigue: 0.71, moodProxy: 0.6 }), makeSlot(), ctx).moodProxy).toBeCloseTo(0.597, 5);
+    });
   });
 
-  it('returns false when budgetRemaining < 0', () => {
-    const s = makeState({ budgetRemaining: -1 });
-    expect(evolver.isFeasible(s)).toBe(false);
-  });
+  // ===========================================================================
+  // Core evolve: Kịch bản Tổ hợp (Complex Scenarios)
+  // ===========================================================================
+  describe('Core evolve: Complex Scenarios', () => {
+    it('Tổ hợp Phục hồi (Rest Clamp)', () => {
+      const s = makeState({ fatigue: 0.05 });
+      expect(evolver.evolve(s, makeSlot({ activityType: 'meal' }), makeCtx({ travelTimeMin: 0, actualDurationMin: 0, place: makePlace({ terrainEasiness: 1.0 }) })).fatigue).toBe(0);
+    });
 
-  it('returns false when timeRemainingMin < 0', () => {
-    const s = makeState({ timeRemainingMin: -1 });
-    expect(evolver.isFeasible(s)).toBe(false);
-  });
-
-  it('returns false when fatigue > 0.95 (FATIGUE_CAP)', () => {
-    const s = makeState({ fatigue: 0.96 });
-    expect(evolver.isFeasible(s)).toBe(false);
-  });
-
-  it('returns true when fatigue equals exactly 0.95', () => {
-    const s = makeState({ fatigue: 0.95 });
-    expect(evolver.isFeasible(s)).toBe(true);
-  });
-
-  it('returns true when budgetRemaining and timeRemainingMin are both 0', () => {
-    const s = makeState({ timeRemainingMin: 0, budgetRemaining: 0, fatigue: 0.5 });
-    expect(evolver.isFeasible(s)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Suite 3: estimateTravelTime()
-// ---------------------------------------------------------------------------
-
-describe('StateEvolver.estimateTravelTime', () => {
-  let evolver: StateEvolver;
-
-  beforeEach(() => {
-    evolver = new StateEvolver();
-  });
-
-  it('returns 0 for identical coordinates', () => {
-    const t = evolver.estimateTravelTime(16.0614, 108.2273, 16.0614, 108.2273);
-    expect(t).toBe(0);
-  });
-
-  it('Cầu Rồng → Bảo tàng Điêu khắc Chăm ≈ 1–5 min (short urban hop)', () => {
-    // Cầu Rồng:        16.0614, 108.2273
-    // Bảo tàng Chăm:   16.0603, 108.2235
-    // Straight-line ≈ 0.42 km → formula gives ≈ 1.4 min
-    const t = evolver.estimateTravelTime(16.0614, 108.2273, 16.0603, 108.2235);
-    expect(t).toBeGreaterThan(1);
-    expect(t).toBeLessThan(5);
-  });
-
-  it('Đà Nẵng trung tâm → Bà Nà Hills ≈ 60–120 min (mountain road, formula uses 25 km/h)', () => {
-    // Đà Nẵng center:  16.0544, 108.2022
-    // Bà Nà Hills:     15.9971, 107.9913
-    // Straight-line ≈ 23 km → road-corrected ≈ 32 km → at 25 km/h ≈ 78 min
-    const t = evolver.estimateTravelTime(16.0544, 108.2022, 15.9971, 107.9913);
-    expect(t).toBeGreaterThan(60);
-    expect(t).toBeLessThan(120);
-  });
-
-  it('is symmetric: A→B equals B→A', () => {
-    const t1 = evolver.estimateTravelTime(16.0614, 108.2273, 16.0603, 108.2235);
-    const t2 = evolver.estimateTravelTime(16.0603, 108.2235, 16.0614, 108.2273);
-    expect(t1).toBeCloseTo(t2, 8);
-  });
-
-  it('longer distance produces longer travel time', () => {
-    const short = evolver.estimateTravelTime(16.0614, 108.2273, 16.0603, 108.2235); // ~0.4 km
-    const long = evolver.estimateTravelTime(16.0544, 108.2022, 15.9971, 107.9913);  // ~23 km
-    expect(long).toBeGreaterThan(short);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Suite 4: computeTrajectory()
-// ---------------------------------------------------------------------------
-
-describe('StateEvolver.computeTrajectory', () => {
-  let evolver: StateEvolver;
-
-  beforeEach(() => {
-    evolver = new StateEvolver();
-  });
-
-  const place1 = makePlace({ placeId: 10, lat: 16.06, lng: 108.22 });
-  const place2 = makePlace({ placeId: 20, lat: 16.07, lng: 108.23 });
-
-  const slot1 = makeSlot({ slotId: 's1', placeId: 10, estimatedCost: 30_000 });
-  const slot2 = makeSlot({ slotId: 's2', placeId: 20, estimatedCost: 50_000 });
-
-  const ctx: ReplanContext = {
-    candidatePool: [place1, place2],
-    user: makeUser(),
-    weatherBySlotId: {},
-    defaultWeather: CLEAR_WEATHER,
-    initialState: makeState({ budgetRemaining: 2_000_000, timeRemainingMin: 600 }),
-  };
-
-  it('returns array of length plan.length + 1 (includes initial state)', () => {
-    const trajectory = evolver.computeTrajectory(
-      [slot1, slot2],
-      makeState(),
-      ctx,
-    );
-    expect(trajectory).toHaveLength(3);
-  });
-
-  it('first element equals the initial state object', () => {
-    const initial = makeState();
-    const trajectory = evolver.computeTrajectory([slot1], initial, ctx);
-    expect(trajectory[0]).toBe(initial);
-  });
-
-  it('budget decreases monotonically when all costs are positive', () => {
-    const trajectory = evolver.computeTrajectory(
-      [slot1, slot2],
-      makeState({ budgetRemaining: 500_000 }),
-      ctx,
-    );
-    expect(trajectory[1]!.budgetRemaining).toBeLessThan(trajectory[0]!.budgetRemaining);
-    expect(trajectory[2]!.budgetRemaining).toBeLessThan(trajectory[1]!.budgetRemaining);
-  });
-
-  it('throws when a placeId is not in candidatePool', () => {
-    const badSlot = makeSlot({ placeId: 999 });
-    expect(() =>
-      evolver.computeTrajectory([badSlot], makeState(), ctx),
-    ).toThrow('placeId 999 not found in candidatePool');
-  });
-
-  it('returns only the initial state for an empty plan', () => {
-    const initial = makeState();
-    const trajectory = evolver.computeTrajectory([], initial, ctx);
-    expect(trajectory).toHaveLength(1);
-    expect(trajectory[0]).toBe(initial);
+    it('Tổ hợp Tâm trạng kép (Interest vs Rain vs Fatigue)', () => {
+      const user = makeUser([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      const place = makePlace({ tags: [{ tagId: 1, name: 'a', displayName: 'a' }], indoorOutdoor: 'outdoor', terrainEasiness: 1.0 });
+      const s = makeState({ moodProxy: 0.5, fatigue: 0.9 });
+      const ctx = makeCtx({ user, place, weatherAtSlot: { rainMmPerH: 10 }, travelTimeMin: 0, actualDurationMin: 60 });
+      
+      const next = evolver.evolve(s, makeSlot(), ctx);
+      // fatigue becomes 1.0. moodDelta = 0.08 - (1.0-0.7)*0.3 - 0.08 = -0.09
+      expect(next.moodProxy).toBeCloseTo(0.41, 5);
+    });
   });
 });

@@ -4,13 +4,71 @@ import type { BeamSearchContext } from './BeamSearch';
 
 const DA_NANG_CENTER = { lat: 16.0544, lng: 108.2022 };
 const DEFAULT_DAY_MINUTES = 12 * 60;
+
+const CITY_CENTERS: Record<string, { lat: number; lng: number }> = {
+  'da nang':  DA_NANG_CENTER,
+  'đà nẵng': DA_NANG_CENTER,
+  'danang':   DA_NANG_CENTER,
+  'hoi an':   { lat: 15.8801, lng: 108.3380 },
+  'hội an':   { lat: 15.8801, lng: 108.3380 },
+};
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 const DEFAULT_WEIGHTS: ObjectiveWeights = {
-  wInterest: 1, wPace: 1, wDistance: 1, wBudget: 1, wWeather: 1, wRisk: 1,
+  wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
+  wStability: 0.05, wPotentialBias: 0.10, wProximity: 0, wSynergy: 0.3,
 };
 
 export class PlanLoader {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool) { }
 
+  /**
+   * @summary Tải và lắp ráp toàn bộ BeamSearchContext từ database cho một chuyến đi.
+   *
+   * Thực hiện 3 giai đoạn truy vấn để xây dựng context phục vụ Beam Search:
+   * 1. **Trip header** (tuần tự): Lấy thông tin cơ bản (`userId`, `budget`, `city`...).
+   * 2. **Song song (`Promise.all`)**:
+   *    - `v_trip_slot_active`: Danh sách slot chưa bị replaced/completed.
+   *    - `trip_state_snapshot`: Snapshot trạng thái mới nhất (fatigue, budget, location).
+   *    - `user_preference + user_objective_weights`: Vector sở thích và trọng số mục tiêu.
+   * 3. **Địa điểm ứng viên** (song song): Tags và giờ mở cửa cho toàn bộ địa điểm trong thành phố
+   *    cộng với các placeId đang có trong slot (mustInclude).
+   *
+   * **Side Effects:**
+   * - Thực hiện ít nhất 5 truy vấn SQL đến `this.pool`.
+   * - Nếu không có snapshot: gọi thêm `buildDefaultState()` (có thể thêm 1 truy vấn nữa).
+   *
+   * @param tripId {string} UUID của chuyến đi cần tải — phải là UUID hợp lệ và tồn tại trong DB.
+   * @returns {Promise<BeamSearchContext>} Context hoàn chỉnh gồm `remainingSlots`, `initialState`,
+   *   `weights`, `candidatePool`, `user`, `defaultWeather` (mưa=0), `weatherForecast` (mặc định `[]`).
+   * @throws {Error} `"Trip ${tripId} not found"` khi tripId không tồn tại.
+   * @throws {Error} Bất kỳ lỗi database nào (connection, timeout, constraint...) — không xử lý nội bộ.
+   *
+   * @pre `tripId` là UUID hợp lệ tồn tại trong bảng `trip`.
+   *   `this.pool` đang kết nối và có quyền đọc các bảng liên quan.
+   * @post `candidatePool` luôn chứa đầy đủ các địa điểm trong slot (mustInclude).
+   *   `weatherForecast` mặc định là `[]` — caller tự inject nếu cần dự báo thời tiết.
+   *
+   * @example
+   * ```typescript
+   * const loader = new PlanLoader(pool);
+   * const ctx = await loader.load('550e8400-e29b-41d4-a716-446655440000');
+   * // ctx.remainingSlots → các slot chưa hoàn thành
+   * // ctx.initialState   → snapshot mới nhất hoặc state mặc định nếu trip mới
+   * // ctx.candidatePool  → tất cả địa điểm trong thành phố + địa điểm đang có trong slot
+   * ```
+   */
   async load(tripId: string): Promise<BeamSearchContext> {
     // 1. Load trip header
     const tripRes = await this.pool.query<{
@@ -84,59 +142,88 @@ export class PlanLoader {
 
     // 3. Map slots
     const remainingSlots: TripSlot[] = slotsRes.rows.map((r) => ({
-      slotId:        r.slot_id,
-      tripId:        r.trip_id,
-      dayIndex:      r.day_index,
-      slotOrder:     r.slot_order,
-      version:       r.version,
-      placeId:       Number(r.place_id),
-      plannedStart:  r.planned_start,
-      plannedEnd:    r.planned_end,
-      actualStart:   r.actual_start,
-      actualEnd:     r.actual_end,
+      slotId: r.slot_id,
+      tripId: r.trip_id,
+      dayIndex: r.day_index,
+      slotOrder: r.slot_order,
+      version: r.version,
+      placeId: Number(r.place_id),
+      plannedStart: r.planned_start,
+      plannedEnd: r.planned_end,
+      actualStart: r.actual_start,
+      actualEnd: r.actual_end,
       estimatedCost: r.estimated_cost,
-      activityType:  r.activity_type as TripSlot['activityType'],
-      rationale:     r.rationale,
-      status:        r.status as TripSlot['status'],
+      activityType: r.activity_type as TripSlot['activityType'],
+      rationale: r.rationale,
+      status: r.status as TripSlot['status'],
     }));
 
     // 4. Build initial state (from snapshot or derive from trip)
     const snap = stateRes.rows[0];
-    const initialState: TripState = snap
+    let initialState: TripState = snap
       ? {
-          tripId,
-          dayIndex:          snap.day_index,
-          slotOrder:         snap.slot_order,
-          timeRemainingMin:  snap.time_remaining_min,
-          budgetRemaining:   snap.budget_remaining,
-          fatigue:           snap.fatigue,
-          currentLat:        snap.lat ?? DA_NANG_CENTER.lat,
-          currentLng:        snap.lng ?? DA_NANG_CENTER.lng,
-          moodProxy:         snap.mood_proxy,
-          capturedAt:        snap.captured_at,
-          source:            snap.source === 'actual' ? 'actual' : 'simulated',
-        }
+        tripId,
+        dayIndex: snap.day_index,
+        slotOrder: snap.slot_order,
+        timeRemainingMin: snap.time_remaining_min,
+        budgetRemaining: snap.budget_remaining,
+        fatigue: snap.fatigue,
+        currentLat: snap.lat ?? DA_NANG_CENTER.lat,
+        currentLng: snap.lng ?? DA_NANG_CENTER.lng,
+        moodProxy: snap.mood_proxy,
+        capturedAt: snap.captured_at,
+        source: snap.source === 'actual' ? 'actual' : 'simulated',
+      }
       : await this.buildDefaultState(tripId, trip.budget_total, trip.start_date, trip.hotel_place_id);
+
+    // 4.1. Sanity-check snapshot position: if the stored coordinates are > 150 km from the
+    // trip city, the snapshot was captured from a remote location (e.g. user was home in HCMC
+    // while testing a Da Nang trip). Reset to hotel / city-center so TSP starts correctly.
+    if (snap && snap.lat !== null && snap.lng !== null) {
+      const cityKey = trip.destination_city.toLowerCase().trim();
+      const cityCenter = CITY_CENTERS[cityKey] ?? DA_NANG_CENTER;
+      const distKm = haversineKm(initialState.currentLat, initialState.currentLng, cityCenter.lat, cityCenter.lng);
+      if (distKm > 150) {
+        let lat = cityCenter.lat;
+        let lng = cityCenter.lng;
+        if (trip.hotel_place_id !== null) {
+          const hotelRes = await this.pool.query<{ lat: number; lng: number }>(
+            `SELECT lat, lng FROM place WHERE place_id = $1`,
+            [trip.hotel_place_id],
+          );
+          if (hotelRes.rows[0]) {
+            lat = hotelRes.rows[0].lat;
+            lng = hotelRes.rows[0].lng;
+          }
+        }
+        console.log(`[PlanLoader] snapshot (${snap.lat.toFixed(4)},${snap.lng.toFixed(4)}) is ${distKm.toFixed(0)}km from city → reset to (${lat.toFixed(4)},${lng.toFixed(4)})`);
+        initialState = { ...initialState, currentLat: lat, currentLng: lng };
+      }
+    }
 
     // 5. Build user preference + weights
     const prefRow = prefRes.rows[0];
     const user: UserPreference = prefRow
       ? {
-          preferenceVector:    prefRow.preference_vector,
-          pace:                prefRow.pace,
-          mobilityRestrictions: prefRow.mobility_restrictions ?? [],
-        }
+        preferenceVector: prefRow.preference_vector,
+        pace: prefRow.pace,
+        mobilityRestrictions: prefRow.mobility_restrictions ?? [],
+      }
       : { preferenceVector: new Array(10).fill(0.1), pace: 0.5, mobilityRestrictions: [] };
 
     const weights: ObjectiveWeights = prefRow
-      ? {
-          wInterest: prefRow.w_interest,
-          wPace:     prefRow.w_pace,
-          wDistance: prefRow.w_distance,
-          wBudget:   prefRow.w_budget,
-          wWeather:  prefRow.w_weather,
-          wRisk:     prefRow.w_risk,
-        }
+      ? { //TODO: thêm wStability và wPotentialBias vào DB tương tự như wInterest...
+        wInterest: prefRow.w_interest,
+        wPace: prefRow.w_pace,
+        wDistance: prefRow.w_distance,
+        wBudget: prefRow.w_budget,
+        wWeather: prefRow.w_weather,
+        wRisk: prefRow.w_risk,
+        wStability: 0.05,
+        wPotentialBias: 0.10,
+        wProximity: 0,
+        wSynergy: 0.3,
+      }
       : DEFAULT_WEIGHTS;
 
     // 6. Load candidate places for this city + ensure all slot places are included
@@ -149,12 +236,40 @@ export class PlanLoader {
       initialState,
       candidatePool,
       user,
-      weatherBySlotId: {},
-      defaultWeather:  { rainMmPerH: 0 },
+      defaultWeather: { rainMmPerH: 0 },
       weatherForecast: [],
     };
   }
 
+  /**
+   * @summary Tải vector sở thích và cấu hình di chuyển của người dùng từ database.
+   *
+   * Truy vấn bảng `user_preference` lấy `preference_vector`, `pace`, `mobility_restrictions`.
+   * Nếu người dùng chưa thiết lập preference (chưa có row), trả về giá trị mặc định an toàn
+   * (vector trung lập, pace=0.5, restrictions=[]) thay vì throw error — tránh làm vỡ replan pipeline
+   * đối với người dùng mới.
+   *
+   * **Side Effects:** Thực hiện 1 truy vấn SQL SELECT.
+   *
+   * @param userId {string} ID người dùng (Firebase UID) — không được null hay rỗng.
+   * @returns {Promise<UserPreference>} Đối tượng preference gồm:
+   *   - `preferenceVector`: Mảng 10 số [0,1] đại diện mức độ yêu thích theo từng tag.
+   *   - `pace`: Số thực [0,1] — 0: thư thả, 1: dày đặc lịch.
+   *   - `mobilityRestrictions`: Mảng tên hạn chế di chuyển (ví dụ: `['wheelchair']`).
+   *   Khi không tìm thấy user: vector=[0.1×10], pace=0.5, restrictions=[].
+   * @throws {Error} Lỗi database (connection, timeout...) — được ném lên caller.
+   *
+   * @pre `userId` là chuỗi không rỗng; `this.pool` đang hoạt động.
+   * @post Không bao giờ trả về `null` hay `undefined`.
+   *
+   * @example
+   * ```typescript
+   * const loader = new PlanLoader(pool);
+   * const pref = await loader.loadPreferences('firebase-uid-abc123');
+   * console.log(pref.preferenceVector); // [0.8, 0.2, ...]
+   * console.log(pref.pace);             // 0.6
+   * ```
+   */
   async loadPreferences(userId: string): Promise<UserPreference> {
     const res = await this.pool.query<{
       preference_vector: number[];
@@ -176,14 +291,49 @@ export class PlanLoader {
       };
     }
     return {
-      preferenceVector:    row.preference_vector,
-      pace:                row.pace,
+      preferenceVector: row.preference_vector,
+      pace: row.pace,
       mobilityRestrictions: row.mobility_restrictions ?? [],
     };
   }
 
   // --------------------------------------------------------------------------
 
+  /**
+   * @summary Tạo TripState mặc định cho chuyến đi chưa có snapshot trạng thái.
+   *
+   * Được gọi khi `trip_state_snapshot` không có row nào cho `tripId` — thường gặp với trip mới
+   * chưa bắt đầu. Logic tính toán:
+   * - **Tọa độ xuất phát**: Lấy lat/lng của hotel (nếu `hotelPlaceId` không null), ngược lại
+   *   dùng trung tâm Đà Nẵng (16.0544, 108.2022) làm mặc định.
+   * - **dayIndex**: Số ngày nguyên đã trôi qua kể từ `startDate` của trip đến hiện tại (wall-clock).
+   *   Tối thiểu là 0 (dù trip chưa bắt đầu, vẫn dùng ngày 0).
+   * - **timeRemainingMin**: Cố định 720 phút (12 giờ hoạt động/ngày).
+   * - **budgetRemaining**: Bằng `budgetTotal` của trip (chưa tiêu gì).
+   * - **fatigue**: 0 (người dùng chưa mệt); **moodProxy**: 0.8 (tâm trạng tốt).
+   *
+   * **Side Effects:**
+   * - Gọi `new Date()` để lấy thời điểm hiện tại (wall-clock — không thuần túy, không stable trong test).
+   * - Thực hiện 1 truy vấn SQL nếu `hotelPlaceId` không null.
+   *
+   * @param tripId       {string}      UUID chuyến đi — điền vào `TripState.tripId`.
+   * @param budgetTotal  {number}      Tổng ngân sách ban đầu (VND) — phải ≥ 0.
+   * @param startDate    {string}      ISO date string ngày bắt đầu chuyến đi.
+   * @param hotelPlaceId {string|null} `place_id` khách sạn để lấy tọa độ xuất phát, hoặc `null`.
+   * @returns {Promise<TripState>} State mặc định với `source = 'simulated'`.
+   * @throws {Error} Lỗi database khi tra cứu tọa độ hotel.
+   *
+   * @pre `budgetTotal ≥ 0`; `startDate` là chuỗi ngày hợp lệ.
+   * @post `dayIndex ≥ 0`; `timeRemainingMin = 720`; `budgetRemaining = budgetTotal`.
+   *
+   * @example
+   * ```typescript
+   * // Gọi nội bộ trong load() khi không có snapshot:
+   * const state = await this.buildDefaultState(tripId, 2_000_000, '2026-04-20', 'hotel-uuid');
+   * // state.currentLat → tọa độ hotel (nếu có)
+   * // state.dayIndex   → số ngày từ ngày 20/4 đến hôm nay
+   * ```
+   */
   private async buildDefaultState(
     tripId: string,
     budgetTotal: number,
@@ -205,7 +355,7 @@ export class PlanLoader {
     }
 
     const start = new Date(startDate);
-    const now   = new Date();
+    const now = new Date();
     const dayIndex = Math.max(
       0,
       Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)),
@@ -214,19 +364,61 @@ export class PlanLoader {
     return {
       tripId,
       dayIndex,
-      slotOrder:        0,
+      slotOrder: 0,
       timeRemainingMin: DEFAULT_DAY_MINUTES,
-      budgetRemaining:  budgetTotal,
-      fatigue:          0,
-      currentLat:       lat,
-      currentLng:       lng,
-      moodProxy:        0.8,
-      capturedAt:       now.toISOString(),
-      source:           'simulated',
+      budgetRemaining: budgetTotal,
+      fatigue: 0,
+      currentLat: lat,
+      currentLng: lng,
+      moodProxy: 0.8,
+      capturedAt: now.toISOString(),
+      source: 'simulated',
     };
   }
 
+  /**
+   * @summary Tải toàn bộ danh sách địa điểm (Place) cho một thành phố kèm tags và giờ mở cửa.
+   *
+   * Thực hiện truy vấn theo 2 bước:
+   * 1. Tìm tất cả địa điểm theo `address ILIKE '%city%'` HOẶC `place_id IN (mustInclude)`.
+   *    Đảm bảo các địa điểm đang có trong slot luôn được đưa vào pool dù không ở đúng thành phố.
+   * 2. Song song (`Promise.all`): Tải tags (`place_tag_map`) và giờ mở cửa (`place_opening_hour`)
+   *    cho tất cả placeId vừa tìm được, sau đó ghép vào từng Place object.
+   *
+   * **Side Effects:** Thực hiện 1 truy vấn tuần tự (places), sau đó 2 truy vấn song song (tags, hours).
+   *
+   * @param city                {string}   Tên thành phố để tìm kiếm (ILIKE, case-insensitive).
+   *   Ví dụ: `"Da Nang"`, `"Hoi An"`.
+   * @param mustIncludePlaceIds {number[]} Danh sách placeId bắt buộc phải có trong kết quả,
+   *   bất kể thuộc thành phố nào. Thường là placeId của các slot hiện tại trong trip.
+   * @returns {Promise<Place[]>} Mảng Place với đầy đủ `tags` và `openingHours`.
+   *   Trả về `[]` khi không tìm thấy địa điểm nào.
+   * @throws {Error} Lỗi database (connection, syntax...) — được ném lên caller.
+   *
+   * @pre `city` là chuỗi không rỗng; `this.pool` đang hoạt động.
+   * @post `Place.tags` và `Place.openingHours` không bao giờ `null` (có thể là `[]`).
+   *
+   * @example
+   * ```typescript
+   * const places = await this.loadPlaces('Da Nang', [101, 205]);
+   * // → Tất cả địa điểm ở Đà Nẵng + place 101, 205 (dù không ở Đà Nẵng)
+   * // Mỗi place có đầy đủ tags và openingHours
+   * ```
+   */
   private async loadPlaces(city: string, mustIncludePlaceIds: number[]): Promise<Place[]> {
+    // Normalize to cover both "Da Nang" ↔ "Đà Nẵng", "Hoi An" ↔ "Hội An", etc.
+    const CITY_ALIASES: Record<string, string[]> = {
+      'da nang': ['da nang', 'đà nẵng', 'danang'],
+      'đà nẵng': ['da nang', 'đà nẵng', 'danang'],
+      'danang': ['da nang', 'đà nẵng', 'danang'],
+      'hoi an': ['hoi an', 'hội an', 'hoian'],
+      'hội an': ['hoi an', 'hội an', 'hoian'],
+    };
+    const key = city.toLowerCase().trim();
+    const variants = CITY_ALIASES[key] ?? [city];
+    const addressConditions = variants.map((_, i) => `address ILIKE $${i + 1}`).join(' OR ');
+    const addressParams = variants.map(v => `%${v}%`);
+
     const placesRes = await this.pool.query<{
       place_id: string; name: string; lat: number; lng: number;
       avg_visit_duration_min: number; terrain_easiness: number | null;
@@ -235,9 +427,31 @@ export class PlanLoader {
       `SELECT place_id, name, lat, lng, avg_visit_duration_min,
               terrain_easiness, indoor_outdoor, min_price, max_price
          FROM place
-        WHERE address ILIKE $1 OR place_id = ANY($2::bigint[])`,
-      [`%${city}%`, mustIncludePlaceIds],
+        WHERE (${addressConditions}) OR place_id = ANY($${variants.length + 1}::bigint[])`,
+      [...addressParams, mustIncludePlaceIds],
     );
+
+    // Proximity fallback: if city filter found no extra places beyond mustInclude,
+    // load the 60 nearest places by coordinates of the mustInclude places' centroid.
+    const mustIncludeSet = new Set(mustIncludePlaceIds);
+    const extraCount = placesRes.rows.filter(r => !mustIncludeSet.has(Number(r.place_id))).length;
+    if (extraCount === 0 && mustIncludePlaceIds.length > 0) {
+      const fallbackRes = await this.pool.query<{
+        place_id: string; name: string; lat: number; lng: number;
+        avg_visit_duration_min: number; terrain_easiness: number | null;
+        indoor_outdoor: string; min_price: number | null; max_price: number | null;
+      }>(
+        `SELECT p.place_id, p.name, p.lat, p.lng, p.avg_visit_duration_min,
+                p.terrain_easiness, p.indoor_outdoor, p.min_price, p.max_price
+           FROM place p,
+                (SELECT AVG(lat) AS clat, AVG(lng) AS clng
+                   FROM place WHERE place_id = ANY($1::bigint[])) AS c
+          ORDER BY (p.lat - c.clat)^2 + (p.lng - c.clng)^2
+          LIMIT 60`,
+        [mustIncludePlaceIds],
+      );
+      placesRes.rows = fallbackRes.rows;
+    }
 
     if (placesRes.rows.length === 0) return [];
 
@@ -270,7 +484,7 @@ export class PlanLoader {
       if (!hoursByPlace.has(id)) hoursByPlace.set(id, []);
       hoursByPlace.get(id)!.push({
         dayOfWeek: row.day_of_week,
-        openTime:  row.open_time,
+        openTime: row.open_time,
         closeTime: row.close_time,
       });
     }
@@ -278,17 +492,17 @@ export class PlanLoader {
     return placesRes.rows.map((r) => {
       const id = Number(r.place_id);
       return {
-        placeId:             id,
-        name:                r.name,
-        lat:                 r.lat,
-        lng:                 r.lng,
+        placeId: id,
+        name: r.name,
+        lat: r.lat,
+        lng: r.lng,
         avgVisitDurationMin: r.avg_visit_duration_min,
-        terrainEasiness:     r.terrain_easiness ?? undefined,
-        indoorOutdoor:       r.indoor_outdoor as Place['indoorOutdoor'],
-        minPrice:            r.min_price ?? undefined,
-        estimatedCost:       r.min_price ?? 0,
-        tags:                tagsByPlace.get(id) ?? [],
-        openingHours:        hoursByPlace.get(id) ?? [],
+        terrainEasiness: r.terrain_easiness ?? undefined,
+        indoorOutdoor: r.indoor_outdoor as Place['indoorOutdoor'],
+        minPrice: r.min_price ?? undefined,
+        estimatedCost: r.min_price ?? 0,
+        tags: tagsByPlace.get(id) ?? [],
+        openingHours: hoursByPlace.get(id) ?? [],
       };
     });
   }

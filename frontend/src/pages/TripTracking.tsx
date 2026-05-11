@@ -8,37 +8,103 @@ import {
 } from 'lucide-react'
 import { tripService } from '@/services/tripService'
 import { toast } from '@/store/toastStore'
-import { monitorService } from '@/services/monitorService'
+import { monitorService, type MonitorAlert } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
 import { PageSpinner } from '@/components/ui/Spinner'
 import { TripMap } from '@/components/map/TripMap'
-import { format, parseISO, isBefore, isAfter } from 'date-fns'
+import { format, parseISO, isBefore, isAfter, isSameDay } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { useMemo, useState } from 'react'
 
 export default function TripTracking() {
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
-  const { setTrip, trip, focusedSlotId } = useTripStore()
+  const { setTrip, focusedSlotId } = useTripStore()
   const queryClient = useQueryClient()
-  const [now] = useState(new Date()) // Pin 'now' to prevent recalculation on every render
+  const [now, setNow] = useState(() => new Date())
 
-  const { data, isLoading, error } = useQuery({
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const { data: trip, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
     queryFn: () => tripService.get(tripId!),
     enabled: !!tripId,
+    refetchOnMount: 'always',
   })
 
   const { data: incidentData } = useQuery({
     queryKey: ['check-incident', tripId],
-    queryFn: () => monitorService.checkIncident(),
+    queryFn: () => monitorService.checkIncident(tripId),
     refetchInterval: 30_000,
     enabled: !!tripId,
   })
 
   useEffect(() => {
-    if (data) setTrip(data)
-  }, [data, setTrip])
+    if (trip) setTrip(trip)
+  }, [trip, setTrip])
+
+  useEffect(() => {
+    if (!trip || (trip.status !== 'active' && trip.status !== 'confirmed')) return
+
+    const today = new Date().getDay()
+    const nowMs = Date.now()
+
+    const sorted = [...trip.slots].sort(
+      (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime(),
+    )
+
+    let currentIdx = sorted.findIndex((s) => {
+      const start = new Date(s.plannedStart).getTime()
+      const end = new Date(s.plannedEnd).getTime()
+      return nowMs >= start && nowMs <= end
+    })
+    if (currentIdx < 0) {
+      currentIdx = sorted.findIndex((s) => new Date(s.plannedStart).getTime() > nowMs)
+    }
+
+    // Don't sync if the next slot is not today — avoids false traffic_jam events
+    if (currentIdx < 0) return
+    if (!isSameDay(new Date(sorted[currentIdx].plannedStart), new Date(nowMs))) return
+
+    const resolvedIdx = Math.max(0, currentIdx)
+
+    const tripData = {
+      tripId: trip.tripId,
+      slots: sorted.map((s) => {
+        const todayHours = s.place?.openingHours.find((h) => h.dayOfWeek === today)
+        const closeHour = todayHours ? parseInt(todayHours.closeTime.split(':')[0], 10) : 22
+        return {
+          id: s.slotId,
+          name: s.place?.name ?? s.slotId,
+          type: (s.place?.indoorOutdoor === 'outdoor' ? 'outdoor' : 'indoor') as 'outdoor' | 'indoor',
+          closeTime: closeHour,
+        }
+      }),
+    }
+
+    const state = {
+      currentSlotIndex: resolvedIdx,
+      plannedArrivalTime: sorted[resolvedIdx]
+        ? new Date(sorted[resolvedIdx].plannedStart).getHours()
+        : new Date().getHours(),
+    }
+
+    const doSync = (location?: { lat: number; lon: number }) =>
+      monitorService.syncTrip(tripData, state, location).catch(() => {})
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => doSync({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => doSync(),
+        { timeout: 5000 },
+      )
+    } else {
+      doSync()
+    }
+  }, [trip?.tripId, trip?.status])
 
   if (isLoading) return <PageSpinner />
   if (error || !trip) {
@@ -66,17 +132,30 @@ export default function TripTracking() {
     
     const current = sortedSlots.find((s) =>
       !isBefore(parseISO(s.plannedEnd), now) && !isAfter(parseISO(s.plannedStart), now)
-    ) ?? sortedSlots.find((s) => s.status !== 'completed' && isAfter(parseISO(s.plannedStart), now))
+    ) ?? sortedSlots.find((s) =>
+      s.status !== 'completed' &&
+      isAfter(parseISO(s.plannedStart), now) &&
+      isSameDay(parseISO(s.plannedStart), now)
+    )
     
     const upcoming = sortedSlots.filter((s) =>
       s !== current && !completed.includes(s) && isAfter(parseISO(s.plannedStart), now)
-    ).slice(0, 3)
+    )
     
     return { completedSlots: completed, currentSlot: current, upcomingSlots: upcoming }
   }, [sortedSlots, now])
 
   const hasIncident = !!(incidentData && 'type' in incidentData && incidentData.type)
-  const incidentReason = hasIncident && 'reason' in incidentData ? incidentData.reason : null
+  const incidentAlert = hasIncident ? (incidentData as MonitorAlert) : null
+  const incidentAffectedIds: string[] = incidentAlert?.affectedSlotIds ?? []
+  const incidentExpiresAt: Date | null = incidentAlert?.expiresAt ? new Date(incidentAlert.expiresAt) : null
+
+  // Only show the banner if at least one affected slot hasn't ended yet
+  const incidentAffectsActiveSlots = hasIncident && incidentAffectedIds.some(id => {
+    const slot = sortedSlots.find(s => s.slotId === id)
+    return slot && !isBefore(parseISO(slot.plannedEnd), now)
+  })
+  const incidentReason = incidentAffectsActiveSlots && 'reason' in incidentData! ? (incidentData as MonitorAlert).reason : null
 
   const mapImageUrl = 'https://lh3.googleusercontent.com/aida-public/AB6AXuAIIRWkmU61v_98zEqO2QOIhonwPwMkr32uuAmB5OANkJ27V_wg6IxsEmiccW21Q7RCt8wd_VCXhDEVcS05Q6_8gJ-2oBLT2PLyB-lFlFBfHrsDapoEqwAyuDP_noQbamEP9D-v-FOYkitwomjR_l-mA9rqWYJdH9b3rJJETFoDoMEZP4Zklr2BwaA8JzDPEY_qXyqKk0v1Tr8Jg2KT5W5Esj9ygtQB0ffBVBCXQOiOhX0RVffSOjFmv0FbStS8P22w6Q378quP_RM'
 
@@ -112,14 +191,31 @@ export default function TripTracking() {
         {/* Left: Timeline */}
         <section className="w-full md:w-5/12 lg:w-4/12 h-[calc(100vh-64px)] overflow-y-auto bg-white border-r border-slate-200 p-6">
           <div className="mb-8">
-            <h1 className="text-xl font-bold text-slate-900 mb-1">Chuyến đi đang diễn ra</h1>
+            <h1 className="text-xl font-bold text-slate-900 mb-1">
+              {currentSlot ? 'Chuyến đi đang diễn ra' : upcomingSlots.length > 0 ? 'Sắp diễn ra' : 'Theo dõi chuyến đi'}
+            </h1>
             <p className="text-slate-500 text-sm">
               {format(new Date(), 'EEEE, dd MMMM, yyyy', { locale: vi })}
             </p>
           </div>
 
+          {/* No activity today banner */}
+          {!currentSlot && !incidentAffectsActiveSlots && sortedSlots.length > 0 && !isSameDay(parseISO(sortedSlots[0].plannedStart), now) && (
+            <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+              <p className="text-blue-800 text-sm font-medium">
+                Không có hoạt động nào hôm nay.
+              </p>
+              <p className="text-blue-600 text-sm mt-1">
+                Lịch trình tiếp theo:{' '}
+                <span className="font-semibold">
+                  {format(parseISO(sortedSlots[0].plannedStart), 'EEEE, dd/MM', { locale: vi })}
+                </span>
+              </p>
+            </div>
+          )}
+
           {/* Incident Alert */}
-          {hasIncident && (
+          {incidentAffectsActiveSlots && (
             <div className="mb-8 p-4 bg-red-50 border-2 border-red-500 rounded-xl shadow-sm">
               <div className="flex gap-3 mb-3">
                 <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
@@ -179,7 +275,9 @@ export default function TripTracking() {
 
             {/* Upcoming slots */}
             {upcomingSlots.map((slot, idx) => {
-              const isRisk = hasIncident && idx === 0
+              const slotStart = parseISO(slot.plannedStart)
+              const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
+              const isRisk = incidentAffectsActiveSlots && incidentAffectedIds.length > 0 && incidentAffectedIds.includes(slot.slotId) && withinWindow
               return (
                 <div key={slot.slotId} className="relative pl-12">
                   <div className={`absolute left-0 top-0 w-10 h-10 bg-white border-2 rounded-full flex items-center justify-center z-10 ${isRisk ? 'border-red-500' : 'border-slate-200'}`}>
@@ -228,7 +326,7 @@ export default function TripTracking() {
             ))}
 
             {/* Proactive suggestion */}
-            {!hasIncident && currentSlot && (
+            {!incidentAffectsActiveSlots && currentSlot && (
               <div className="mt-10 p-5 bg-blue-50 border-2 border-blue-600 rounded-2xl shadow-md">
                 <div className="flex items-start gap-4 mb-4">
                   <div className="p-2 bg-blue-600 rounded-xl shrink-0">
@@ -301,23 +399,28 @@ export default function TripTracking() {
           )}
 
           {/* Incident marker */}
-          {hasIncident && upcomingSlots[0] && (
-            <div className="absolute top-[35%] left-[65%] -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-20">
-              <div className="bg-red-600 text-white px-4 py-2 rounded-xl font-bold shadow-2xl mb-2 flex flex-col items-center border-2 border-white">
-                <div className="flex items-center gap-2 mb-1">
-                  <AlertTriangle className="w-4 h-4" />
-                  <span className="text-xs uppercase tracking-wider font-bold">{upcomingSlots[0].place?.name ?? 'Địa điểm tiếp theo'}</span>
+          {incidentAffectsActiveSlots && incidentAffectedIds.length > 0 && (() => {
+            const firstAffected = upcomingSlots.find(s => incidentAffectedIds.includes(s.slotId))
+              ?? (currentSlot && incidentAffectedIds.includes(currentSlot.slotId) ? currentSlot : null)
+            if (!firstAffected) return null
+            return (
+              <div className="absolute top-[35%] left-[65%] -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-20">
+                <div className="bg-red-600 text-white px-4 py-2 rounded-xl font-bold shadow-2xl mb-2 flex flex-col items-center border-2 border-white">
+                  <div className="flex items-center gap-2 mb-1">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span className="text-xs uppercase tracking-wider font-bold">{firstAffected.place?.name ?? 'Địa điểm bị ảnh hưởng'}</span>
+                  </div>
+                  <div className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium">
+                    Cảnh báo — ảnh hưởng lịch trình
+                  </div>
                 </div>
-                <div className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium">
-                  Cảnh báo — ảnh hưởng lịch trình
+                <div className="relative flex items-center justify-center">
+                  <div className="w-8 h-8 bg-red-600 border-4 border-white rounded-full shadow-lg z-10" />
+                  <div className="absolute w-12 h-12 bg-red-600 rounded-full animate-ping opacity-40" />
                 </div>
               </div>
-              <div className="relative flex items-center justify-center">
-                <div className="w-8 h-8 bg-red-600 border-4 border-white rounded-full shadow-lg z-10" />
-                <div className="absolute w-12 h-12 bg-red-600 rounded-full animate-ping opacity-40" />
-              </div>
-            </div>
-          )}
+            )
+          })()}
         </section>
       </main>
 

@@ -20,10 +20,14 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
 
       const indoor_outdoor = query['indoor_outdoor'];
       const is_landmark = query['is_landmark'] === 'true';
+      const ids = query['ids']
+        ? query['ids'].split(',').map((s) => BigInt(s.trim())).filter(Boolean)
+        : null;
 
       const whereClause: any = {};
       if (indoor_outdoor) whereClause.indoor_outdoor = indoor_outdoor;
       if (query['is_landmark'] !== undefined) whereClause.is_landmark = is_landmark;
+      if (ids && ids.length > 0) whereClause.place_id = { in: ids };
 
       const [places, total] = await Promise.all([
         prisma.place.findMany({

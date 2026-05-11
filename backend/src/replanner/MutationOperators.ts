@@ -1,18 +1,22 @@
 import { randomUUID } from 'crypto';
-import type { TripSlot, Place } from '@app/types';
+import type { TripSlot, Place, TripState } from '@app/types';
 import type { StateEvolver, ReplanContext } from './StateEvolver';
-
+import { dot, tagVectorOf } from './StateEvolver';
+import type { BeamSearchContext } from './BeamSearch';
+import { isSetFeasible } from './FeasibilityFilter';
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-/** The five neighborhood operators available to the replanner. */
+
+/** The six neighborhood operators available to the replanner. */
 export type OperatorName =
-  | 'TIME_SHIFT'    // OP-1: shift slot time ±30 / ±60 min
-  | 'SWAP_ORDER'    // OP-2: swap two adjacent slots within the same day
-  | 'REPLACE_PLACE' // OP-3: replace a POI with a tag-compatible alternative
-  | 'DROP_SLOT'     // OP-4: remove a non-meal slot entirely
-  | 'INSERT_ALT';   // OP-5: insert a new POI from the candidate pool
+  | 'TIME_SHIFT'             // OP-1: shift slot time ±30 / ±60 min
+  | 'SWAP_ORDER'             // OP-2: swap two adjacent slots within the same day
+  | 'REPLACE_PLACE'          // OP-3: replace a POI with a tag-compatible alternative
+  | 'DROP_SLOT'              // OP-4: remove a non-meal slot entirely
+  | 'INSERT_ALT'             // OP-5: insert a new POI from the candidate pool
+  | 'TSP_REORDER';           // OP-6: reorder slots within each day to minimize travel distance
 
 /**
  * The result of applying one mutation operator to a plan.
@@ -29,6 +33,17 @@ export interface MutationResult {
   affectedSlotIds: string[];
   /** Human-readable description in Vietnamese (for CausalTraceBuilder). */
   description: string;
+  /**
+   * Index from which the suffix has been globally rebuilt.
+   * This is helpful for trace generation and downstream explanations.
+   */
+  repairedFromIndex?: number;
+  /**
+   * Full state trajectory produced by computeTrajectory() during feasibility check.
+   * Cached here so BeamSearch.search() can reuse it instead of re-simulating (Bug 1 fix).
+   * states[i+1] = state after visiting newPlan[i]; length = newPlan.length + 1.
+   */
+  stateTrajectory?: TripState[];
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +68,10 @@ const GENERATE_ALL_CAP = 30;
  */
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 
+const MIN_SLOT_DURATION_MIN = 15;
+const DAY_START_HOUR = 8; // 08:00 AM
+const DAY_END_HOUR = 22;  // 10:00 PM
+
 // ---------------------------------------------------------------------------
 // MutationOperators
 // ---------------------------------------------------------------------------
@@ -70,52 +89,101 @@ const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
  *   entries to bound latency.
  */
 export class MutationOperators {
-  constructor(private readonly evolver: StateEvolver) {}
+  constructor(private readonly evolver: StateEvolver) { }
 
   // -------------------------------------------------------------------------
   // OP-1 TIME_SHIFT
   // -------------------------------------------------------------------------
 
   /**
-   * Shifts slot `i` earlier or later by 30 or 60 minutes and cascades the
-   * same shift to all subsequent slots in the plan.
+   * Dịch chuyển thời gian của từng slot chỉ định (sớm/muộn hơn) và tái lập lịch trình (packing) 
+   * cho toàn bộ phần lịch trình phía sau.
+   * 
+   * Quy trình thực hiện cho mỗi slot:
+   * 1. **Bảo vệ quá khứ**: Chỉ thực hiện dịch chuyển (anchor) cho các slot đang ở trạng thái `planned`.
+   * 2. **Dịch chuyển thô (Raw Shift)**: Sử dụng `shiftSlot` để tịnh tiến mốc thời gian của slot i.
+   * 3. **Kiểm tra ràng buộc tại chỗ**: 
+   *    - Kiểm tra Giờ mở cửa (`withinOpeningHours`) cho slot vừa dịch chuyển.
+   *    - Kiểm tra Giới hạn nghỉ đêm (`exceedsNightConstraint`) để đảm bảo slot không kết thúc quá muộn.
+   * 4. **Tái lập lịch (Repair)**: Gọi `repairSuffix` để dồn lịch (pack) các slot từ i+1 trở đi, 
+   *    giúp tối ưu hóa các khoảng trống thời gian phát sinh do dịch chuyển.
+   * 5. **Mô phỏng khả thi (All Feasible)**: Sử dụng bộ mô phỏng đã được cập nhật để kiểm tra 
+   *    tổng thể. Lưu ý: Bộ mô phỏng này sẽ thông minh bỏ qua các slot `completed`/`skipped` 
+   *    trong quá trình tính toán để đảm bảo độ chính xác cho các kế hoạch đang diễn ra.
    *
-   * Only produces a result when the shifted slot still falls within the
-   * place's opening hours. Useful when a fatigue spike occurs early and a
-   * meal/rest slot needs to be pulled forward for recovery.
-   *
-   * @param plan Ordered list of {@link TripSlot}s for the current day.
-   * @param ctx  {@link ReplanContext} providing the candidate pool (for opening hours).
-   * @returns    List of valid {@link MutationResult}s (may be empty).
+   * @param plan Danh sách {@link TripSlot} hiện tại.
+   * @param ctx  {@link ReplanContext} cung cấp dữ liệu dự báo thời tiết và trạng thái người dùng.
+   * @returns    Danh sách các phương án tịnh tiến thời gian khả thi.
    */
   timeShift(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
     const results: MutationResult[] = [];
 
     for (let i = 0; i < plan.length; i++) {
       const anchor = plan[i]!;
+
       for (const shiftMin of TIME_SHIFT_DELTAS_MIN) {
-        // Build new plan: shift slot i, then cascade chỉ trong cùng ngày để
-        // không kéo lệch lịch các ngày sau.
-        const newPlan = [...plan];
-        const shifted = this.shiftSlot(anchor, shiftMin);
+        const mutated = plan.map((slot, idx) =>
+          idx === i ? this.shiftSlot(slot, shiftMin) : { ...slot }
+        );
 
-        // Only proceed if the anchor slot's new time is within opening hours
-        if (!this.withinOpeningHours(shifted, ctx)) continue;
+        const shiftedAnchor = mutated[i]!;
 
-        newPlan[i] = shifted;
-        for (let j = i + 1; j < newPlan.length; j++) {
-          if (newPlan[j]!.dayIndex !== anchor.dayIndex) break;
-          newPlan[j] = this.shiftSlot(newPlan[j]!, shiftMin);
+        // 1. Kiểm tra Opening Hours cho slot i
+        if (!this.withinOpeningHours(shiftedAnchor, ctx)) continue;
+
+        // 2. MỚI: Kiểm tra Night Constraint cho riêng slot i
+        // (để tính toán xem giờ kết thúc có vượt quá ngưỡng cho phép không)
+        if (this.exceedsNightConstraint(shiftedAnchor.plannedEnd, ctx)) {
+          continue;
+        }
+
+        // Xử lý nếu i là slot cuối cùng
+        if (i + 1 >= plan.length) {
+          const trajectory = this.simulateIfFeasible(mutated, ctx);
+          if (!trajectory) continue;
+
+          results.push({
+            newPlan: mutated,
+            operator: 'TIME_SHIFT',
+            affectedSlotIds: [anchor.slotId],
+            repairedFromIndex: i,
+            stateTrajectory: trajectory,
+            description: `Dời slot cuối ${i} đi ${shiftMin > 0 ? '+' : ''}${shiftMin} phút`
+          });
+          continue;
+        }
+
+        // 3. Tái tối ưu suffix từ i + 1 trở đi (đã bao gồm Night Constraint cho suffix)
+        const repaired = this.repairSuffix(mutated, i + 1, ctx);
+        if (!repaired) continue;
+
+        // 4. Kiểm tra toàn vẹn vĩ mô + cache trajectory (Bug 1 fix)
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) continue;
+
+        // 5. Trích xuất metadata affectedSlotIds
+        const changedSlotIds: string[] = [];
+        for (let j = i; j < plan.length; j++) {
+          const originalSlot = plan[j]!;
+          const newSlot = repaired[j]!;
+
+          if (originalSlot.plannedStart !== newSlot.plannedStart ||
+            originalSlot.plannedEnd !== newSlot.plannedEnd) {
+            changedSlotIds.push(newSlot.slotId);
+          }
         }
 
         results.push({
-          newPlan,
+          newPlan: repaired,
           operator: 'TIME_SHIFT',
           affectedSlotIds: [anchor.slotId],
-          description: `Dời slot ${i} đi ${shiftMin > 0 ? '+' : ''}${shiftMin} phút`,
+          repairedFromIndex: i,
+          stateTrajectory: trajectory,
+          description: `Dời slot ${i} ${shiftMin > 0 ? '+' : ''}${shiftMin} phút và tái tối ưu suffix`,
         });
       }
     }
+
     return results;
   }
 
@@ -124,40 +192,80 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Swaps the POI (placeId) of two adjacent slots that share the same
-   * `dayIndex`, keeping each slot's time window in place.
-   *
-   * Cross-day swaps are never attempted. Plans that become infeasible after
-   * the swap (budget, time, fatigue) are silently dropped.
-   *
-   * @param plan Ordered list of {@link TripSlot}s.
-   * @param ctx  {@link ReplanContext}.
-   * @returns    List of valid {@link MutationResult}s.
+   * Đổi chỗ hai slot tham quan kề nhau trong cùng một ngày và tái lập lịch trình (packing).
+   * 
+   * Quy trình thực hiện:
+   * 1. **Chuẩn hóa đầu vào**: Sắp xếp lại kế hoạch theo thời gian (`dayIndex` và `slotOrder`) 
+   *    để đảm bảo tính kề nhau của các slot là chính xác.
+   * 2. **Xác định ranh giới tương lai**: Tìm vị trí cuối cùng của các slot đã diễn ra 
+   *    (status khác `planned`). Hàm chỉ thực hiện đổi chỗ cho các cặp slot nằm hoàn toàn 
+   *    sau ranh giới này để bảo vệ tính toàn vẹn của lịch sử hành trình.
+   * 3. **Hoán đổi & Tăng phiên bản**: Đổi chỗ hai slot kề nhau (nếu cùng `dayIndex`), 
+   *    đồng thời tăng `version` của chúng để đánh dấu sự thay đổi thực thể.
+   * 4. **Tái tối ưu (Repair)**: Gọi `repairSuffix` từ vị trí hoán đổi để tính toán lại 
+   *    toàn bộ mốc thời gian phía sau (bao gồm cả việc xử lý Travel Time mới giữa hai điểm vừa đổi).
+   * 5. **Mô phỏng khả thi**: Sử dụng `allFeasible` (với cơ chế bỏ qua dữ liệu cũ) để đảm bảo 
+   *    thao tác đổi chỗ không vi phạm các ràng buộc cứng về thời gian, ngân sách hay sức khỏe.
+   * 6. **Thu thập Metadata**: Trích xuất tất cả các `slotId` bị ảnh hưởng bởi việc dồn lịch 
+   *    để báo cáo chính xác cho phía Frontend.
+   * 
+   * @param plan Danh sách các {@link TripSlot} hiện tại.
+   * @param ctx  Ngữ cảnh {@link ReplanContext} chứa dữ liệu dự báo và trạng thái xuất phát.
+   * @returns    Danh sách các phương án hoán đổi thứ tự khả thi.
    */
   swapOrder(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
     const results: MutationResult[] = [];
 
-    for (let i = 0; i < plan.length - 1; i++) {
-      const a = plan[i]!;
-      const b = plan[i + 1]!;
+    // 1. Phòng vệ: Đảm bảo mảng đầu vào luôn được sắp xếp chuẩn
+    // theo ngày và thứ tự slot trước khi thực hiện logic liền kề (adjacent).
+    const sortedPlan = [...plan].sort((x, y) => {
+      if (x.dayIndex !== y.dayIndex) return x.dayIndex - y.dayIndex;
+      return x.slotOrder - y.slotOrder;
+    });
 
-      // Guard: only swap within the same day
+    // 2. Chốt vị trí cuối cùng không ở trạng thái 'planned'
+    let lastNonPlannedIndex = -1;
+    for (let k = sortedPlan.length - 1; k >= 0; k--) {
+      if (sortedPlan[k]!.status !== 'planned') {
+        lastNonPlannedIndex = k;
+        break;
+      }
+    }
+
+    for (let i = 0; i < sortedPlan.length - 1; i++) {
+      if (i <= lastNonPlannedIndex) continue;
+
+      const a = sortedPlan[i]!;
+      const b = sortedPlan[i + 1]!;
+
       if (a.dayIndex !== b.dayIndex) continue;
 
-      // Swap placeIds; time windows stay fixed
-      const newPlan = [...plan];
-      newPlan[i] = { ...a, placeId: b.placeId };
-      newPlan[i + 1] = { ...b, placeId: a.placeId };
+      const mutated = sortedPlan.map((slot) => ({ ...slot }));
 
-      if (!this.allFeasible(newPlan, ctx)) continue;
+      // 3. Xử lý Version: Chủ động tăng version cho hai slot bị thao tác trực tiếp.
+      mutated[i] = { ...b, slotOrder: a.slotOrder, version: b.version + 1 };
+      mutated[i + 1] = { ...a, slotOrder: b.slotOrder, version: a.version + 1 };
+
+      const repaired = this.repairSuffix(mutated, i, ctx);
+      if (!repaired) continue;
+
+      const trajectory = this.simulateIfFeasible(repaired, ctx);
+      if (!trajectory) continue;
+
+      const originalSuffixIds = sortedPlan.slice(i).map(s => s.slotId);
+      const newSuffixIds = repaired.slice(i).map(s => s.slotId);
+      const affectedSlotIds = Array.from(new Set([...originalSuffixIds, ...newSuffixIds]));
 
       results.push({
-        newPlan,
+        newPlan: repaired,
         operator: 'SWAP_ORDER',
-        affectedSlotIds: [a.slotId, b.slotId],
-        description: `Đổi thứ tự slot ${i} và ${i + 1}`,
+        affectedSlotIds: affectedSlotIds,
+        repairedFromIndex: i,
+        stateTrajectory: trajectory,
+        description: `Đổi chỗ hai slot kề nhau ở vị trí ${i} và ${i + 1}, rồi repair toàn suffix`,
       });
     }
+
     return results;
   }
 
@@ -166,48 +274,116 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Replaces the POI at slot `i` with up to {@link MAX_REPLACE_CANDIDATES}
-   * alternatives from the candidate pool that share at least one tag with the
-   * current POI and are not already present in the plan.
-   *
-   * This is the primary operator for rain-triggered replanning
-   * (outdoor → indoor substitution).
-   *
-   * @param plan Ordered list of {@link TripSlot}s.
-   * @param ctx  {@link ReplanContext} providing the candidate pool.
-   * @returns    List of valid {@link MutationResult}s.
+   * Thử thay thế từng địa điểm tham quan hiện có bằng các phương án tốt nhất từ danh sách ứng viên.
+   * 
+   * Đây là toán tử quan trọng nhất cho việc xử lý các tình huống thay đổi lộ trình đột xuất 
+   * (ví dụ: đổi từ điểm ngoài trời sang điểm trong nhà khi thời tiết xấu).
+   * 
+   * Quy trình thực hiện cho mỗi slot:
+   * 1. **Bảo vệ lịch sử**: Chỉ xem xét thay thế các slot có loại hoạt động là `sightseeing`/`activity` 
+   *    và đang ở trạng thái `planned` hoặc `replaced`. Các slot đã diễn ra (`completed`) hoặc 
+   *    bị bỏ qua (`skipped`) sẽ được giữ nguyên tuyệt đối để bảo toàn tính toàn vẹn dữ liệu.
+   * 2. **Lọc & Xếp hạng ứng viên**: Tìm các địa điểm chưa có trong kế hoạch hiện tại, tính điểm 
+   *    ưu tiên dựa trên độ tương đồng (tags), thời lượng tham quan và các yêu cầu từ ngữ cảnh. 
+   *    Chỉ lấy tối đa `MAX_REPLACE_CANDIDATES` ứng viên có điểm cao nhất.
+   * 3. **Thay thế an toàn**: Sử dụng `replaceSlotPlace` để tạo ra slot mới. Mọi lỗi dữ liệu phát sinh 
+   *    (như sai định dạng ngày tháng) sẽ được bắt giữ (`try-catch`) để bỏ qua ứng viên lỗi 
+   *    thay vì dừng toàn bộ tiến trình.
+   * 4. **Tái tối ưu (Repair)**: Gọi `repairSuffix` từ vị trí vừa thay thế để dồn lịch (pack) 
+   *    và tính toán lại toàn bộ mốc thời gian dựa trên thời gian di chuyển (Travel Time) mới.
+   * 5. **Thẩm định khả thi**: Chạy mô phỏng qua `allFeasible` (đã bỏ qua dữ liệu cũ) để đảm bảo 
+   *    phương án mới tuân thủ các ràng buộc về ngân sách, thời gian và sức khoẻ người dùng.
+   * 6. **Metadata**: Ghi nhận danh sách `affectedSlotIds` để hệ thống Frontend có thể nhận diện 
+   *    và hiển thị chính xác những slot bị thay đổi mốc thời gian do việc dồn lịch.
+   * 
+   * @param plan Danh sách các {@link TripSlot} hiện tại.
+   * @param ctx  Ngữ cảnh {@link ReplanContext} chứa dữ liệu ứng viên và trạng thái mô phỏng.
+   * @returns    Danh sách các phương án thay thế địa điểm khả thi.
    */
   replacePlace(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
     const results: MutationResult[] = [];
 
-    for (let i = 0; i < plan.length; i++) {
-      const currentPlace = ctx.candidatePool.find(
-        (p) => p.placeId === plan[i]!.placeId,
-      );
-      if (!currentPlace) continue;
+    // Tối ưu 1: Tính toán tập hợp các địa điểm đã chiếm dụng một lần duy nhất
+    const occupied = new Set(plan.map((s) => s.placeId));
 
-      // Candidates: tag overlap > 0, not already in the plan, limit per slot
-      const occupied = new Set(plan.map((s) => s.placeId));
+    for (let i = 0; i < plan.length; i++) {
+      const currentSlot = plan[i]!;
+
+      // Ràng buộc trạng thái
+      if (currentSlot.status !== 'planned' && currentSlot.status !== 'replaced') {
+        continue;
+      }
+
+      // Tối ưu 2: Cho phép currentPlace là undefined để tránh kẹt lịch trình
+      const currentPlace = ctx.placeMap?.get(currentSlot.placeId) ?? ctx.candidatePool.find((p) => p.placeId === currentSlot.placeId);
+
+      // Skip meal/transport/rest slots — trừ khi slot là outdoor và đang mưa nặng
+      const isRaining = (ctx as BeamSearchContext).weatherForecast?.some(w => (w?.rainMmPerH ?? 0) >= 5) ?? false;
+      const isOutdoor = currentPlace?.indoorOutdoor === 'outdoor';
+      const isReplaceable = currentSlot.activityType === 'sightseeing' || currentSlot.activityType === 'activity';
+      if (!isReplaceable && !(isRaining && isOutdoor)) {
+        continue;
+      }
+
       const candidates = ctx.candidatePool
-        .filter(
-          (p) =>
-            p.placeId !== currentPlace.placeId &&
-            this.tagOverlap(p, currentPlace) > 0 &&
-            !occupied.has(p.placeId),
-        )
+        .filter((p) => !occupied.has(p.placeId))
+        .map((p) => ({
+          place: p,
+          // Truyền currentPlace (có thể undefined), hàm candidatePriority đã hỗ trợ
+          score: MutationOperators.candidatePriority(p, currentPlace, ctx),
+        }))
+        .filter((c) => c.score > 0)
+        .sort((a, b) => b.score - a.score)
         .slice(0, MAX_REPLACE_CANDIDATES);
 
-      for (const alt of candidates) {
-        const newPlan = [...plan];
-        newPlan[i] = { ...plan[i]!, placeId: alt.placeId };
+      for (const { place: alt } of candidates) {
+        const mutated = plan.map((slot) => ({ ...slot }));
 
-        if (!this.allFeasible(newPlan, ctx)) continue;
+        try {
+          mutated[i] = this.replaceSlotPlace(mutated[i]!, alt);
+        } catch (e) {
+          continue;
+        }
+
+        // LB feasibility: skip if no ordering of the new place set can fit in budget/time.
+        // Uses MST(Haversine)/v_max lower bound; cache hit rate is high when many orderings
+        // share the same set S. Avoids the expensive repairSuffix + computeTrajectory path.
+        const newPlaces = mutated.map((s) => ctx.placeMap?.get(s.placeId)).filter((p): p is Place => p !== undefined);
+        if (!isSetFeasible(newPlaces, ctx)) continue;
+
+        const repaired = this.repairSuffix(mutated, i, ctx);
+        if (!repaired) continue;
+
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) continue;
+
+        const affectedIds = new Set<string>();
+        affectedIds.add(currentSlot.slotId);
+
+        for (let j = i + 1; j < repaired.length; j++) {
+          const oldSlot = plan[j];
+          const newSlot = repaired[j];
+
+          if (
+            oldSlot &&
+            newSlot &&
+            (oldSlot.plannedStart !== newSlot.plannedStart ||
+              oldSlot.plannedEnd !== newSlot.plannedEnd ||
+              oldSlot.dayIndex !== newSlot.dayIndex)
+          ) {
+            affectedIds.add(newSlot.slotId);
+          }
+        }
+
+        const currentPlaceName = currentPlace?.name || `Địa điểm cũ (ID: ${currentSlot.placeId})`;
 
         results.push({
-          newPlan,
+          newPlan: repaired,
           operator: 'REPLACE_PLACE',
-          affectedSlotIds: [plan[i]!.slotId],
-          description: `Thay ${currentPlace.name} bằng ${alt.name}`,
+          affectedSlotIds: Array.from(affectedIds),
+          repairedFromIndex: i,
+          stateTrajectory: trajectory,
+          description: `Thay ${currentPlaceName} bằng ${alt.name} và tái lập lịch phần còn lại`,
         });
       }
     }
@@ -219,30 +395,65 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Removes one slot from the plan. Meal slots are **never** dropped because
-   * the user still needs to eat.
+   * Loại bỏ một slot (ngoại trừ bữa ăn) khỏi kế hoạch và tự động dồn lại lịch trình cho phần còn lại.
+   * 
+   * Mặc dù việc xoá slot thường làm lỏng các ràng buộc về thời gian và ngân sách, 
+   * nhưng việc "nén" lịch (re-packing) qua repairSuffix có thể khiến các slot phía sau 
+   * rơi vào khung giờ không hợp lệ (ví dụ: trước giờ mở cửa), nên vẫn cần kiểm tra 
+   * tính khả thi toàn diện qua allFeasible.
    *
-   * No trajectory feasibility check is performed: dropping a slot can only
-   * relax time/budget constraints, never tighten them.
-   *
-   * @param plan Ordered list of {@link TripSlot}s.
-   * @param _ctx Unused (kept for API consistency with other operators).
-   * @returns    List of {@link MutationResult}s (one per non-meal slot).
+   * @param plan Danh sách các {@link TripSlot} hiện tại.
+   * @param ctx  Ngữ cảnh replan để thực hiện tính toán lại lịch trình và kiểm tra ràng buộc.
+   * @returns    Danh sách các {@link MutationResult} tiềm năng.
    */
-  dropSlot(plan: TripSlot[], _ctx: ReplanContext): MutationResult[] {
+  dropSlot(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
     const results: MutationResult[] = [];
 
     for (let i = 0; i < plan.length; i++) {
-      if (plan[i]!.activityType === 'meal') continue;
+      const slot = plan[i]!;
 
-      const newPlan = plan.filter((_, idx) => idx !== i);
+      // không cho phép xoá bữa ăn và các slot đã diễn ra, đã bị skip
+      if (slot.activityType === 'meal') continue;
+      if (slot.status === 'completed' || slot.status === 'skipped') continue;
+
+      // 1. Chỉ lọc bỏ slot hiện tại, chưa vội đánh lại slotOrder
+      const mutated = plan.filter((_, idx) => idx !== i).map((s) => ({ ...s }));
+
+      let repaired: TripSlot[] | null = mutated;
+      let isSuffixRepaired = false;
+
+      // 2. Gọi repairSuffix nếu không phải là xoá slot cuối cùng
+      if (i < mutated.length) {
+        repaired = this.repairSuffix(mutated, i, ctx);
+        isSuffixRepaired = true;
+      }
+
+      if (!repaired) continue;
+
+      // 3. Cập nhật lại slotOrder cục bộ theo từng ngày (dayIndex)
+      // Giả định: mảng repaired vẫn đang giữ đúng thứ tự thời gian tuyến tính
+      const dayCounters = new Map<number, number>();
+      for (const s of repaired) {
+        const currentOrder = dayCounters.get(s.dayIndex) ?? 0;
+        s.slotOrder = currentOrder;
+        dayCounters.set(s.dayIndex, currentOrder + 1);
+      }
+
+      const trajectory = this.simulateIfFeasible(repaired, ctx);
+      if (!trajectory) continue;
+
       results.push({
-        newPlan,
+        newPlan: repaired,
         operator: 'DROP_SLOT',
-        affectedSlotIds: [plan[i]!.slotId],
-        description: `Bỏ slot ${i} (${plan[i]!.activityType})`,
+        affectedSlotIds: [slot.slotId],
+        ...(isSuffixRepaired && { repairedFromIndex: i }),
+        stateTrajectory: trajectory,
+        description: isSuffixRepaired
+          ? `Bỏ slot ${i} (${slot.activityType}) rồi dồn lại toàn bộ suffix`
+          : `Bỏ slot ${i} (${slot.activityType}) ở cuối kế hoạch`,
       });
     }
+
     return results;
   }
 
@@ -251,55 +462,329 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Inserts a new POI (synthesized slot) at every possible position in the
-   * plan. If {@link ReplanContext.forceIncludePlaceId} is set, only that
-   * POI is tried (landmark-inject mode); otherwise the first
-   * {@link MAX_INSERT_CANDIDATES} places from the pool are tried.
-   *
-   * Plans that become infeasible after insertion are silently dropped.
-   *
-   * @param plan Ordered list of {@link TripSlot}s.
-   * @param ctx  {@link ReplanContext}.
-   * @returns    List of valid {@link MutationResult}s.
+   * Thử nghiệm chèn thêm một địa điểm mới (POI) vào kế hoạch tại các vị trí khả thi trong tương lai.
+   * 
+   * Đây là toán tử biến đổi (mutation operator) mạnh nhất, cho phép linh hoạt bổ sung địa điểm 
+   * vào lộ trình mà vẫn đảm bảo tính đúng đắn về mặt thời gian và thứ tự.
+   * 
+   * Các cải tiến và cơ chế kiểm soát chính:
+   * 1. **Lọc địa điểm ứng viên**: 
+   *    - Loại bỏ các địa điểm đã tồn tại trong kế hoạch (bao gồm cả các slot đã hoàn thành hoặc đã skip).
+   *    - Nếu địa điểm bắt buộc (`forceIncludePlaceId`) đã có trong kế hoạch, thao tác sẽ bị hủy để tránh trùng lặp.
+   * 2. **Xác định ranh giới an toàn (`startPos`)**: 
+   *    - Thuật toán tự động tìm kiếm vị trí an toàn đầu tiên để chèn (bỏ qua các slot đã diễn ra 
+   *      hoặc đang thực hiện) để không làm xáo trộn dữ liệu lịch sử.
+   * 3. **Quản lý thứ tự (`slotOrder`)**: 
+   *    - Sau khi chèn, hệ thống tự động đánh lại số thứ tự `slotOrder` cho toàn bộ các slot phía sau.
+   *    - Logic này tôn trọng ranh giới ngày (`dayIndex`), reset `slotOrder` về 0 khi bắt đầu ngày mới.
+   * 4. **Ràng buộc thời gian thực**: 
+   *    - Kiểm tra mốc `plannedStart` của slot mới so với `capturedAt` (thời điểm replan).
+   *    - Loại bỏ các phương án mà thời gian di chuyển khiến hoạt động bị đẩy về quá khứ.
+   * 5. **Kiểm soát hiệu năng**: 
+   *    - Giới hạn tối đa `MAX_RESULTS_LIMIT` (20) kết quả để tránh bùng nổ tổ hợp trong Beam Search.
+   * 
+   * @param plan Danh sách các {@link TripSlot} hiện tại.
+   * @param ctx Ngữ cảnh {@link ReplanContext} để thực hiện tính toán và kiểm tra ràng buộc.
+   * @returns Danh sách các {@link MutationResult} đại diện cho các phương án chèn khả thi và tối ưu.
    */
   insertAlt(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
     const results: MutationResult[] = [];
+    const MAX_RESULTS_LIMIT = 20;
 
-    // Determine which places to try inserting
+    const occupied = new Set(
+      plan.filter(s => s.status === 'planned' || s.status === 'completed' || s.status === 'skipped' || s.status === 'replaced')
+        .map(s => s.placeId)
+    );
+
     let insertable: Place[];
     if (ctx.forceIncludePlaceId !== undefined) {
-      const forced = ctx.candidatePool.find(
-        (p) => p.placeId === ctx.forceIncludePlaceId,
-      );
-      insertable = forced ? [forced] : [];
+      if (occupied.has(ctx.forceIncludePlaceId)) {
+        insertable = [];
+      } else {
+        const forced = ctx.candidatePool.find((p) => p.placeId === ctx.forceIncludePlaceId);
+        insertable = forced ? [forced] : [];
+      }
     } else {
-      // Exclude places already present in the plan
-      const occupied = new Set(plan.map((s) => s.placeId));
       insertable = ctx.candidatePool
         .filter((p) => !occupied.has(p.placeId))
-        .slice(0, MAX_INSERT_CANDIDATES);
+        .map((p) => ({
+          place: p,
+          score: MutationOperators.candidatePriority(p, undefined, ctx),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_INSERT_CANDIDATES)
+        .map((x) => x.place);
     }
 
+    if (insertable.length === 0) return results;
+
+    // [FIX 2] Tìm ranh giới: Slot cuối cùng không phải 'planned', HOẶC 'planned' nhưng đã bắt đầu
+    let startPos = 0;
+    for (let i = plan.length - 1; i >= 0; i--) {
+      const slot = plan[i];
+      if (slot.status !== 'planned' || (slot.status === 'planned' && slot.actualStart !== null)) {
+        startPos = i + 1;
+        break;
+      }
+    }
+
+    const capturedAtTime = new Date(ctx.initialState.capturedAt).getTime();
+
     for (const place of insertable) {
-      for (let pos = 0; pos <= plan.length; pos++) {
+      for (let pos = startPos; pos <= plan.length; pos++) {
+        if (results.length >= MAX_RESULTS_LIMIT) return results;
+
         const newSlot = this.synthesizeSlot(place, plan, pos, ctx);
-        const newPlan = [
-          ...plan.slice(0, pos),
+
+        const mutated = [
+          ...plan.slice(0, pos).map((s) => ({ ...s })),
           newSlot,
-          ...plan.slice(pos),
+          ...plan.slice(pos).map((s) => ({ ...s })),
         ];
 
-        if (!this.allFeasible(newPlan, ctx)) continue;
+        // LB feasibility: new set includes the inserted place.
+        const newPlaces = mutated.map((s) => ctx.placeMap?.get(s.placeId)).filter((p): p is Place => p !== undefined);
+        if (!isSetFeasible(newPlaces, ctx)) continue;
+
+        const repaired = this.repairSuffix(mutated, pos, ctx);
+        if (!repaired) continue;
+
+        let currentDay = pos > 0 ? repaired[pos - 1]!.dayIndex : (repaired[0]?.dayIndex ?? 0);
+        let currentOrder = pos > 0 ? repaired[pos - 1]!.slotOrder + 1 : 0;
+
+        for (let i = pos; i < repaired.length; i++) {
+          if (repaired[i]!.dayIndex !== currentDay) {
+            currentDay = repaired[i]!.dayIndex;
+            currentOrder = 0;
+          }
+          repaired[i]!.slotOrder = currentOrder++;
+        }
+
+        const slotStartTime = new Date(repaired[pos]!.plannedStart).getTime();
+        if (slotStartTime < capturedAtTime) continue;
+
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) continue;
+
+        const affectedIds: string[] = [repaired[pos]!.slotId];
+        for (let j = pos; j < plan.length; j++) {
+          const origSlot = plan[j]!;
+          const repairedSlot = repaired[j + 1];
+          if (
+            repairedSlot &&
+            (origSlot.plannedStart !== repairedSlot.plannedStart ||
+              origSlot.plannedEnd !== repairedSlot.plannedEnd)
+          ) {
+            affectedIds.push(repairedSlot.slotId);
+          }
+        }
 
         results.push({
-          newPlan,
+          newPlan: repaired,
           operator: 'INSERT_ALT',
-          affectedSlotIds: [newSlot.slotId],
-          description: `Chèn ${place.name} ở vị trí ${pos}`,
+          affectedSlotIds: affectedIds,
+          repairedFromIndex: pos,
+          stateTrajectory: trajectory,
+          description: `Chèn ${place.name} ở vị trí ${pos} và tái tối ưu suffix`,
         });
       }
     }
+
     return results;
+  }
+
+  // -------------------------------------------------------------------------
+  // OP-6 TSP_REORDER
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reorders slots within each day to minimize total travel time using 2-opt.
+   *
+   * Models an open-path TSP (fixed start, no return): the day begins from the
+   * user's current position (or end of the previous day's last slot) and visits
+   * all slots in the cheapest order without looping back.
+   *
+   * Only applied when a day has ≥ 3 slots — swapOrder already covers the 2-slot case.
+   * Returns at most one MutationResult (the globally reordered plan).
+   */
+  tspReorder(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
+    const placeMap = ctx.placeMap ?? (() => {
+      const m = new Map<number, Place>();
+      for (const p of ctx.candidatePool) m.set(p.placeId, p);
+      return m;
+    })();
+
+    const sorted = [...plan].sort((a, b) =>
+      a.dayIndex !== b.dayIndex ? a.dayIndex - b.dayIndex : a.slotOrder - b.slotOrder,
+    );
+
+    const dayGroups = new Map<number, TripSlot[]>();
+    for (const slot of sorted) {
+      if (!dayGroups.has(slot.dayIndex)) dayGroups.set(slot.dayIndex, []);
+      dayGroups.get(slot.dayIndex)!.push(slot);
+    }
+
+    let changed = false;
+    const newByDay = new Map<number, TripSlot[]>();
+
+    let startLat = ctx.initialState.currentLat ?? 0;
+    let startLng = ctx.initialState.currentLng ?? 0;
+
+    for (const [dayIdx, daySlots] of [...dayGroups.entries()].sort(([a], [b]) => a - b)) {
+      if (daySlots.length < 2) {
+        newByDay.set(dayIdx, daySlots.map((s, i) => ({ ...s, slotOrder: i })));
+        const lp = daySlots[0] ? placeMap.get(daySlots[0].placeId) : null;
+        if (lp) { startLat = lp.lat; startLng = lp.lng; }
+        continue;
+      }
+
+      // 2-slot day: compare both orderings directly (2-opt handles ≥3 below)
+      if (daySlots.length === 2) {
+        const [s0, s1] = [daySlots[0]!, daySlots[1]!];
+        const p0 = placeMap.get(s0.placeId);
+        const p1 = placeMap.get(s1.placeId);
+        if (!p0 || !p1) {
+          newByDay.set(dayIdx, [{ ...s0, slotOrder: 0 }, { ...s1, slotOrder: 1 }]);
+          if (p1) { startLat = p1.lat; startLng = p1.lng; }
+          continue;
+        }
+        const costOriginal = this.evolver.estimateTravelTime(startLat, startLng, p0.lat, p0.lng)
+          + this.evolver.estimateTravelTime(p0.lat, p0.lng, p1.lat, p1.lng);
+        const costSwapped  = this.evolver.estimateTravelTime(startLat, startLng, p1.lat, p1.lng)
+          + this.evolver.estimateTravelTime(p1.lat, p1.lng, p0.lat, p0.lng);
+        if (costSwapped < costOriginal - 0.01) {
+          newByDay.set(dayIdx, [{ ...s1, slotOrder: 0 }, { ...s0, slotOrder: 1 }]);
+          changed = true;
+          startLat = p0.lat;
+          startLng = p0.lng;
+        } else {
+          newByDay.set(dayIdx, [{ ...s0, slotOrder: 0 }, { ...s1, slotOrder: 1 }]);
+          startLat = p1.lat;
+          startLng = p1.lng;
+        }
+        continue;
+      }
+
+      const places = daySlots.map(s => placeMap.get(s.placeId));
+      if (places.some(p => !p)) {
+        // Unknown place → keep original order for this day
+        newByDay.set(dayIdx, daySlots.map((s, i) => ({ ...s, slotOrder: i })));
+        continue;
+      }
+
+      const validPlaces = places as Place[];
+      const optOrder = this.twoOpt(startLat, startLng, validPlaces);
+
+      if (!optOrder.every((v, i) => v === i)) changed = true;
+
+      newByDay.set(dayIdx, optOrder.map((placeIdx, slotOrder) => ({
+        ...daySlots[placeIdx]!,
+        slotOrder,
+      })));
+
+      const lastPlace = validPlaces[optOrder[optOrder.length - 1]!]!;
+      startLat = lastPlace.lat;
+      startLng = lastPlace.lng;
+    }
+
+    if (!changed) return [];
+
+    // repairSuffix uses Math.max(cursor + travel, originalStartMs) to anchor each slot to its
+    // original time. When TSP moves a late-starting slot (e.g. originally 10:30) to first
+    // position, repairSuffix would anchor the whole day at 10:30 instead of 8:00, wasting
+    // the morning. Fix: pin the first slot of each day to the EARLIEST original start on that
+    // day so repairSuffix packs from the correct morning anchor.
+    const dayEarliestMs = new Map<number, number>();
+    for (const slot of plan) {
+      const ms = new Date(slot.plannedStart).getTime();
+      const cur = dayEarliestMs.get(slot.dayIndex) ?? Infinity;
+      if (ms < cur) dayEarliestMs.set(slot.dayIndex, ms);
+    }
+
+    const reordered: TripSlot[] = [];
+    for (const [dayIdx, slots] of [...newByDay.entries()].sort(([a], [b]) => a - b)) {
+      const earliestMs = dayEarliestMs.get(dayIdx) ?? new Date(slots[0]!.plannedStart).getTime();
+      reordered.push(...slots.map((s, i) => {
+        if (i !== 0) return s;
+        const place = placeMap.get(s.placeId);
+        const durationMs = Math.max(
+          MIN_SLOT_DURATION_MIN * 60_000,
+          (place?.avgVisitDurationMin ?? 0) * 60_000,
+        );
+        return {
+          ...s,
+          plannedStart: new Date(earliestMs).toISOString(),
+          plannedEnd: new Date(earliestMs + durationMs).toISOString(),
+        };
+      }));
+    }
+
+    const repaired = this.repairSuffix(reordered, 0, ctx);
+    if (!repaired) return [];
+
+    const trajectory = this.simulateIfFeasible(repaired, ctx);
+    if (!trajectory) return [];
+
+    const origById = new Map(plan.map(s => [s.slotId, s]));
+    const affectedSlotIds = repaired
+      .filter(s => {
+        const orig = origById.get(s.slotId);
+        return orig && orig.slotOrder !== s.slotOrder;
+      })
+      .map(s => s.slotId);
+
+    return [{
+      newPlan: repaired,
+      operator: 'TSP_REORDER',
+      affectedSlotIds: affectedSlotIds.length > 0 ? affectedSlotIds : plan.map(s => s.slotId),
+      repairedFromIndex: 0,
+      stateTrajectory: trajectory,
+      description: 'Tối ưu thứ tự tham quan để giảm tổng quãng đường di chuyển trong ngày',
+    }];
+  }
+
+  /**
+   * 2-opt for open TSP (fixed start, no return to origin).
+   * Returns a permutation `order` where `places[order[i]]` is visited at step i.
+   * Applies iterative edge-swap improvements until no gain > 0.01 min remains.
+   */
+  private twoOpt(startLat: number, startLng: number, places: Place[]): number[] {
+    const n = places.length;
+    const order = Array.from({ length: n }, (_, i) => i);
+
+    // from < 0 means "start position"
+    const d = (from: number, to: number): number =>
+      this.evolver.estimateTravelTime(
+        from < 0 ? startLat : places[from]!.lat,
+        from < 0 ? startLng : places[from]!.lng,
+        places[to]!.lat,
+        places[to]!.lng,
+      );
+
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (let i = 0; i < n - 1; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const prevI = i === 0 ? -1 : order[i - 1]!;
+          const hasAfter = j < n - 1;
+          // gain = (edges removed) - (edges added) after reversing order[i..j]
+          const gain =
+            d(prevI, order[i]!) + (hasAfter ? d(order[j]!, order[j + 1]!) : 0)
+            - d(prevI, order[j]!) - (hasAfter ? d(order[i]!, order[j + 1]!) : 0);
+          if (gain > 0.01) {
+            let lo = i, hi = j;
+            while (lo < hi) {
+              [order[lo], order[hi]] = [order[hi]!, order[lo]!];
+              lo++; hi--;
+            }
+            improved = true;
+          }
+        }
+      }
+    }
+
+    return order;
   }
 
   // -------------------------------------------------------------------------
@@ -307,22 +792,59 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Runs all five operators and returns up to {@link GENERATE_ALL_CAP}
-   * results, prioritising operators in spec order (TIME_SHIFT first, …).
-   *
-   * @param plan Ordered list of {@link TripSlot}s.
-   * @param ctx  {@link ReplanContext}.
-   * @returns    Up to 30 {@link MutationResult}s.
+   * Tổng hợp và thực thi tất cả các toán tử biến đổi (mutation operators) để tạo ra các phương án thay đổi lộ trình.
+   * 
+   * Hàm này đóng vai trò là "trạm điều phối" trung tâm, kết hợp kết quả từ 5 loại toán tử khác nhau
+   * để tìm ra các biến thể khả thi nhất cho kế hoạch hiện tại.
+   * 
+   * Thứ tự ưu tiên và các toán tử được thực hiện:
+   * 1. **TIME_SHIFT (OP-1)**: Dịch chuyển mốc thời gian của các slot hiện có.
+   * 2. **SWAP_ORDER (OP-2)**: Hoán đổi thứ tự giữa các địa điểm kề nhau trong cùng một ngày.
+   * 3. **REPLACE_PLACE (OP-3)**: Thay thế một địa điểm hiện tại bằng một địa điểm ứng viên tốt hơn.
+   * 4. **DROP_SLOT (OP-4)**: Loại bỏ một địa điểm khỏi kế hoạch để giảm tải lịch trình.
+   * 5. **INSERT_ALT (OP-5)**: Chèn thêm một địa điểm mới từ danh sách ứng viên vào lộ trình.
+   * 
+   * Quy trình xử lý kết quả (Chống Starvation):
+   * - **Trộn luân phiên (Round-Robin)**: Thu thập và xen kẽ kết quả từ các toán tử để đảm bảo tính đa dạng.
+   * - **Lọc trùng (Deduplication)**: Sử dụng {@link dedupeResults} để loại bỏ các phương án có cấu trúc giống nhau.
+   * - **Giới hạn (Cap)**: Cắt kết quả theo {@link GENERATE_ALL_CAP} để tối ưu hiệu năng cho Beam Search.
+   * 
+   * @param plan Danh sách các {@link TripSlot} hiện tại đã được sắp xếp theo thứ tự thời gian.
+   * @param ctx Ngữ cảnh {@link ReplanContext} chứa toàn bộ dữ liệu ứng viên, dự báo và trạng thái mô phỏng.
+   * @returns Danh sách tối đa các {@link MutationResult} đại diện cho các hướng đi mới của lộ trình.
    */
   generateAll(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
-    const all = [
-      ...this.timeShift(plan, ctx),
-      ...this.swapOrder(plan, ctx),
-      ...this.replacePlace(plan, ctx),
-      ...this.dropSlot(plan, ctx),
-      ...this.insertAlt(plan, ctx),
-    ];
-    return all.slice(0, GENERATE_ALL_CAP);
+    // 1. Thực thi độc lập và thu thập kết quả từ tất cả các toán tử
+    const timeShifts = this.timeShift(plan, ctx);
+    const swaps = this.swapOrder(plan, ctx);
+    const replaces = this.replacePlace(plan, ctx);
+    const drops = this.dropSlot(plan, ctx);
+    const inserts = this.insertAlt(plan, ctx);
+    const tspReorders = this.tspReorder(plan, ctx);
+
+    // 2. Trộn kết quả theo chiến lược Round-Robin để chống "Operator Starvation"
+    const operatorOutputs = [timeShifts, swaps, replaces, drops, inserts, tspReorders];
+    const allMerged: MutationResult[] = [];
+
+    let hasMore = true;
+    let index = 0;
+
+    while (hasMore) {
+      hasMore = false;
+      for (const output of operatorOutputs) {
+        if (index < output.length) {
+          allMerged.push(output[index]);
+          hasMore = true; // Vẫn còn ít nhất 1 toán tử có kết quả ở vị trí này
+        }
+      }
+      index++;
+    }
+
+    // 3. Lọc các phương án trùng lặp về cấu trúc
+    const deduped = this.dedupeResults(allMerged);
+
+    // 4. Cắt mảng theo giới hạn hằng số (Đảm bảo GENERATE_ALL_CAP đã được khai báo)
+    return deduped.slice(0, GENERATE_ALL_CAP);
   }
 
   // -------------------------------------------------------------------------
@@ -330,87 +852,134 @@ export class MutationOperators {
   // -------------------------------------------------------------------------
 
   /**
-   * Returns a new slot with `plannedStart` and `plannedEnd` shifted by
-   * `minutes` minutes (positive = later, negative = earlier).
-   * All other fields are unchanged.
+   * Tạo ra một bản sao của {@link TripSlot} với thời gian bắt đầu và kết thúc 
+   * được dịch chuyển một khoảng thời gian nhất định.
+   * 
+   * Hàm này thực hiện dịch chuyển mốc thời gian (time shift) mà không làm thay đổi 
+   * độ dài (duration) của slot hoặc các thuộc tính khác.
+   * 
+   * Các đặc điểm chính:
+   * 1. **An toàn dữ liệu**: Kiểm tra tính hợp lệ của chuỗi ngày tháng đầu vào để tránh crash ứng dụng.
+   * 2. **Dịch chuyển linh hoạt**: Hỗ trợ cả số dương (lùi giờ lại sau) và số âm (đẩy giờ lên sớm hơn).
+   * 3. **Bảo toàn cấu trúc**: Các trường dữ liệu khác của slot được giữ nguyên thông qua spread operator.
+   * 
+   * @param slot Đối tượng {@link TripSlot} gốc cần dịch chuyển.
+   * @param minutes Số phút cần dịch chuyển (dương = muộn hơn, âm = sớm hơn).
+   * @returns Một {@link TripSlot} mới đã được cập nhật mốc thời gian.
    */
   private shiftSlot(slot: TripSlot, minutes: number): TripSlot {
-    const shiftMs = minutes * 60_000;
+    const shiftMs = Math.round(minutes * 60_000);
+
+    // Hàm helper để parse và tính toán an toàn
+    const shiftDateString = (dateStr: string): string => {
+      // Nếu không có dữ liệu, trả về nguyên bản để không làm sai lệch format gốc
+      if (!dateStr) return dateStr;
+
+      const dateObj = new Date(dateStr);
+
+      // 2. Kiểm tra tính hợp lệ của ngày tháng trước khi gọi toISOString()
+      if (isNaN(dateObj.getTime())) {
+        console.warn(`[shiftSlot] Invalid date string: ${dateStr}`);
+        return dateStr; // Trả về chuỗi gốc thay vì crash app
+      }
+
+      return new Date(dateObj.getTime() + shiftMs).toISOString();
+    };
+
     return {
       ...slot,
-      plannedStart: new Date(
-        new Date(slot.plannedStart).getTime() + shiftMs,
-      ).toISOString(),
-      plannedEnd: new Date(
-        new Date(slot.plannedEnd).getTime() + shiftMs,
-      ).toISOString(),
+      plannedStart: shiftDateString(slot.plannedStart),
+      plannedEnd: shiftDateString(slot.plannedEnd),
     };
   }
 
   /**
-   * Returns `true` when the slot's local visit window fits within the place's
-   * opening hours on that day of the week.
-   *
-   * Timezone: all comparisons are done in Vietnam local time (UTC+7).
-   * Day-of-week convention: 0 = Monday (T2), 6 = Sunday (CN), matching the
-   * spec's `PlaceOpeningHour.dayOfWeek` column.
-   *
-   * If the place has no opening hours registered, it is treated as always
-   * open and `true` is returned.
+   * Kiểm tra xem khung giờ tham quan của một slot có nằm trong giờ mở cửa của địa điểm hay không.
+   * 
+   * Hàm này thực hiện các tính toán phức tạp liên quan đến thời gian và múi giờ để đảm bảo 
+   * tính thực tế của kế hoạch du lịch.
+   * 
+   * Các quy tắc kiểm tra chính:
+   * 1. **Múi giờ**: Toàn bộ việc so sánh được quy đổi về giờ địa phương Việt Nam (UTC+7).
+   * 2. **Thứ trong tuần**: Sử dụng quy ước 0 = Thứ Hai, 6 = Chủ Nhật để khớp với dữ liệu DB.
+   * 3. **Xử lý Midnight (Vắt qua nửa đêm)**: 
+   *    - Nếu slot kết thúc sau 24:00 của ngày bắt đầu, hệ thống yêu cầu ngày hôm nay phải mở cửa 
+   *      đến sát nửa đêm (23:59/24:00) và ngày mai phải mở cửa ngay từ 00:00.
+   *    - Thời gian dư ra của slot phải nằm trong khung giờ mở cửa của ngày kế tiếp.
+   * 4. **Chuẩn hóa dữ liệu**: Tự động chuyển đổi các mốc "23:59" hoặc "24:00" thành phút thứ 1440 
+   *    để thực hiện các phép toán so sánh liên tục.
+   * 5. **Trường hợp ngoại lệ**: Nếu địa điểm không có thông tin giờ mở cửa, hàm mặc định trả về `true`.
+   * 
+   * @param slot Đối tượng {@link TripSlot} cần kiểm tra.
+   * @param ctx Ngữ cảnh {@link ReplanContext} cung cấp dữ liệu địa điểm từ candidatePool.
+   * @returns `true` nếu khung giờ hợp lệ hoặc không có dữ liệu ràng buộc, ngược lại là `false`.
    */
-  private withinOpeningHours(slot: TripSlot, ctx: ReplanContext): boolean {
-    const place = ctx.candidatePool.find((p) => p.placeId === slot.placeId);
-    if (!place || place.openingHours.length === 0) return true;
+  /**
+   * Core opening-hours check against an already-resolved Place.
+   * Called directly from repairSuffix (which already holds the place from its placeMap)
+   * to avoid a redundant O(P) candidatePool.find() per slot.
+   */
+  private checkOpeningHours(slot: TripSlot, place: Place): boolean {
+    if (place.openingHours.length === 0) return true;
 
-    // Convert UTC → Vietnam local (UTC+7)
     const startLocalMs = new Date(slot.plannedStart).getTime() + VN_OFFSET_MS;
     const endLocalMs = new Date(slot.plannedEnd).getTime() + VN_OFFSET_MS;
     const startLocal = new Date(startLocalMs);
-    const endLocal = new Date(endLocalMs);
 
-    // js getUTCDay(): 0=Sun … 6=Sat  →  spec: 0=Mon … 6=Sun
     const jsDay = startLocal.getUTCDay();
     const dayOfWeek = (jsDay + 6) % 7;
 
-    const hours = place.openingHours.find((h) => h.dayOfWeek === dayOfWeek);
-    if (!hours) return false; // closed on this day of the week
+    const slotStartMin = startLocal.getUTCHours() * 60 + startLocal.getUTCMinutes();
+    const durationMs = endLocalMs - startLocalMs;
+    const slotEndMin = slotStartMin + Math.floor(durationMs / 60000);
 
-    const slotStartMin =
-      startLocal.getUTCHours() * 60 + startLocal.getUTCMinutes();
-    const slotEndMin =
-      endLocal.getUTCHours() * 60 + endLocal.getUTCMinutes();
+    const getHoursForDay = (day: number) => {
+      const hours = place.openingHours.find((h) => h.dayOfWeek === day);
+      if (!hours) return null;
 
-    const [openH, openM] = hours.openTime.split(':').map(Number) as [
-      number,
-      number,
-    ];
-    const [closeH, closeM] = hours.closeTime.split(':').map(Number) as [
-      number,
-      number,
-    ];
-    const openMin = openH * 60 + openM;
-    const closeMin = closeH * 60 + closeM;
+      const [openH, openM] = hours.openTime.split(':').map(Number);
+      const [closeH, closeM] = hours.closeTime.split(':').map(Number);
 
-    return slotStartMin >= openMin && slotEndMin <= closeMin;
+      const openMin = openH! * 60 + (openM ?? 0);
+      let closeMin = closeH! * 60 + (closeM ?? 0);
+
+      if (closeMin <= openMin) closeMin += 1440;
+      if ((closeH === 23 && closeM === 59) || (closeH === 24 && closeM === 0)) closeMin = 1440;
+
+      return { openMin, closeMin };
+    };
+
+    const todayHours = getHoursForDay(dayOfWeek);
+    if (!todayHours) return false;
+
+    return slotStartMin >= todayHours.openMin && slotEndMin <= todayHours.closeMin;
+  }
+
+  /** Delegates to checkOpeningHours after resolving the place from candidatePool. */
+  private withinOpeningHours(slot: TripSlot, ctx: ReplanContext): boolean {
+    const place = ctx.placeMap?.get(slot.placeId) ?? ctx.candidatePool.find((p) => p.placeId === slot.placeId);
+    if (!place) return true;
+    return this.checkOpeningHours(slot, place);
   }
 
   /**
-   * Simulates the full state trajectory through `plan` starting from
-   * `ctx.initialState` and returns `true` only if every intermediate state
-   * passes {@link StateEvolver.isFeasible}.
+   * Simulates the full trajectory for a plan and returns the states if every
+   * intermediate state passes isFeasible(), or null if any constraint is violated.
    *
-   * Returns `false` on any thrown error (e.g. missing place in pool).
+   * Replaces the old allFeasible() wrapper: instead of discarding the computed
+   * states, we cache them in MutationResult.stateTrajectory so BeamSearch.search()
+   * can reuse them without a second computeTrajectory() call (Bug 1 fix).
+   *
+   * Plans reaching this method contain only future `planned` slots (remainingSlots),
+   * so computeTrajectory() and the old isPlanFeasible() are equivalent here.
    */
-  private allFeasible(plan: TripSlot[], ctx: ReplanContext): boolean {
+  private simulateIfFeasible(plan: TripSlot[], ctx: ReplanContext): TripState[] | null {
     try {
-      const trajectory = this.evolver.computeTrajectory(
-        plan,
-        ctx.initialState,
-        ctx,
-      );
-      return trajectory.every((s) => this.evolver.isFeasible(s));
+      const states = this.evolver.computeTrajectory(plan, ctx.initialState, ctx);
+      if (!states.slice(1).every((s) => this.evolver.isFeasible(s))) return null;
+      return states;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -418,24 +987,58 @@ export class MutationOperators {
    * Counts the number of tag IDs shared between two places.
    * Returns 0 when either place has no tags.
    */
-  private tagOverlap(a: Place, b: Place): number {
-    if (!a.tags.length || !b.tags.length) return 0;
-    const bIds = new Set(b.tags.map((t) => t.tagId));
-    return a.tags.filter((t) => bIds.has(t.tagId)).length;
+  private static tagOverlap(a: Place, b?: Place): number {
+    if (!b) return 0;
+
+    // Trích xuất tập hợp các ID duy nhất từ cả 'tagIds' và 'tags'
+    const getUniqueTagIds = (place: Place): Set<number> => {
+      const ids = new Set<number>(place.tagIds || []);
+      if (place.tags?.length) {
+        place.tags.forEach(t => ids.add(t.tagId));
+      }
+      return ids;
+    };
+
+    const aIds = getUniqueTagIds(a);
+    const bIds = getUniqueTagIds(b);
+
+    if (aIds.size === 0 || bIds.size === 0) return 0;
+
+    // Đếm số lượng ID giao nhau
+    let overlapCount = 0;
+    aIds.forEach(id => {
+      if (bIds.has(id)) overlapCount++;
+    });
+
+    return overlapCount;
   }
 
   /**
-   * Synthesizes a new {@link TripSlot} for a given place at insertion
-   * position `pos`.
-   *
-   * **Time window logic:**
-   * - `pos > 0`: start immediately after the previous slot ends.
-   * - `pos = 0` (insert at head): start at the next slot's start time.
-   * - Empty plan: start at `ctx.initialState.capturedAt`.
-   *
-   * The cost is set to `place.minPrice ?? 0` (conservative estimate).
-   * The synthetic `slotId` is a fresh UUID so accept-transaction inserts pass
-   * the `slot_id @db.Uuid` constraint.
+   * Khởi tạo (tổng hợp) một {@link TripSlot} mới cho một địa điểm tại một vị trí chỉ định trong kế hoạch.
+   * 
+   * Đây là hàm helper cốt lõi cho các thao tác INSERT_ALT, giúp dự đoán mốc thời gian 
+   * và chi phí cho một địa điểm mới trước khi thực hiện các bước tối ưu hóa chuyên sâu.
+   * 
+   * Các chiến lược tính toán thời gian (Timing Strategies):
+   * 1. **Chèn vào giữa hoặc cuối (`pos > 0`)**: Slot mới bắt đầu ngay sau khi slot phía trước (`prev`) 
+   *    kết thúc cộng thêm thời gian di chuyển (Travel Time) từ `prev` đến `place`.
+   * 2. **Chèn vào đầu (`pos = 0`)**: Slot mới được tính toán sao cho kết thúc vừa kịp để di chuyển 
+   *    đến slot kế tiếp (`next`). Nếu thời gian bắt đầu bị đẩy về trước thời điểm hiện tại (`capturedAt`), 
+   *    hệ thống sẽ tự động điều chỉnh mốc bắt đầu về `capturedAt`.
+   * 3. **Kế hoạch rỗng**: Slot bắt đầu sau khi di chuyển từ vị trí hiện tại của người dùng 
+   *    (từ `initialState`) đến địa điểm mới.
+   * 
+   * Các thuộc tính mặc định của Slot tổng hợp:
+   * - **Thời lượng**: Lấy giá trị lớn nhất giữa `MIN_SLOT_DURATION_MIN` và thời gian tham quan trung bình của địa điểm.
+   * - **Định danh**: Sinh `slotId` mới (UUID) để tránh xung đột dữ liệu.
+   * - **Chi phí**: Ưu tiên sử dụng `estimatedCost`, sau đó là `minPrice` của địa điểm.
+   * - **Trạng thái**: Luôn đặt là `'planned'` với `version: 1`.
+   * 
+   * @param place Địa điểm {@link Place} cần tạo slot.
+   * @param plan Danh sách các {@link TripSlot} hiện tại.
+   * @param pos Vị trí dự kiến chèn slot vào (0-indexed).
+   * @param ctx Ngữ cảnh {@link ReplanContext} để truy cập trạng thái ban đầu và pool địa điểm.
+   * @returns Một đối tượng {@link TripSlot} hoàn chỉnh đã được tính toán sơ bộ.
    */
   private synthesizeSlot(
     place: Place,
@@ -445,24 +1048,58 @@ export class MutationOperators {
   ): TripSlot {
     const prev = pos > 0 ? plan[pos - 1] : undefined;
     const next = pos < plan.length ? plan[pos] : undefined;
-
-    let plannedStart: string;
+    const getCoords = (placeId: number) => {
+      const p = ctx.placeMap?.get(placeId) ?? ctx.candidatePool.find((c) => c.placeId === placeId);
+      return p ? { lat: p.lat, lng: p.lng } : null;
+    };
+    const durationMs = Math.max(
+      MIN_SLOT_DURATION_MIN * 60_000,
+      place.avgVisitDurationMin * 60_000,
+    );
+    let travelTimeMin = 0;
+    let plannedStartMs: number;
+    let plannedEndMs: number;
     if (prev) {
-      plannedStart = prev.plannedEnd;
+      // Trường hợp 1: Chèn sau prev -> Đi từ prev đến place mới
+      const prevCoords = getCoords(prev.placeId);
+      if (prevCoords) {
+        travelTimeMin = this.evolver.estimateTravelTime(
+          prevCoords.lat, prevCoords.lng,
+          place.lat, place.lng
+        );
+      }
+      plannedStartMs = new Date(prev.plannedEnd).getTime() + (travelTimeMin * 60_000);
+      plannedEndMs = plannedStartMs + durationMs;
     } else if (next) {
-      plannedStart = next.plannedStart;
+      // Trường hợp 2: Chèn vào đầu mảng (pos = 0) -> Đi từ place mới đến next
+      const nextCoords = getCoords(next.placeId);
+      if (nextCoords) {
+        travelTimeMin = this.evolver.estimateTravelTime(
+          place.lat, place.lng,
+          nextCoords.lat, nextCoords.lng
+        );
+      }
+      // Slot này phải kết thúc đủ sớm để kịp đi tới next
+      plannedEndMs = new Date(next.plannedStart).getTime() - (travelTimeMin * 60_000);
+      plannedStartMs = plannedEndMs - durationMs;
+
+      // Đảm bảo không bị lùi về trước thời điểm hiện tại
+      const minStart = new Date(ctx.initialState.capturedAt).getTime();
+      if (plannedStartMs < minStart) {
+        plannedStartMs = minStart;
+        plannedEndMs = plannedStartMs + durationMs;
+      }
     } else {
-      plannedStart = ctx.initialState.capturedAt;
+      // Trường hợp 3: Mảng rỗng -> Đi từ vị trí hiện tại của user đến place mới
+      travelTimeMin = this.evolver.estimateTravelTime(
+        ctx.initialState.currentLat ?? place.lat,
+        ctx.initialState.currentLng ?? place.lng,
+        place.lat, place.lng
+      );
+      plannedStartMs = new Date(ctx.initialState.capturedAt).getTime() + (travelTimeMin * 60_000);
+      plannedEndMs = plannedStartMs + durationMs;
     }
-
-    const durationMs = place.avgVisitDurationMin * 60_000;
-    const plannedEnd = new Date(
-      new Date(plannedStart).getTime() + durationMs,
-    ).toISOString();
-
-    const dayIndex =
-      prev?.dayIndex ?? next?.dayIndex ?? ctx.initialState.dayIndex;
-
+    const dayIndex = prev?.dayIndex ?? next?.dayIndex ?? ctx.initialState.dayIndex;
     return {
       slotId: randomUUID(),
       tripId: ctx.initialState.tripId,
@@ -470,14 +1107,533 @@ export class MutationOperators {
       slotOrder: pos,
       version: 1,
       placeId: place.placeId,
-      plannedStart,
-      plannedEnd,
+      plannedStart: new Date(plannedStartMs).toISOString(),
+      plannedEnd: new Date(plannedEndMs).toISOString(),
       actualStart: null,
       actualEnd: null,
-      estimatedCost: place.minPrice ?? 0,
+      estimatedCost: place.estimatedCost ?? place.minPrice ?? 0,
       activityType: 'sightseeing',
       rationale: null,
       status: 'planned',
     };
+  }
+
+  /**
+   * Tính toán điểm ưu tiên (priority score) cho một địa điểm ứng viên.
+   * Điểm này được dùng để xếp hạng và lựa chọn các địa điểm tốt nhất khi thực hiện 
+   * các thao tác mutation như REPLACE_PLACE hoặc INSERT_ALT.
+   * 
+   * Các yếu tố cấu thành điểm số (tính tích lũy):
+   * 1. Độ tương đồng (Tag Overlap): Mỗi tag chung với địa điểm tham chiếu (nếu có) được +10 điểm.
+   * 2. Thời lượng tham quan: Tính theo công thức `duration / 10`, ưu tiên các địa điểm có 
+   *    thời gian tham quan dài hơn, tối đa +12 điểm (tương đương mốc 120 phút).
+   * 3. Trạng thái ưu tiên trong context:
+   *    - Thuộc potentialPlaceIds (Địa điểm tiềm năng): +60 điểm.
+   *    - Thuộc requiredPlaceIds (Địa điểm bắt buộc): +80 điểm.
+   *    - Là forceIncludePlaceId (Địa điểm được chỉ định đích danh): +100 điểm.
+   * 
+   * @param candidate Địa điểm đang được xem xét (trả về 0 nếu undefined).
+   * @param reference Địa điểm tham chiếu để so sánh tag (thường là địa điểm bị thay thế).
+   * @param ctx Ngữ cảnh replan chứa các danh sách ưu tiên và cấu hình.
+   * @returns Điểm số ưu tiên (số dương).
+   */
+  private static candidatePriority(
+    candidate: Place,
+    reference: Place | undefined,
+    ctx: ReplanContext,
+  ): number {
+    if (!candidate) return 0;
+    let score = 0;
+
+    // When rain is active and the reference slot is outdoor (or absent), tag overlap
+    // with the replaced place is meaningless (beach tags ≠ museum/restaurant tags).
+    // Use user preference alignment instead so the best-fit indoor place wins.
+    const isRaining = (ctx as BeamSearchContext)?.weatherForecast?.some(
+      (w) => (w?.rainMmPerH ?? 0) >= 5,
+    ) ?? false;
+    const referenceIsOutdoorOrMissing =
+      !reference || reference.indoorOutdoor === 'outdoor';
+
+    if (isRaining && referenceIsOutdoorOrMissing && candidate.indoorOutdoor === 'indoor') {
+      const prefVec = (ctx as BeamSearchContext)?.user?.preferenceVector;
+      if (prefVec?.length) {
+        // Scale to same order of magnitude as tagOverlap * 10 (overlap of 1 tag = 10 pts).
+        // dot product ∈ [0, 1] → * 100 gives up to 100 pts.
+        score += dot(prefVec, tagVectorOf(candidate)) * 100;
+      }
+    } else {
+      score += MutationOperators.tagOverlap(candidate, reference) * 10;
+    }
+
+    score += Math.min((candidate.avgVisitDurationMin || 0) / 10, 12);
+
+    if (ctx?.potentialPlaceIds?.includes(candidate.placeId)) score += 60;
+    if (ctx?.requiredPlaceIds?.includes(candidate.placeId)) score += 80;
+    if (ctx?.forceIncludePlaceId === candidate.placeId) score += 100;
+
+    return score;
+  }
+
+  /**
+   * Loại bỏ các kết quả bị trùng lặp trong danh sách các MutationResult.
+   * 
+   * Hàm này sử dụng `planSignature` để xác định các kế hoạch (itinerary) giống hệt nhau về cấu trúc.
+   * Nếu có nhiều thao tác mutation dẫn đến cùng một kế hoạch cuối cùng, hàm sẽ giữ lại 
+   * kết quả có số lượng slot bị ảnh hưởng (affected slots) nhiều hơn (tie-breaker).
+   * 
+   * @param results Danh sách các kết quả mutation cần lọc trùng.
+   * @returns Danh sách các kết quả mutation duy nhất.
+   */
+  private dedupeResults(results: MutationResult[]): MutationResult[] {
+    // Lưu thêm số lượng affected slots đã đếm để tránh tính lại
+    const seen = new Map<string, { result: MutationResult; count: number }>();
+
+    for (const result of results) {
+      const key = this.planSignature(result.newPlan);
+      const existingObj = seen.get(key);
+      const resultCount = this.countDistinctAffectedSlots(result);
+
+      if (!existingObj) {
+        seen.set(key, { result, count: resultCount });
+        continue;
+      }
+      // ưu tiên giữ lại thao tác có số lượng slot bị ảnh hưởng 
+      // user cảm thấy ít ngợp khi thay đổi nhiều
+      if (resultCount < existingObj.count) {
+        seen.set(key, { result, count: resultCount });
+      }
+    }
+
+    return [...seen.values()].map(item => item.result);
+  }
+
+  /**
+   * Tạo *identity signature* cho một plan: khoá trên slotId + version + timing.
+   * Hai plan chứa cùng placeId/giờ nhưng slotId khác nhau (ví dụ: INSERT_ALT tạo UUID mới)
+   * sẽ cho ra signature khác nhau ở đây.
+   *
+   * NOTE [Design 1 — Dual planSignature]
+   * BeamSearch.planSignature() dùng placeId + timing (structural — không quan tâm slotId).
+   * Hàm này dùng slotId + version (identity — phân biệt được hai lần thăm cùng địa điểm).
+   * Hai lớp dedup này có ngữ nghĩa khác nhau và có thể để lọt/trùng lặp lẫn nhau.
+   *
+   * TODO [Design 1]: Thống nhất bằng một hàm dùng chung `structuralSignature(plan)` khoá
+   * trên placeId + times, rồi dùng nó cho cả hai nơi. Xem TODO tương ứng trong BeamSearch.ts.
+   */
+  private planSignature(plan: TripSlot[]): string {
+    // 1. Clone mảng để không làm thay đổi mảng gốc, sau đó sort
+    const sortedPlan = [...plan].sort((a, b) => {
+      if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+      return a.slotOrder - b.slotOrder;
+    });
+
+    return sortedPlan
+      .map((slot) => {
+        // 2. Thêm các trường quan trọng để detect thay đổi (tùy nhu cầu thực tế của bạn)
+        return [
+          slot.slotId, // Dùng slotId thay vì chỉ placeId nếu 1 place có thể đến nhiều lần
+          slot.dayIndex,
+          slot.slotOrder,
+          slot.status,
+          slot.version, // version thường là cách tốt nhất để biết entity có đổi hay không
+          slot.plannedStart,
+          slot.plannedEnd,
+        ].join('##'); // 3. Dùng một ký tự phân cách an toàn hơn, không trùng với format thời gian
+      })
+      .join('|');
+  }
+
+  /**
+   * có tác dụng đếm số lượng các slot khác nhau 
+   * đã bị tác động bởi một phép biến đổi (mutation).
+   * 
+   * Mục đích sử dụng: Hàm này được dùng làm tiêu chí ưu tiên 
+   * (tie-breaker) trong quá trình loại bỏ các kết quả trùng 
+   * lặp tại hàm dedupeResults
+   */
+  private countDistinctAffectedSlots(result: MutationResult): number {
+    return new Set(result?.affectedSlotIds || []).size;
+  }
+
+  /**
+   * Hàm phụ trợ thay thế địa điểm của một slot hiện có bằng một địa điểm mới.
+   * 
+   * Các logic xử lý chính:
+   * 1. **Tính lại thời gian**: Thời lượng của slot cũ bị loại bỏ hoàn toàn. Thời lượng mới được 
+   *    tính bằng giá trị lớn nhất giữa `MIN_SLOT_DURATION_MIN` và `avgVisitDurationMin` của địa điểm mới.
+   * 2. **Cập nhật chi phí**: Ưu tiên lấy `estimatedCost` của địa điểm mới, nếu không có sẽ 
+   *    dùng `minPrice`, và cuối cùng là giữ nguyên chi phí của slot cũ nếu cả hai đều null.
+   * 3. **Quản lý trạng thái**: Tăng số `version` lên 1 và chuyển trạng thái slot về `'planned'`.
+   * 4. **Làm sạch dữ liệu**: Reset các trường thực thi (`actualStart`, `actualEnd`, `rationale`) 
+   *    về `null` vì đây là một lượt tham quan mới tại địa điểm mới.
+   * 5. **An toàn dữ liệu**: Ném lỗi (Error) nếu mốc `plannedStart` của slot không thể parse thành ngày hợp lệ.
+   * 
+   * @param slot Đối tượng {@link TripSlot} cần thay thế địa điểm.
+   * @param place Địa điểm {@link Place} mới sẽ được gán vào slot.
+   * @returns Một bản sao của {@link TripSlot} đã được cập nhật địa điểm và các thông số liên quan.
+   * @throws {Error} Nếu `plannedStart` của slot không hợp lệ.
+   */
+  private replaceSlotPlace(slot: TripSlot, place: Place): TripSlot {
+    const startDate = new Date(slot.plannedStart);
+    const currentStart = startDate.getTime();
+
+    // Kiểm tra thời gian hợp lệ để tránh crash RangeError
+    if (isNaN(currentStart)) {
+      throw new Error(`Invalid plannedStart value in slot: ${slot.slotId}`);
+    }
+
+    // Loại bỏ việc phụ thuộc vào thời lượng của slot cũ
+    // Chỉ lấy max giữa thời gian quy định tối thiểu và thời gian trung bình của địa điểm mới
+    const currentDuration = Math.max(
+      MIN_SLOT_DURATION_MIN * 60_000,
+      (place.avgVisitDurationMin || 0) * 60_000
+    );
+
+    return {
+      ...slot,
+      placeId: place.placeId,
+      plannedEnd: new Date(currentStart + currentDuration).toISOString(),
+      estimatedCost: place.estimatedCost ?? place.minPrice ?? slot.estimatedCost,
+
+      // Đảm bảo slot mới luôn sạch dữ liệu thực thi
+      actualStart: null,
+      actualEnd: null,
+      rationale: null,
+
+      version: slot.version + 1,
+      status: 'planned'
+    };
+  }
+
+  /**
+   * Tái lập lịch trình cho phần còn lại của kế hoạch (suffix) bắt đầu từ một vị trí chỉ định.
+   * Đây là bước "sửa lỗi" toàn cục, giúp một thay đổi nhỏ ở giữa kế hoạch (như chèn, xoá, 
+   * hoặc đổi chỗ) được lan truyền và cập nhật chính xác cho toàn bộ phần phía sau.
+   * 
+   * Các cơ chế cốt lõi:
+   * 1. **Tính toán Travel Time**: Tự động tính thời gian di chuyển từ vị trí trước đó 
+   *    (hoặc vị trí hiện tại của người dùng) đến địa điểm của slot hiện tại.
+   * 2. **Dồn lịch (Packing)**: Các slot được đẩy lên sớm nhất có thể ngay sau khi kết thúc 
+   *    thời gian di chuyển, giúp tối ưu hoá thời gian trống.
+   * 3. **Xử lý Opening Hours**: Kiểm tra xem khung giờ dự kiến có khớp với lịch mở cửa 
+   *    của địa điểm hay không (sử dụng `withinOpeningHours`).
+   * 4. **Quản lý giới hạn ngày (Night Constraint)**: Nếu một slot kết thúc quá muộn 
+   *    (vượt quá `DAY_END_HOUR` + `maxOverflow`), nó sẽ tự động được dời sang 8:00 sáng 
+   *    ngày hôm sau.
+   * 5. **Chống lặp vô hạn**: Hệ thống thử dời lịch tối đa 4 ngày liên tiếp. Nếu vẫn không tìm được
+   *    khung giờ khả thi (ví dụ: địa điểm đóng cửa dài hạn), toàn bộ kế hoạch sẽ bị coi là không khả thi.
+   *    Giới hạn 4 ngày là cố ý — nếu ngày hợp lệ tiếp theo cách xa hơn, địa điểm không phù hợp
+   *    với cửa sổ lập lịch hiện tại.
+   * 
+   * @param plan Danh sách các {@link TripSlot} cần được sửa lại.
+   * @param fromIndex Vị trí bắt đầu thực hiện sửa lỗi (0-indexed).
+   * @param ctx Ngữ cảnh replan chứa các tham số giới hạn và dữ liệu ứng viên.
+   * @returns Danh sách TripSlot đã được cập nhật mốc thời gian, hoặc `null` nếu không thể sửa lỗi.
+   */
+  private repairSuffix(
+    plan: TripSlot[],
+    fromIndex: number,
+    ctx: ReplanContext,
+  ): TripSlot[] | null {
+    if (plan.length === 0) return [];
+    if (fromIndex >= plan.length) return plan.map((s) => ({ ...s }));
+
+    const repaired = plan.map((slot) => ({ ...slot }));
+    const maxOverflow = ctx.maxOverflowMinutes ?? 30;
+
+    const placeMap = ctx.placeMap ?? (() => {
+      const m = new Map<number, Place>();
+      for (const p of ctx.candidatePool) m.set(p.placeId, p);
+      return m;
+    })();
+
+    // [Bug 5 fix] Counter per-day cho slotOrder.
+    // Khởi tạo từ các slot trước fromIndex để không reset về 0 giữa chừng.
+    // `dayOrderCounters.get(dayIndex)` = số slot đã có trong ngày đó trước khi suffix bắt đầu.
+    const dayOrderCounters = new Map<number, number>();
+    for (let j = 0; j < fromIndex; j++) {
+      const s = repaired[j]!;
+      dayOrderCounters.set(s.dayIndex, (dayOrderCounters.get(s.dayIndex) ?? 0) + 1);
+    }
+
+    const capturedAtMs = new Date(ctx.initialState.capturedAt).getTime();
+    let cursorMs =
+      fromIndex > 0
+        ? Math.max(new Date(repaired[fromIndex - 1]!.plannedEnd).getTime(), capturedAtMs)
+        : capturedAtMs;
+
+    let currentDayIndex =
+      fromIndex > 0
+        ? repaired[fromIndex - 1]!.dayIndex
+        : (repaired[fromIndex]?.dayIndex ?? ctx.initialState.dayIndex);
+
+    for (let i = fromIndex; i < repaired.length; i++) {
+      const slot = repaired[i]!;
+      const place = placeMap.get(slot.placeId);
+      if (!place) return null;
+
+      let prevLat = ctx.initialState.currentLat;
+      let prevLng = ctx.initialState.currentLng;
+      if (i > 0) {
+        const prevPlace = placeMap.get(repaired[i - 1]!.placeId);
+        if (prevPlace) { prevLat = prevPlace.lat; prevLng = prevPlace.lng; }
+      }
+
+      const travelTimeMin = this.evolver.estimateTravelTime(
+        prevLat ?? place.lat, prevLng ?? place.lng, place.lat, place.lng,
+      );
+
+      const originalStartMs = new Date(slot.plannedStart).getTime();
+      // Always derive visit duration from the place's canonical avgVisitDurationMin so that
+      // plannedEnd − plannedStart equals only the visit duration (no travel time folded in).
+      const targetDurationMs = Math.max(
+        MIN_SLOT_DURATION_MIN * 60_000,
+        place.avgVisitDurationMin * 60_000,
+      );
+
+      // Preserve original schedule when cursor is earlier (no aggressive forward-packing).
+      let plannedStartMs = Math.max(cursorMs + travelTimeMin * 60_000, originalStartMs);
+
+      // NaN guard: invalid date strings produce NaN
+      if (isNaN(plannedStartMs)) return null;
+
+      // Underflow: push to DAY_START_HOUR if slot would start before 08:00 VN
+      const startLocalForUnderflow = new Date(plannedStartMs + VN_OFFSET_MS);
+      if (startLocalForUnderflow.getUTCHours() < DAY_START_HOUR) {
+        startLocalForUnderflow.setUTCHours(DAY_START_HOUR, 0, 0, 0);
+        plannedStartMs = startLocalForUnderflow.getTime() - VN_OFFSET_MS;
+      }
+      let plannedEndMs = plannedStartMs + targetDurationMs;
+
+      const shiftToNextDayMorning = () => {
+        currentDayIndex++;
+        const next = new Date(plannedStartMs + VN_OFFSET_MS);
+        next.setUTCDate(next.getUTCDate() + 1);
+        next.setUTCHours(DAY_START_HOUR, 0, 0, 0);
+        plannedStartMs = next.getTime() - VN_OFFSET_MS;
+        plannedEndMs = plannedStartMs + targetDurationMs;
+      };
+
+      // Opening-hours: check BEFORE overflow so cross-midnight places (e.g. 22:00–04:00)
+      // that already encompass the slot are not needlessly shifted to next-day morning.
+      // Use checkOpeningHours(slot, place) directly — place is already in hand from placeMap.
+      let tempSlot: TripSlot = {
+        ...slot,
+        plannedStart: new Date(plannedStartMs).toISOString(),
+        plannedEnd: new Date(plannedEndMs).toISOString(),
+      };
+      const alreadyWithinHours =
+        place.openingHours.length > 0 && this.checkOpeningHours(tempSlot, place);
+
+      // Night-overflow: shift at most once (mega-slots accepted on the next day).
+      // Skip when the place's explicit hours already accommodate this time window.
+      if (!alreadyWithinHours) {
+        const startLocal = new Date(plannedStartMs + VN_OFFSET_MS);
+        const startMidnightMs = Date.UTC(
+          startLocal.getUTCFullYear(), startLocal.getUTCMonth(), startLocal.getUTCDate(),
+        );
+        const endMsFromStartDay = (plannedEndMs + VN_OFFSET_MS) - startMidnightMs;
+        const limitMs = (DAY_END_HOUR * 60 + maxOverflow) * 60_000;
+        if (endMsFromStartDay > limitMs) shiftToNextDayMorning();
+
+        // Rebuild after potential overflow shift
+        tempSlot = {
+          ...slot,
+          plannedStart: new Date(plannedStartMs).toISOString(),
+          plannedEnd: new Date(plannedEndMs).toISOString(),
+        };
+
+        // Opening-hours: hard constraint — try up to 4 consecutive days.
+        let hoursAttempts = 0;
+        while (!this.checkOpeningHours(tempSlot, place) && hoursAttempts < 4) {
+          shiftToNextDayMorning();
+          hoursAttempts++;
+          tempSlot = {
+            ...slot,
+            plannedStart: new Date(plannedStartMs).toISOString(),
+            plannedEnd: new Date(plannedEndMs).toISOString(),
+          };
+        }
+        if (!this.checkOpeningHours(tempSlot, place)) return null;
+      }
+
+      const slotOrder = dayOrderCounters.get(currentDayIndex) ?? 0;
+      dayOrderCounters.set(currentDayIndex, slotOrder + 1);
+
+      repaired[i] = {
+        ...slot,
+        slotOrder,
+        dayIndex: currentDayIndex,
+        plannedStart: new Date(plannedStartMs).toISOString(),
+        plannedEnd: new Date(plannedEndMs).toISOString(),
+        estimatedCost: slot.estimatedCost > 0 ? slot.estimatedCost : (place.minPrice ?? 0),
+      };
+
+      cursorMs = plannedEndMs;
+    }
+
+    return repaired;
+  }
+
+
+  /**
+   * Tiền xử lý ngữ cảnh và tạo ra một gốc kế hoạch (root node) khả thi về mặt thời gian 
+   * cho thuật toán Beam Search.
+   * 
+   * Hàm này quét qua lịch trình, phát hiện các ngày bị quá tải (vượt quá giới hạn
+   * DAY_END_HOUR + maxOverflowMinutes) và lặp lại việc cắt tỉa các slot ưu tiên thấp 
+   * cho đến khi toàn bộ kế hoạch nằm trong khung giờ hợp lệ.
+   * 
+   * Các cơ chế & Edge-cases đã xử lý:
+   * - Midnight Wrap-around: Nhận diện chính xác thời gian lố sang ngày hôm sau 
+   *   bằng cách quy chiếu về hệ 24h+.
+   * - Chiến lược cắt tỉa: Tính toán priority score để xoá slot ít quan trọng nhất. 
+   *   Mặc định bảo vệ các slot bữa ăn ('meal').
+   * - Deadlock Prevention (Graceful Degradation): Nếu ngày quá tải chỉ toàn meal, 
+   *   hệ thống buộc phải nới lỏng ràng buộc và xoá meal để đảm bảo gốc khả thi.
+   * - Tái cấu trúc lịch (Re-packing): Tự động nén lại lịch (`repairSuffix`) ngay 
+   *   sau mỗi lần xoá slot để cập nhật lại thời gian thật. Dừng an toàn nếu nén lỗi.
+   * - Tái chế dữ liệu: Những địa điểm bị ép văng khỏi lịch trình sẽ được gom 
+   *   (không trùng lặp) vào `potentialPlaceIds` để Beam Search có thể cân nhắc lại.
+   * 
+   * @param ctx Ngữ cảnh Beam Search đầu vào chứa `remainingSlots` có nguy cơ quá tải.
+   * @returns BeamSearchContext mới với kế hoạch đã được "nén" an toàn và danh sách 
+   *          ứng viên tiềm năng được cập nhật.
+   */
+  public prepareContext(ctx: BeamSearchContext): BeamSearchContext {
+    const maxOverflow = ctx.maxOverflowMinutes ?? 30;
+    let currentPlan = [...ctx.remainingSlots];
+    const overflowedPlaceIds: number[] = [];
+
+    let safetyCounter = 0;
+
+    // Vòng lặp dừng khi: kế hoạch hoàn hảo, không thể nén thêm (!hasModifications), hoặc chạm ngưỡng an toàn.
+    while (safetyCounter < 100) {
+      safetyCounter++;
+      let isFullyRepaired = true;
+      let hasModifications = false;
+
+      const dayGroups = new Map<number, TripSlot[]>();
+      for (const s of currentPlan) {
+        const arr = dayGroups.get(s.dayIndex) ?? [];
+        arr.push(s);
+        dayGroups.set(s.dayIndex, arr);
+      }
+
+      for (const [day, unsortedSlots] of dayGroups.entries()) {
+        if (unsortedSlots.length === 0) continue;
+
+        const slots = [...unsortedSlots].sort(
+          (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
+        );
+
+        const firstSlot = slots[0];
+        const lastSlot = slots[slots.length - 1];
+
+        const startLocal = new Date(new Date(firstSlot.plannedStart).getTime() + VN_OFFSET_MS);
+        const endLocal = new Date(new Date(lastSlot.plannedEnd).getTime() + VN_OFFSET_MS);
+
+        let endHour = endLocal.getUTCHours() + endLocal.getUTCMinutes() / 60;
+
+        if (startLocal.getUTCDate() !== endLocal.getUTCDate()) {
+          endHour += 24;
+        }
+
+        // Phát hiện ngày quá tải
+        if (endHour > DAY_END_HOUR + (maxOverflow / 60)) {
+          isFullyRepaired = false;
+
+          // Ưu tiên xoá các slot không phải meal
+          let candidateSlots = slots.filter((s) => s.activityType !== 'meal');
+
+          // Fallback: Nếu ngày chỉ chứa toàn meal, buộc phải nới lỏng ràng buộc
+          if (candidateSlots.length === 0) {
+            console.warn(`[prepareContext] Day ${day} is overloaded and only contains meals. Forcing meal removal to maintain time feasibility.`);
+            candidateSlots = [...slots];
+          }
+
+          // Lúc này candidateSlots chắc chắn có phần tử (vì slots.length > 0)
+          const prepareMap = ctx.placeMap ?? new Map(ctx.candidatePool.map((p) => [p.placeId, p]));
+          const sorted = [...candidateSlots].sort((a, b) => {
+            const placeA = prepareMap.get(a.placeId);
+            const placeB = prepareMap.get(b.placeId);
+            const scoreA = placeA ? MutationOperators.candidatePriority(placeA, undefined, ctx) : 0;
+            const scoreB = placeB ? MutationOperators.candidatePriority(placeB, undefined, ctx) : 0;
+            return scoreA - scoreB;
+          });
+
+          const toRemove = sorted[0]!;
+          overflowedPlaceIds.push(toRemove.placeId);
+
+          currentPlan = currentPlan.filter((s) => s.slotId !== toRemove.slotId);
+
+          const repaired = this.repairSuffix(currentPlan, 0, ctx);
+          if (repaired) {
+            currentPlan = repaired;
+            hasModifications = true;
+          } else {
+            console.error(`[prepareContext] repairSuffix failed after removing slot ${toRemove.slotId}. Stopping further repairs.`);
+            hasModifications = false;
+          }
+
+          break; // Thoát để map lại dayGroups với currentPlan mới
+        }
+      }
+
+      if (isFullyRepaired || !hasModifications) {
+        break;
+      }
+    }
+
+    // Tuỳ chọn (Phương án 2): Trả về lỗi rõ ràng nếu sau nỗ lực nới lỏng vẫn bế tắc
+    // Điều này hiếm khi xảy ra trừ khi có 1 slot duy nhất nhưng dài hơn toàn bộ thời gian 1 ngày.
+    /*
+    if (!isFullyRepaired && safetyCounter >= 100) {
+       console.error("[prepareContext] Critical failure: Unable to resolve schedule overflow.");
+       // Trả về null hoặc quăng exception tuỳ vào thiết kế architecture của bạn
+       // throw new Error("Infeasible plan root"); 
+    }
+    */
+
+    if (overflowedPlaceIds.length === 0) return ctx;
+
+    return {
+      ...ctx,
+      remainingSlots: currentPlan,
+      potentialPlaceIds: [...new Set([...(ctx.potentialPlaceIds ?? []), ...overflowedPlaceIds])],
+    };
+  }
+
+  /**
+   * Kiểm tra xem thời gian kết thúc của một slot có vượt quá giới hạn ngày cho phép không.
+   * 
+   * Hàm này chuyển đổi thời gian kết thúc sang hệ 24h+ (ví dụ: 1:00 AM hôm sau = 25:00)
+   * dựa trên mốc DAY_START_HOUR để xác định xem slot có bị vắt qua nửa đêm hay không.
+   * Sau đó, so sánh với DAY_END_HOUR cộng với khoảng thời gian lố cho phép (maxOverflowMinutes).
+   * 
+   * @param plannedEnd Chuỗi ISO thời gian kết thúc.
+   * @param ctx Ngữ cảnh replan chứa cấu hình maxOverflowMinutes.
+   * @returns true nếu vượt quá giới hạn, ngược lại là false.
+   */
+  private exceedsNightConstraint(plannedEnd: string, ctx: ReplanContext): boolean {
+    if (!plannedEnd) return false;
+    const endMs = new Date(plannedEnd).getTime();
+    if (isNaN(endMs)) return false;
+
+    const endLocal = new Date(endMs + VN_OFFSET_MS);
+    let endHour = endLocal.getUTCHours() + endLocal.getUTCMinutes() / 60;
+
+    // Nếu giờ kết thúc nhỏ hơn giờ bắt đầu ngày (ví dụ 8h sáng), 
+    // ta coi như đây là slot vắt qua nửa đêm của ngày hôm trước (hệ 24h+).
+    if (endHour < DAY_START_HOUR) {
+      endHour += 24;
+    }
+
+    const maxOverflow = ctx.maxOverflowMinutes ?? 30;
+    return endHour > DAY_END_HOUR + (maxOverflow / 60);
+  }
+
+  public rescheduleSlotTimes(plan: TripSlot[], ctx: ReplanContext): TripSlot[] | null {
+    return this.repairSuffix(plan, 0, ctx);
   }
 }

@@ -57,7 +57,7 @@ export default function TripDetail() {
 
   const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     queryKey: ['check-incident', tripId],
-    queryFn: () => monitorService.checkIncident(),
+    queryFn: () => monitorService.checkIncident(tripId),
     refetchInterval: 30_000,
     enabled: !!tripId,
   })
@@ -82,6 +82,61 @@ export default function TripDetail() {
   useEffect(() => {
     if (data) setTrip(data)
   }, [data, setTrip])
+
+  useEffect(() => {
+    if (!data || (data.status !== 'active' && data.status !== 'confirmed')) return
+
+    const today = new Date().getDay()
+    const nowMs = Date.now()
+
+    const sorted = [...data.slots].sort(
+      (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime(),
+    )
+
+    let currentIdx = sorted.findIndex((s) => {
+      const start = new Date(s.plannedStart).getTime()
+      const end = new Date(s.plannedEnd).getTime()
+      return nowMs >= start && nowMs <= end
+    })
+    if (currentIdx < 0) {
+      currentIdx = sorted.findIndex((s) => new Date(s.plannedStart).getTime() > nowMs)
+    }
+    const resolvedIdx = Math.max(0, currentIdx)
+
+    const tripData = {
+      tripId: data.tripId,
+      slots: sorted.map((s) => {
+        const todayHours = s.place?.openingHours.find((h) => h.dayOfWeek === today)
+        const closeHour = todayHours ? parseInt(todayHours.closeTime.split(':')[0], 10) : 22
+        return {
+          id: s.slotId,
+          name: s.place?.name ?? s.slotId,
+          type: (s.place?.indoorOutdoor === 'outdoor' ? 'outdoor' : 'indoor') as 'outdoor' | 'indoor',
+          closeTime: closeHour,
+        }
+      }),
+    }
+
+    const state = {
+      currentSlotIndex: resolvedIdx,
+      plannedArrivalTime: sorted[resolvedIdx]
+        ? new Date(sorted[resolvedIdx].plannedStart).getHours()
+        : new Date().getHours(),
+    }
+
+    const doSync = (location?: { lat: number; lon: number }) =>
+      monitorService.syncTrip(tripData, state, location).catch(() => {})
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => doSync({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => doSync(),
+        { timeout: 5000 },
+      )
+    } else {
+      doSync()
+    }
+  }, [data?.tripId, data?.status])
 
   // Build placesMap for ReplanModal
   const placesMap = useMemo(() => {

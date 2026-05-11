@@ -11,7 +11,7 @@
  */
 
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
-import type { ReplanDeps, ReplanBody, RejectBody, TripParams, ProposalParams } from './handlers';
+import type { ReplanDeps, ReplanBody, AcceptBody, RejectBody, TripParams, ProposalParams } from './handlers';
 import {
   makeReplanHandler,
   makeAcceptHandler,
@@ -48,8 +48,34 @@ const replanBodySchema = {
   properties: {
     triggeredByEventId: { type: 'string', pattern: uuidPattern },
     replanScope: { type: 'string', enum: ['remaining_day', 'remaining_trip'] },
+    currentLocation: {
+      type: 'object',
+      required: ['lat', 'lng'],
+      properties: {
+        lat: { type: 'number' },
+        lng: { type: 'number' },
+      },
+      additionalProperties: false,
+    },
   },
   additionalProperties: false,
+} as const;
+
+const acceptBodySchema = {
+  anyOf: [
+    { type: 'null' },
+    {
+      type: 'object',
+      properties: {
+        partialNewSlotIds: {
+          type: 'array',
+          items: { type: 'string', pattern: uuidPattern },
+          maxItems: 200,
+        },
+      },
+      additionalProperties: false,
+    },
+  ],
 } as const;
 
 const rejectBodySchema = {
@@ -100,11 +126,12 @@ export async function replanPlugin(
   );
 
   // ── POST /api/trips/:tripId/replan/:proposalId/accept ───────────────────
-  fastify.post<{ Params: ProposalParams }>(
+  fastify.post<{ Params: ProposalParams; Body: AcceptBody }>(
     '/trips/:tripId/replan/:proposalId/accept',
     {
       schema: {
         params: proposalParamsSchema,
+        body: acceptBodySchema,
       },
     },
     makeAcceptHandler(deps),

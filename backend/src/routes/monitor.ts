@@ -26,20 +26,74 @@ export async function monitorPlugin(fastify: FastifyInstance): Promise<void> {
     return { message: 'Đồng bộ thành công', monitoring: body.tripData.tripId }
   })
 
-  fastify.get('/check-incident', async () => {
+  fastify.get('/check-incident', async (request) => {
+    const { tripId } = request.query as { tripId?: string }
+    if (tripId) {
+      const event = await monitorService.getLatestOpenEvent(tripId)
+      return event ?? { status: 'Ổn định' }
+    }
     return monitorService.getLastAlert() ?? { status: 'Ổn định' }
   })
 
   if (process.env.NODE_ENV !== 'production') {
-    fastify.post('/mock-incident', async (request, reply) => {
-      const { type, reason, severity, affectedSlotIds } = request.body as any
-      monitorService.injectMockAlert(
-        type || 'rain_heavy',
-        reason || 'Mưa giả lập để test',
-        severity || 0.9,
-        affectedSlotIds || []
-      )
-      return { message: 'Đã bơm sự cố giả thành công' }
+    fastify.post('/mock-incident', async (request) => {
+      const {
+        type = 'rain_heavy',
+        reason = 'Mưa giả lập để test',
+        severity = 0.9,
+        affectedSlotIds,
+        tripId,
+        anchorLat,
+        anchorLon,
+        radiusKm,
+        durationHours,
+      } = request.body as any
+
+      // Event-centric broadcast: coords provided, no specific trip → system finds all affected trips
+      if (anchorLat != null && anchorLon != null && !tripId) {
+        const result = await monitorService.broadcastEvent(
+          type, reason, severity, anchorLat, anchorLon,
+          { radiusKm, durationHours },
+        )
+        return {
+          message: 'Broadcast sự cố thành công',
+          mode: 'broadcast',
+          affectedTripCount: result.affectedTripCount,
+          expiresAt: result.expiresAt,
+        }
+      }
+
+      // Legacy: inject into a specific trip (or currently-synced trip)
+      await monitorService.injectMockAlert({
+        type,
+        reason,
+        severity,
+        tripId,
+        affectedSlotIds: affectedSlotIds ?? [],
+        anchorLat: anchorLat ?? null,
+        anchorLon: anchorLon ?? null,
+        radiusKm,
+        durationHours,
+      })
+      const alert = monitorService.getLastAlert()
+      return {
+        message: 'Đã bơm sự cố giả thành công',
+        mode: 'single',
+        eventId: alert?.eventId,
+        affectedSlotCount: alert?.affectedSlotIds?.length ?? 0,
+        expiresAt: alert?.expiresAt,
+      }
+    })
+
+    fastify.post('/simulate-weather', async (request) => {
+      const { rainMmPerH = 10 } = (request.body ?? {}) as { rainMmPerH?: number }
+      monitorService.setForcedRain(rainMmPerH)
+      try {
+        await monitorService.runMonitoring()
+      } finally {
+        monitorService.setForcedRain(null)
+      }
+      return { message: 'Scan hoàn tất', rainMmPerH }
     })
   }
 }

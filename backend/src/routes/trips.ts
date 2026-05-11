@@ -69,6 +69,7 @@ function serializeTrip(t: any) {
 }
 
 const slotInclude = {
+  where: { status: { not: 'replaced' as const } },
   include: {
     place: {
       include: {

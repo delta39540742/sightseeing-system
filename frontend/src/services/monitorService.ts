@@ -7,12 +7,15 @@ export interface MonitorAlert {
   severity: number
   affectedSlotIds: string[]
   timestamp: string
+  expiresAt?: string
 }
 
 export const monitorService = {
-  checkIncident: () =>
+  checkIncident: (tripId?: string) =>
     api
-      .get<MonitorAlert | { status: string }>('/monitor/check-incident')
+      .get<MonitorAlert | { status: string }>('/monitor/check-incident', {
+        params: tripId ? { tripId } : undefined,
+      })
       .then((r) => r.data),
 
   syncTrip: (

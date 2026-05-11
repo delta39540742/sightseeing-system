@@ -6,24 +6,25 @@ import pg from 'pg';
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL! });
 
 // Map JSON tag string → place_tag.tag_id
+// NOTE: "indoor" is a place property (indoor_outdoor column), not an interest tag — omitted here.
+// "coffee" = food (ẩm thực), not shopping.
 const TAG_MAP: Record<string, number> = {
   beach:      1,
   mountain:   2,
   culture:    3,
   food:       4,
   local_food: 4,
+  coffee:     4,  // quán cà phê → food, không phải shopping
   spiritual:  5,
   shopping:   6,
-  coffee:     6,
   entertainment: 7,
   checkin:    7,
   nature:     8,
   outdoor:    8,
   walk:       8,
+  relax:      8,
   sport:      9,
   tourism:    10,
-  indoor:     3,
-  relax:      8,
 };
 
 // Map category → price_type khi không rõ

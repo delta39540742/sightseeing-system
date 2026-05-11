@@ -1,0 +1,365 @@
+/* Replan redesign styles */
+.replan-container {
+  background-color: #f8faff;
+  min-height: 100vh;
+  padding-bottom: 120px; /* Space for bottom bar */
+}
+
+.replan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: white;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.replan-logo {
+  font-size: 1.5rem;
+  font-weight: 900;
+  color: #1e40af;
+  letter-spacing: -0.05em;
+}
+
+.ai-optimized-tag {
+  background-color: #eef2ff;
+  color: #4f46e5;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  text-transform: uppercase;
+}
+
+.replan-card {
+  background: white;
+  border-radius: 2rem;
+  padding: 1.5rem;
+  margin: 1rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.replan-summary-card {
+  border-bottom: 8px solid transparent;
+  background-image: linear-gradient(white, white), linear-gradient(135deg, #3b82f6 0%, #ffffff 100%);
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+.replan-summary-card::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  right: -10%;
+  width: 200px;
+  height: 200px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%);
+  z-index: 0;
+}
+
+.replan-title {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: #1e3a8a;
+  margin-bottom: 0.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.replan-subtitle {
+  font-size: 1rem;
+  color: #64748b;
+  margin-bottom: 1.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.badge-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge-green { background: #dcfce7; color: #166534; }
+.badge-purple { background: #f3e8ff; color: #6b21a8; }
+.badge-pink { background: #fce7f3; color: #9d174d; }
+
+.primary-btn {
+  background: #1d4ed8;
+  color: white;
+  width: 100%;
+  padding: 1rem;
+  border-radius: 1rem;
+  font-weight: 700;
+  font-size: 1rem;
+  transition: all 0.2s;
+  box-shadow: 0 4px 12px rgba(29, 78, 216, 0.2);
+}
+
+.primary-btn:active {
+  transform: scale(0.98);
+}
+
+/* Timeline Cards */
+.timeline-card {
+  margin-top: 1.5rem;
+  border-left: 4px solid #3b82f6;
+}
+
+.timeline-card.replace { border-left-color: #ef4444; }
+.timeline-card.add { border-left-color: #22c55e; }
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.icon-box {
+  width: 40px;
+  height: 40px;
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 1rem;
+}
+
+.icon-box-blue { background: #dbeafe; color: #2563eb; }
+.icon-box-red { background: #fee2e2; color: #dc2626; }
+.icon-box-green { background: #dcfce7; color: #16a34a; }
+
+.status-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.4rem;
+  background: #f1f5f9;
+  color: #475569;
+  letter-spacing: 0.05em;
+}
+
+.place-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.old-place-name {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  text-decoration: line-through;
+  margin-bottom: 0.25rem;
+}
+
+.time-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #64748b;
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+.time-change {
+  font-weight: 700;
+  color: #2563eb;
+}
+
+.ai-insight {
+  background: #f8fafc;
+  padding: 1rem;
+  border-radius: 1rem;
+  display: flex;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  border: 1px solid #f1f5f9;
+}
+
+.ai-insight-text {
+  font-size: 0.9rem;
+  color: #334155;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.travel-time-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: #64748b;
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.75rem;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+}
+
+.card-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.btn-secondary {
+  flex: 1;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.btn-accept {
+  flex: 1;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: #1d4ed8;
+  color: white;
+}
+
+.btn-accept-replace { background: #991b1b; }
+.btn-accept-add { background: #166534; }
+
+/* Selected state — card */
+.timeline-card.selected {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25), 0 4px 20px rgba(0, 0, 0, 0.03);
+}
+
+.timeline-card.replace.selected { border-left-color: #22c55e; }
+.timeline-card.add.selected     { border-left-color: #22c55e; }
+
+/* Selection badge (top-right corner inside card) */
+.selection-badge {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.4rem;
+}
+
+/* Accept button — selected state */
+.btn-accept.is-selected {
+  background: #15803d;
+  box-shadow: 0 2px 8px rgba(21, 128, 61, 0.3);
+}
+
+.btn-accept.btn-accept-replace.is-selected { background: #15803d; }
+.btn-accept.btn-accept-add.is-selected     { background: #15803d; }
+
+.btn-accept-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+/* Select-all toggle button in summary card */
+.select-all-btn {
+  padding: 0.75rem 1rem;
+  border-radius: 1rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: #f1f5f9;
+  color: #475569;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.select-all-btn:active { background: #e2e8f0; }
+
+/* Reject button in bottom bar (shown when partial selection active) */
+.reject-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fee2e2;
+  padding: 1rem;
+  border-radius: 1.5rem;
+}
+
+/* Map Card */
+.map-preview-card {
+  padding: 0;
+  height: 250px;
+}
+
+.map-caption {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+/* Bottom Bar */
+.bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  padding: 1rem 1.5rem calc(1rem + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  display: flex;
+  gap: 1rem;
+  z-index: 100;
+}
+
+.accept-all-btn {
+  flex: 2;
+  background: #1d4ed8;
+  color: white;
+  padding: 1rem;
+  border-radius: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  box-shadow: 0 4px 15px rgba(29, 78, 216, 0.3);
+}
+
+.manual-edit-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  color: #1e3a8a;
+}

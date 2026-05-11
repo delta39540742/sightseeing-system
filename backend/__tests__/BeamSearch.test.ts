@@ -147,6 +147,9 @@ const INTEREST_WEIGHTS: ObjectiveWeights = {
   wBudget: 0,
   wWeather: 0,
   wRisk: 0,
+  wStability: 0,
+  wPotentialBias: 0,
+  wProximity: 0,
 };
 
 const EQUAL_WEIGHTS: ObjectiveWeights = {
@@ -156,6 +159,9 @@ const EQUAL_WEIGHTS: ObjectiveWeights = {
   wBudget: 0,
   wWeather: 0,
   wRisk: 0,
+  wStability: 0,
+  wPotentialBias: 0,
+  wProximity: 0,
 };
 
 /** Creates a BeamSearchContext ready for use. */
@@ -163,7 +169,7 @@ function makeCtx(overrides: Partial<BeamSearchContext> = {}): BeamSearchContext 
   return {
     candidatePool: [PLACE_A, PLACE_B],
     user: makeUser(PREF_VEC),
-    weatherBySlotId: {},
+    weatherForecast: [],
     defaultWeather: { rainMmPerH: 0 },
     initialState: makeState(),
     remainingSlots: [SLOT_A],
@@ -470,6 +476,7 @@ describe('ObjectiveScorer.score', () => {
   const BASE_WEIGHTS: ObjectiveWeights = {
     wInterest: 1, wPace: 0, wDistance: 0,
     wBudget: 0, wWeather: 0, wRisk: 0,
+    wStability: 0, wPotentialBias: 0, wProximity: 0,
   };
 
   it('returns higher score for plan with matching tags', () => {
@@ -496,6 +503,7 @@ describe('ObjectiveScorer.score', () => {
     const weights: ObjectiveWeights = {
       wInterest: 0, wPace: 1, wDistance: 0,
       wBudget: 0, wWeather: 0, wRisk: 0,
+      wStability: 0, wPotentialBias: 0, wProximity: 0,
     };
     const ctx = makeCtx({ weights });
     // Empty plan → paceFit = 1 → wPace * 1 = 1
@@ -510,7 +518,7 @@ describe('ObjectiveScorer.score', () => {
     const ctx = makeCtx({
       candidatePool: [indoorPlace, outdoorPlace],
       weatherForecast: [{ rainMmPerH: 10 }], // heavy rain at position 0
-      weights: { wInterest: 0, wPace: 0, wDistance: 0, wBudget: 0, wWeather: 1, wRisk: 0 },
+      weights: { wInterest: 0, wPace: 0, wDistance: 0, wBudget: 0, wWeather: 1, wRisk: 0, wStability: 0, wPotentialBias: 0, wProximity: 0 },
     });
 
     const indoorSlot = makeSlot({ placeId: indoorPlace.placeId });
@@ -531,6 +539,7 @@ describe('ObjectiveScorer.score', () => {
   it('adds negative risk term proportional to fatigue', () => {
     const weights: ObjectiveWeights = {
       wInterest: 0, wPace: 0, wDistance: 0, wBudget: 0, wWeather: 0, wRisk: 1,
+      wStability: 0, wPotentialBias: 0, wProximity: 0,
     };
     // PLACE_A visit increases fatigue; we just check the term is negative
     const ctx = makeCtx({ weights });

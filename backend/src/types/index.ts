@@ -89,6 +89,7 @@ export interface Place {
   indoorOutdoor: 'indoor' | 'outdoor' | 'mixed';
   estimatedCost?: number;
   minPrice?: number;
+  wheelchairAccess?: boolean;
   tagIds?: number[];
   tags: PlaceTag[];
   openingHours: PlaceOpeningHour[];
@@ -117,4 +118,54 @@ export interface ObjectiveWeights {
   wBudget: number;
   wWeather: number;
   wRisk: number;
+  wStability: number;
+  wPotentialBias: number;
+  /** Bonus for alternatives near the venue where the user already arrived.
+   *  0 in normal replanning; set to 2.0 when userIsAtVenue=true. */
+  wProximity: number;
+  /** Synergy bonus for consecutive slots sharing similar tag vectors.
+   *  Rewards thematically coherent sequences; defaults to 0.3 when absent. */
+  wSynergy?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Replan effectiveness evaluation
+// ---------------------------------------------------------------------------
+
+export type IncidentType     = 'rain' | 'traffic_delay';
+export type IncidentSeverity = 'low' | 'medium' | 'high';
+export type TransportType    = 'uncovered' | 'covered';
+
+export interface IncidentContext {
+  type: IncidentType;
+  severity: IncidentSeverity;
+  /** Rain intensity in mm/h — for rain incidents. */
+  rainMmPerH?: number;
+  /** 'uncovered' = motorbike/bicycle, 'covered' = car. From event payload. */
+  userTransportType?: TransportType;
+  /** Estimated traffic delay in minutes — for traffic_delay incidents. */
+  trafficDelayMin?: number;
+  /** Straight-line km from user's current GPS to first disrupted slot's venue. */
+  distanceToOriginalDestKm?: number;
+}
+
+export interface CriterionResult {
+  id: string;
+  label: string;
+  expected: string;
+  actual: string;
+  pass: boolean;
+  level: 'error' | 'warning' | 'info';
+}
+
+export interface EffectivenessReport {
+  tripId: string;
+  proposalId: string;
+  evaluatedAt: string;
+  incident: IncidentContext;
+  overallPass: boolean;
+  passRate: number;
+  criteria: CriterionResult[];
+  suggestions: string[];
+  devNote: string;
 }

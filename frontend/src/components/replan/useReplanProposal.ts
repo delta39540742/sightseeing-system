@@ -12,8 +12,15 @@ async function fetchPendingProposal(tripId: string): Promise<ReplanProposal | nu
   }
 }
 
-async function acceptProposal(tripId: string, proposalId: string): Promise<void> {
-  await api.post(`/trips/${tripId}/replan/${proposalId}/accept`);
+async function acceptProposal(
+  tripId: string,
+  proposalId: string,
+  partialNewSlotIds?: string[],
+): Promise<void> {
+  await api.post(
+    `/trips/${tripId}/replan/${proposalId}/accept`,
+    partialNewSlotIds ? { partialNewSlotIds } : {},
+  );
 }
 
 async function rejectProposal(
@@ -31,14 +38,14 @@ export interface UseReplanProposalReturn {
   isLoading: boolean;
   refetch: () => void;
   accept: {
-    mutate: (proposalId: string) => void;
-    mutateAsync: (proposalId: string) => Promise<void>;
+    mutate: (args: { proposalId: string; partialNewSlotIds?: string[] }) => void;
+    mutateAsync: (args: { proposalId: string; partialNewSlotIds?: string[] }) => Promise<void>;
     isPending: boolean;
     error: Error | null;
   };
-
   reject: {
     mutate: (args: { proposalId: string; reason?: string }) => void;
+    mutateAsync: (args: { proposalId: string; reason?: string }) => Promise<void>;
     isPending: boolean;
     error: Error | null;
   };
@@ -54,15 +61,23 @@ export function useReplanProposal(tripId: string): UseReplanProposalReturn {
   } = useQuery<ReplanProposal | null>({
     queryKey: ['replan-pending', tripId],
     queryFn: () => fetchPendingProposal(tripId),
-    refetchInterval: 15_000, // 15 s polling
+    refetchInterval: 15_000,
     staleTime: 5_000,
   });
 
-  const acceptMutation = useMutation<void, Error, string>({
-    mutationFn: (proposalId) => acceptProposal(tripId, proposalId),
-    onSuccess: () => {
+  const acceptMutation = useMutation<
+    void,
+    Error,
+    { proposalId: string; partialNewSlotIds?: string[] }
+  >({
+    mutationFn: ({ proposalId, partialNewSlotIds }) =>
+      acceptProposal(tripId, proposalId, partialNewSlotIds),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['trip', tripId] }),
+        queryClient.invalidateQueries({ queryKey: ['check-incident', tripId] }),
+      ]);
       void refetch();
-      void queryClient.invalidateQueries({ queryKey: ['trip', tripId] });
     },
   });
 
@@ -78,13 +93,14 @@ export function useReplanProposal(tripId: string): UseReplanProposalReturn {
     isLoading,
     refetch: () => void refetch(),
     accept: {
-      mutate: (proposalId) => acceptMutation.mutate(proposalId),
-      mutateAsync: (proposalId) => acceptMutation.mutateAsync(proposalId),
+      mutate: (args) => acceptMutation.mutate(args),
+      mutateAsync: (args) => acceptMutation.mutateAsync(args),
       isPending: acceptMutation.isPending,
       error: acceptMutation.error,
     },
     reject: {
       mutate: (args) => rejectMutation.mutate(args),
+      mutateAsync: (args) => rejectMutation.mutateAsync(args),
       isPending: rejectMutation.isPending,
       error: rejectMutation.error,
     },
