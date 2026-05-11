@@ -398,6 +398,21 @@ export async function runAcceptTransaction(
     // 3. Build lookup of old slot IDs to distinguish REPLACE_PLACE vs INSERT_ALT
     const oldSlotIdSet = new Set(proposal.oldPlanSnapshot.map((s) => s.slotId));
 
+    // 3b. Re-number slotOrder per day to guarantee uniqueness.
+    //     Beam search may produce snapshots where an old slot (UPDATE path) and
+    //     a new slot (INSERT path) share the same (dayIndex, slotOrder), which
+    //     would violate the unique constraint (trip_id, day_index, slot_order, version).
+    const dayBuckets = new Map<number, typeof slotsToApply>();
+    for (const slot of slotsToApply) {
+      let bucket = dayBuckets.get(slot.dayIndex);
+      if (!bucket) { bucket = []; dayBuckets.set(slot.dayIndex, bucket); }
+      bucket.push(slot);
+    }
+    for (const [, bucket] of dayBuckets) {
+      bucket.sort((a, b) => a.slotOrder - b.slotOrder);
+      bucket.forEach((slot, idx) => { slot.slotOrder = idx + 1; });
+    }
+
     // 4. Process each slot to apply:
     //    - Same slotId in old plan (REPLACE_PLACE/REORDER): UPDATE in-place — fixes the
     //      silent data loss that occurred with the previous ON CONFLICT DO NOTHING approach.
@@ -1299,8 +1314,21 @@ export function makeReplanHandler(deps: ReplanDeps) {
       // ── 6.2. Reattach locked future slots ───────────────────────────────────
       // Slots outside the event's temporal+spatial scope were frozen in STEP 4.4.
       // Append them back after the replanned portion so the full plan is preserved.
+      // After reattachment, renumber slotOrder per day to avoid duplicates: repairSuffix
+      // in step 6.15 assigns sequential orders starting from 0, but lockedSlots still
+      // carry their original DB orders — overlapping orders cause unique constraint
+      // violations on (trip_id, day_index, slot_order, version) when the proposal is accepted.
       if (lockedSlots.length > 0) {
-        newPlan = [...newPlan, ...lockedSlots];
+        const combined = [...newPlan, ...lockedSlots].sort((a, b) => {
+          if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+          return new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime();
+        });
+        const dayCounters = new Map<number, number>();
+        newPlan = combined.map(s => {
+          const order = dayCounters.get(s.dayIndex) ?? 0;
+          dayCounters.set(s.dayIndex, order + 1);
+          return { ...s, slotOrder: order };
+        });
         console.log(`[REPLAN] STEP 6.2: reattached ${lockedSlots.length} locked future slots`);
       }
 

@@ -1,548 +1,583 @@
-# TravelSystem — Hệ thống Lập lịch Du lịch Thông minh
+# ✈️ TravelSystem – Hệ thống Gợi ý Du lịch Thông minh
 
-Hệ thống gợi ý và lập lịch trình du lịch thông minh với replanning động, tích hợp NLU, nhận diện địa danh, định tuyến đường bộ thực tế (OSRM), tối ưu lộ trình thông minh, và học sở thích người dùng theo thời gian thực.
-
-## Kiến trúc tổng quan
-
-```
-TravelSystem/
-├── backend/            # Fastify API (port 3000) — core service
-├── frontend/           # React + Vite (port 5173) — giao diện người dùng
-├── preference-service/ # Fastify API (port 3001) — UCB1 bandit, survey, incremental learning
-├── danang_places.json  # Dữ liệu 94 địa điểm Đà Nẵng
-└── docker-compose.yml  # PostgreSQL + PostGIS
-```
-
-## Công nghệ sử dụng
-
-| Tầng | Công nghệ |
-|------|-----------|
-| Backend | Fastify 5, TypeScript, Prisma 7, PostgreSQL + PostGIS |
-| Frontend | React 18, Vite, TypeScript, Tailwind CSS, Leaflet, Zustand, React Query |
-| Preference Service | Fastify 5, Prisma 5, UCB1 Bandit, Incremental Vector Learning, node-cron |
-| Auth | Firebase Admin (backend) + Firebase Client (frontend) |
-| NLU | Google Colab (external endpoint qua `COLAB_NLU_URL`) |
-| Infrastructure | Docker Compose, PostgreSQL 15 + PostGIS 3.3 |
-
-## Yêu cầu
-
-- Node.js >= 18
-- Docker Desktop
-- Git Bash hoặc PowerShell
+Hệ thống lập kế hoạch & tái lập kế hoạch du lịch tự động, sử dụng **Beam Search**, **Multi-Armed Bandit**, và **Semantic Embedding** để đề xuất lịch trình tối ưu cho người dùng.
 
 ---
 
-## 1. Khởi động Database
+## 📑 Mục lục
 
-```bash
-docker-compose up -d
+1. [Kiến trúc tổng quan](#-kiến-trúc-tổng-quan)
+2. [Công nghệ sử dụng](#-công-nghệ-sử-dụng)
+3. [Yêu cầu hệ thống](#-yêu-cầu-hệ-thống)
+4. [Cài đặt & Chạy dự án](#-cài-đặt--chạy-dự-án)
+   - [Bước 1 – Clone repository](#bước-1--clone-repository)
+   - [Bước 2 – Khởi động Database (Docker)](#bước-2--khởi-động-database-docker)
+   - [Bước 3 – Cài đặt Backend](#bước-3--cài-đặt-backend)
+   - [Bước 4 – Cài đặt Frontend](#bước-4--cài-đặt-frontend)
+   - [Bước 5 – Cài đặt Preference Service (tuỳ chọn)](#bước-5--cài-đặt-preference-service-tuỳ-chọn)
+5. [Chạy dự án](#-chạy-dự-án)
+6. [Cấu trúc thư mục](#-cấu-trúc-thư-mục)
+7. [API Endpoints chính](#-api-endpoints-chính)
+8. [Chạy Tests](#-chạy-tests)
+9. [Các lệnh hữu ích](#-các-lệnh-hữu-ích)
+10. [Xử lý lỗi thường gặp](#-xử-lý-lỗi-thường-gặp)
+
+---
+
+## 🏗 Kiến trúc tổng quan
+
+```
+┌──────────────┐     ┌──────────────────┐     ┌──────────────────────────────┐
+│   Frontend   │────▶│     Backend      │────▶│  PostgreSQL 15               │
+│  (Vite+React)│     │   (Fastify)      │     │  + PostGIS 3.3 + pgvector    │
+│  port: 5173  │     │   port: 3000     │     │  port: 5433                  │
+└──────────────┘     └──────────────────┘     └──────────────────────────────┘
+                            │
+                            ▼
+                     ┌──────────────────┐
+                     │Preference Service│  (tuỳ chọn)
+                     │  (Fastify)       │
+                     │  port: 3001      │
+                     └──────────────────┘
 ```
 
-Kiểm tra container đã lên:
+- **Frontend** gọi API qua Vite proxy (`/api` → `localhost:3000`, `/pref` → `localhost:3001`).
+- **Backend** xử lý logic lập kế hoạch, replanning (Beam Search), xác thực Firebase Auth.
+- **Database** sử dụng PostgreSQL + PostGIS (dữ liệu địa lý) + pgvector (semantic search).
+
+---
+
+## 🛠 Công nghệ sử dụng
+
+### Backend (`backend/`)
+
+| Công nghệ                | Phiên bản  | Mục đích                                         |
+| ------------------------- | ---------- | ------------------------------------------------ |
+| **Node.js**               | ≥ 18       | Runtime                                          |
+| **TypeScript**            | ^6.0       | Ngôn ngữ chính                                   |
+| **Fastify**               | ^5.8       | HTTP framework (thay thế Express, hiệu năng cao) |
+| **Prisma ORM**            | ^7.7       | ORM & migration cho PostgreSQL                   |
+| **PostgreSQL**            | 15         | Cơ sở dữ liệu quan hệ                           |
+| **PostGIS**               | 3.3        | Extension GIS (truy vấn không gian, khoảng cách) |
+| **pgvector**              | —          | Extension vector embedding (semantic search)     |
+| **Firebase Admin SDK**    | ^13.8      | Xác thực người dùng (server-side)                |
+| **@xenova/transformers**  | ^2.17      | Chạy mô hình embedding (all-MiniLM-L6-v2)       |
+| **node-cron**             | ^4.2       | Lập lịch tác vụ nền                              |
+| **Axios**                 | ^1.15      | HTTP client (gọi API thời tiết, NLU)             |
+| **pg**                    | ^8.20      | PostgreSQL driver (dùng với Prisma adapter)      |
+| **Vitest**                | ^3.2       | Unit testing                                     |
+| **nodemon**               | ^3.1       | Hot-reload khi dev                               |
+
+### Frontend (`frontend/`)
+
+| Công nghệ                | Phiên bản  | Mục đích                                       |
+| ------------------------- | ---------- | ---------------------------------------------- |
+| **React**                 | ^18.3      | UI library                                     |
+| **TypeScript**            | ^5.5       | Ngôn ngữ chính                                 |
+| **Vite**                  | ^5.4       | Build tool & dev server                        |
+| **TailwindCSS**           | ^3.4       | Utility-first CSS framework                    |
+| **React Router DOM**      | ^6.26      | Client-side routing                            |
+| **TanStack React Query**  | ^5.56      | Server-state management & caching              |
+| **Zustand**               | ^5.0       | Client-state management (nhẹ hơn Redux)        |
+| **Leaflet + React-Leaflet** | ^1.9 / ^4.2 | Bản đồ tương tác                            |
+| **Firebase (Web SDK)**    | ^10.12     | Xác thực người dùng (client-side)              |
+| **Lucide React**          | ^0.441     | Icon library                                   |
+| **@dnd-kit**              | ^6.1       | Drag & Drop (kéo thả sắp xếp lịch trình)      |
+| **date-fns**              | ^3.6       | Xử lý ngày tháng                               |
+| **react-hook-form**       | ^7.53      | Quản lý form                                   |
+| **qrcode.react**          | ^4.1       | Tạo mã QR cho trip                             |
+
+### Preference Service (`preference-service/`) — Tuỳ chọn
+
+| Công nghệ         | Phiên bản | Mục đích                             |
+| ------------------ | --------- | ------------------------------------ |
+| **Fastify**        | ^5.8      | HTTP framework                       |
+| **Prisma**         | ^5.14     | ORM                                  |
+| **node-cron**      | ^3.0      | Lập lịch tính toán recommendation    |
+| **ts-node-dev**    | ^2.0      | Hot-reload khi dev                   |
+
+### Hạ tầng
+
+| Công nghệ          | Mục đích                                     |
+| ------------------- | -------------------------------------------- |
+| **Docker Compose**  | Containerize PostgreSQL + PostGIS + pgvector  |
+| **Firebase**        | Authentication (Google Sign-In, Email/Pass)   |
+
+---
+
+## 📋 Yêu cầu hệ thống
+
+Trước khi bắt đầu, hãy đảm bảo máy bạn đã cài:
+
+| Phần mềm           | Phiên bản tối thiểu | Kiểm tra bằng lệnh          |
+| ------------------- | -------------------- | ---------------------------- |
+| **Node.js**         | 18.x                 | `node -v`                    |
+| **npm**             | 9.x                  | `npm -v`                     |
+| **Docker Desktop**  | 4.x                  | `docker --version`           |
+| **Docker Compose**  | 2.x (bundled)        | `docker compose version`     |
+| **Git**             | 2.x                  | `git --version`              |
+
+> **💡 Ghi chú:** Docker Desktop trên Windows/macOS đã bao gồm Docker Compose v2. Không cần cài riêng `docker-compose`.
+
+---
+
+## 🚀 Cài đặt & Chạy dự án
+
+### Bước 1 – Clone repository
+
 ```bash
-docker ps
-# PORTS: 0.0.0.0:5433->5432/tcp
+git clone https://github.com/<your-username>/TravelSystem.git
+cd TravelSystem
 ```
 
 ---
 
-## 2. Cài đặt Backend
+### Bước 2 – Khởi động Database (Docker)
+
+Dự án sử dụng PostgreSQL 15 + PostGIS + pgvector chạy trong Docker container.
 
 ```bash
+cd backend
+docker compose up -d
+```
+
+> **Chờ khoảng 30-60 giây** để container build image (lần đầu) và PostgreSQL sẵn sàng.
+
+**Kiểm tra database đã hoạt động:**
+
+```bash
+docker compose ps
+```
+
+Bạn sẽ thấy container `postgres` ở trạng thái **running**. Database sẽ nghe trên **port 5433** (host) → 5432 (container).
+
+**Thông tin kết nối mặc định:**
+
+| Thuộc tính   | Giá trị          |
+| ------------ | ---------------- |
+| Host         | `localhost`      |
+| Port         | `5433`           |
+| User         | `tdtt_user`      |
+| Password     | `tdtt_password`  |
+| Database     | `tdtt_db`        |
+
+> **⚠️ Lưu ý:** Nếu port `5433` đã bị chiếm, hãy sửa mapping port trong `backend/docker-compose.yml` (dòng `ports`).
+
+---
+
+### Bước 3 – Cài đặt Backend
+
+#### 3.1. Cài dependencies
+
+```bash
+# Đảm bảo đang ở thư mục backend/
 cd backend
 npm install
 ```
 
-### Cấu hình môi trường
+#### 3.2. Tạo file `.env`
 
-Tạo file `backend/.env` (xem `backend/.env.example` để tham khảo):
+Sao chép file mẫu và điền giá trị:
+
+```bash
+cp .env.example .env
+```
+
+Mở file `backend/.env` và cập nhật:
+
 ```env
+# ── Database ──────────────────────────────────────
 DATABASE_URL="postgresql://tdtt_user:tdtt_password@localhost:5433/tdtt_db"
 DB_USER=tdtt_user
 DB_PASSWORD=tdtt_password
 DB_HOST=localhost
 DB_PORT=5433
 DB_NAME=tdtt_db
+
+# ── Port backend ──────────────────────────────────
 PORT=3000
 
-# URL của Colab NLU server (thay bằng URL ngrok/pinggy hiện tại)
-COLAB_NLU_URL=https://<your-tunnel-url>
+# ── NLU Service (Colab) ──────────────────────────
+# Nếu chưa có, để trống — tính năng NLU sẽ không hoạt động
+COLAB_NLU_URL=
 
-# URL preference-service (mặc định localhost nếu không set)
-PREFERENCE_SERVICE_URL=http://localhost:3001
+# ── Firebase Admin SDK ────────────────────────────
+# Lấy từ Firebase Console → Project Settings → Service accounts → Generate new private key
+FIREBASE_PROJECT_ID=<YOUR_PROJECT_ID>
+FIREBASE_PRIVATE_KEY_ID=<YOUR_PRIVATE_KEY_ID>
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+FIREBASE_CLIENT_EMAIL=<YOUR_CLIENT_EMAIL>
+FIREBASE_CLIENT_ID=<YOUR_CLIENT_ID>
 
-# Firebase Admin SDK
-FIREBASE_PROJECT_ID=<your-project-id>
-FIREBASE_PRIVATE_KEY_ID=<your-private-key-id>
-FIREBASE_PRIVATE_KEY=<your-private-key>
-FIREBASE_CLIENT_EMAIL=<your-client-email>
-FIREBASE_CLIENT_ID=<your-client-id>
+# ── OpenWeather API (tuỳ chọn) ───────────────────
+# Đăng ký miễn phí tại https://openweathermap.org/api
+OPENWEATHER_API_KEY=<YOUR_API_KEY>
+
+# ── Environment ──────────────────────────────────
+NODE_ENV=development
 ```
 
-> **Lưu ý:** `COLAB_NLU_URL` phải trỏ đến tunnel đang chạy Colab NLU. Nếu không set, endpoint `/api/nlu/*` sẽ trả lỗi 503.  
-> Thay vì set từng biến Firebase, có thể để nguyên file `firebase-service-account.json` trong thư mục `backend/`.
+> **🔑 Hướng dẫn lấy Firebase Service Account:**
+> 1. Truy cập [Firebase Console](https://console.firebase.google.com/)
+> 2. Chọn project của bạn (hoặc tạo mới)
+> 3. Vào **Project Settings** (⚙️) → **Service accounts**
+> 4. Click **Generate new private key** → Tải file JSON
+> 5. Lấy các giá trị `project_id`, `private_key_id`, `private_key`, `client_email`, `client_id` từ file JSON đó điền vào `.env`
 
-### Chạy migration
+#### 3.3. Tạo Prisma Client & chạy Migration
 
 ```bash
-npx prisma migrate deploy
+# Generate Prisma Client (tạo type-safe query builder)
 npx prisma generate
+
+# Chạy migration để tạo bảng trong database
+npx prisma migrate deploy
 ```
 
-### Seed dữ liệu
-
-```bash
-# Seed user dev
-npm run seed
-
-# Seed 94 địa điểm Đà Nẵng
-npm run seed:places
-
-# Seed dữ liệu fake (trips, slots, interactions) để test
-npm run seed:fake
-```
-
-> **Seed bandit arms** (chạy 1 lần sau khi migration):
+> **💡 Nếu bạn muốn đồng bộ schema mà không cần migration files (dev nhanh):**
 > ```bash
-> docker exec $(docker ps -q) psql -U tdtt_user -d tdtt_db -c "
-> INSERT INTO bandit_arm (arm_id, name, w_interest, w_pace, w_distance, w_budget, w_weather, w_risk) VALUES
-> (1,'balanced',1.0,1.0,1.0,1.0,1.0,1.0),(2,'interest',2.0,0.5,0.5,0.5,0.5,0.5),
-> (3,'pace',0.5,2.0,0.5,0.5,0.5,0.5),(4,'budget',0.5,0.5,0.5,2.0,0.5,0.5),
-> (5,'exploration',1.5,0.5,1.5,0.5,0.5,0.5),(6,'safe',0.5,1.0,0.5,1.0,1.5,2.0)
-> ON CONFLICT (arm_id) DO NOTHING;"
+> npx prisma db push
 > ```
 
-### Khởi động Backend
+#### 3.4. Seed dữ liệu mẫu (tuỳ chọn)
 
 ```bash
-npm run dev
-```
+# Seed user mẫu cơ bản
+npm run seed
 
-Kiểm tra:
-```bash
-curl http://localhost:3000/health
-# {"status":"ok","message":"TDTT Backend is running"}
+# Seed dữ liệu địa điểm (places)
+npm run seed:places
+
+# Seed dữ liệu giả lập đầy đủ (trips, slots, events...)
+npm run seed:fake
+
+# Backfill vector embeddings cho các địa điểm (semantic search)
+npm run backfill:embeddings
 ```
 
 ---
 
-## 3. Cài đặt Preference Service
+### Bước 4 – Cài đặt Frontend
 
-Mở terminal mới:
+#### 4.1. Cài dependencies
 
 ```bash
-cd preference-service
+# Quay lại thư mục gốc rồi vào frontend
+cd ../frontend
 npm install
 ```
 
-Tạo file `preference-service/.env`:
+#### 4.2. Tạo file `.env`
+
+```bash
+cp .env.example .env
+```
+
+Mở file `frontend/.env` và cập nhật:
+
+```env
+# Firebase Web Client (Vite — tất cả biến phải có prefix VITE_)
+# Lấy từ Firebase Console → Project Settings → Your apps → Web app → SDK setup
+VITE_FIREBASE_API_KEY=<YOUR_API_KEY>
+VITE_FIREBASE_AUTH_DOMAIN=<YOUR_PROJECT_ID>.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=<YOUR_PROJECT_ID>
+VITE_FIREBASE_STORAGE_BUCKET=<YOUR_PROJECT_ID>.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=<YOUR_MESSAGING_SENDER_ID>
+VITE_FIREBASE_APP_ID=<YOUR_APP_ID>
+```
+
+> **🔑 Hướng dẫn lấy Firebase Web Config:**
+> 1. Truy cập [Firebase Console](https://console.firebase.google.com/)
+> 2. Chọn project → **Project Settings** (⚙️)
+> 3. Kéo xuống phần **Your apps** → Nếu chưa có Web app, click **Add app** → chọn Web (</>) 
+> 4. Đặt tên app → **Register app**
+> 5. Copy các giá trị `apiKey`, `authDomain`, `projectId`, `storageBucket`, `messagingSenderId`, `appId` vào file `.env`
+
+> **⚠️ Quan trọng:** Đảm bảo Firebase project đã bật **Authentication** với các phương thức đăng nhập cần thiết (Email/Password, Google).
+
+---
+
+### Bước 5 – Cài đặt Preference Service (tuỳ chọn)
+
+Service này cung cấp tính năng recommendation engine. Nếu không cần, bạn có thể bỏ qua bước này.
+
+```bash
+cd ../preference-service
+npm install
+cp .env.example .env
+```
+
+Chỉnh sửa `preference-service/.env`:
+
 ```env
 DATABASE_URL="postgresql://tdtt_user:tdtt_password@localhost:5433/tdtt_db"
 PORT=3001
 NODE_ENV=development
 ```
 
-Generate Prisma client:
-```bash
-npm run db:generate
-```
+Tạo Prisma Client:
 
-Khởi động:
 ```bash
-npm run dev
-```
-
-Kiểm tra:
-```bash
-curl http://localhost:3001/health
-# {"status":"ok","service":"preference"}
+npx prisma generate
 ```
 
 ---
 
-## 4. Cài đặt Frontend
+## 🏃 Chạy dự án
 
-Tạo file `frontend/.env` (xem `frontend/.env.example`):
-```env
-VITE_FIREBASE_API_KEY=<your-api-key>
-VITE_FIREBASE_AUTH_DOMAIN=<your-project-id>.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=<your-project-id>
-VITE_FIREBASE_STORAGE_BUCKET=<your-project-id>.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=<your-messaging-sender-id>
-VITE_FIREBASE_APP_ID=<your-app-id>
+Mở **3 terminal riêng biệt** (hoặc dùng split terminal trong VS Code):
+
+### Terminal 1 – Database (nếu chưa chạy)
+
+```bash
+cd backend
+docker compose up -d
 ```
 
-> Vite proxy tự động chuyển `/api/*` → `http://localhost:3000` và `/pref/*` → `http://localhost:3001`.
+### Terminal 2 – Backend
 
-Mở terminal mới:
+```bash
+cd backend
+npm run dev
+```
+
+Bạn sẽ thấy log:
+
+```
+▶  TDTT Backend  http://localhost:3000
+   /health  /api/trips  /api/plan/generate  ...
+```
+
+### Terminal 3 – Frontend
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
-Truy cập: `http://localhost:5173`
+Bạn sẽ thấy log:
 
----
+```
+  VITE v5.4.x  ready in xxx ms
 
-## 5. API Reference
-
-Lấy `<USER_ID>` (UUID) từ lệnh:
-```bash
-docker exec $(docker ps -q) psql -U tdtt_user -d tdtt_db -c "SELECT user_id FROM app_user WHERE firebase_uid = 'seed-dev-user';"
+  ➜  Local:   http://localhost:5173/
 ```
 
-### Backend API (port 3000)
+### Terminal 4 – Preference Service (tuỳ chọn)
 
-#### Auth
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/auth/login` | Đăng nhập / đăng ký qua Firebase token |
-
-#### Trips
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/trips` | Danh sách trips của user hiện tại |
-| GET | `/api/trips/:tripId` | Chi tiết trip kèm slots |
-| POST | `/api/trips` | Tạo trip draft mới |
-| PATCH | `/api/trips/:tripId` | Cập nhật thông tin trip |
-| DELETE | `/api/trips/:tripId` | Xoá trip |
-| POST | `/api/trips/:tripId/slots` | Thêm địa điểm vào trip |
-| PATCH | `/api/trips/:tripId/slots/:slotId` | Cập nhật trạng thái slot (VD: `completed`) |
-
-#### Planning
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/plan/candidates` | Lấy danh sách địa điểm phù hợp (lọc + score) |
-| POST | `/api/plan/generate` | Tạo lịch trình Greedy + 2-opt tối ưu |
-
-#### Replan
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/trips/:tripId/replan` | Tạo replan proposal (BeamSearch) |
-| GET | `/api/trips/:tripId/replan/pending` | Lấy proposal đang chờ duyệt |
-| POST | `/api/trips/:tripId/replan/:pid/accept` | Chấp nhận proposal |
-| POST | `/api/trips/:tripId/replan/:pid/reject` | Từ chối proposal |
-
-#### Places & Landmark
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/places` | Danh sách tất cả địa điểm |
-| GET | `/api/places/:id` | Chi tiết địa điểm |
-| POST | `/api/landmark/recognize` | Nhận diện địa danh từ ảnh |
-| GET | `/api/landmark/recognition/:recognitionId` | Kết quả nhận diện |
-| POST | `/api/landmark/:recognitionId/add-to-trip` | Thêm địa danh nhận diện vào trip |
-
-#### NLU & Monitor
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/nlu/parse` | Phân tích câu nhập tự nhiên (cần `COLAB_NLU_URL`) |
-| POST | `/api/monitor/sync-trip` | Đồng bộ trạng thái trip từ bên ngoài |
-| GET | `/api/monitor/check-incident` | Kiểm tra sự cố Weather/Traffic hiện tại |
-| POST | `/api/monitor/mock-incident` | **(Dev-only)** Giả lập sự cố để test replan |
-
-**Ví dụ tạo trip:**
 ```bash
-curl -X POST http://localhost:3000/api/trips \
-  -H "Content-Type: application/json" \
-  -d '{"user_id":"<FIREBASE_UID>","destination_city":"Da Nang","start_date":"2026-05-01","end_date":"2026-05-03","budget_total":5000000}'
-```
-
-**Ví dụ tạo lịch trình:**
-```bash
-curl -X POST http://localhost:3000/api/plan/generate \
-  -H "Content-Type: application/json" \
-  -d '{"destinationCity":"Da Nang","startDate":"2026-05-01","endDate":"2026-05-03","budgetTotal":5000000}'
-```
-
-**Ví dụ replan:**
-```bash
-# 1. Chuyển trip sang active
-docker exec $(docker ps -q) psql -U tdtt_user -d tdtt_db \
-  -c "UPDATE trip SET status='active' WHERE trip_id='<TRIP_ID>';"
-
-# 2. Tạo proposal
-curl -X POST http://localhost:3000/api/trips/<TRIP_ID>/replan \
-  -H "Content-Type: application/json" \
-  -d '{"replanScope":"remaining_trip"}'
-
-# 3. Accept proposal
-curl -X POST http://localhost:3000/api/trips/<TRIP_ID>/replan/<PROPOSAL_ID>/accept
-```
-
-**Ví dụ đánh dấu slot hoàn thành:**
-```bash
-curl -X PATCH http://localhost:3000/api/trips/<TRIP_ID>/slots/<SLOT_ID> \
-  -H "Authorization: Bearer <FIREBASE_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"completed"}'
+cd preference-service
+npm run dev
 ```
 
 ---
 
-### Preference Service API (port 3001)
+**🎉 Mở trình duyệt truy cập: [http://localhost:5173](http://localhost:5173)**
 
-Tất cả endpoints (trừ `/health` và `/internal/*`) đều cần header:
+---
+
+## 📁 Cấu trúc thư mục
+
 ```
-x-user-id: <USER_ID>   # UUID từ bảng app_user
-```
-
-#### Survey
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/preferences/survey/status` | Kiểm tra đã làm survey chưa |
-| POST | `/api/preferences/survey` | Lưu kết quả survey lần đầu |
-| PATCH | `/api/preferences/survey` | Cập nhật sở thích |
-
-#### Weights & Similarity
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/preferences/weights` | Lấy objective weights hiện tại (UCB1 bandit) |
-| GET | `/api/preferences/similar-users` | Danh sách user có sở thích tương đồng |
-
-#### Tương tác
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/preferences/favorite` | Thêm địa điểm vào yêu thích |
-| DELETE | `/api/preferences/favorite/:placeId` | Xoá khỏi yêu thích |
-| POST | `/api/preferences/rating` | Ghi nhận đánh giá địa điểm sau chuyến đi (rating 1–5) |
-
-#### Internal (Backend → Preference Service)
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/preferences/internal/reward` | Nhận event từ backend để cập nhật bandit + preference vector |
-
-**Ví dụ survey:**
-```bash
-curl -X POST http://localhost:3001/api/preferences/survey \
-  -H "Content-Type: application/json" \
-  -H "x-user-id: <USER_ID>" \
-  -d '{"primaryPurpose":"leisure","pace":0.6,"dailyScheduleType":"morning","budgetPerDayMin":200000,"budgetPerDayMax":800000,"groupType":"couple","preferredTagIds":[1,2,3],"foodPreferences":["local"],"mobilityRestrictions":[]}'
-```
-
-**Ví dụ đánh giá địa điểm:**
-```bash
-curl -X POST http://localhost:3001/api/preferences/rating \
-  -H "Content-Type: application/json" \
-  -H "x-user-id: <USER_ID>" \
-  -d '{"placeId":1,"rating":5,"tripId":"<TRIP_ID>"}'
+TravelSystem/
+├── backend/                    # API Server (Fastify + TypeScript)
+│   ├── prisma/
+│   │   ├── schema.prisma       # Database schema definition
+│   │   ├── migrations/         # SQL migration files
+│   │   └── seed.ts             # Seed script cơ bản
+│   ├── src/
+│   │   ├── server.ts           # Entry point — khởi tạo Fastify server
+│   │   ├── api/                # API route handlers (plan, replan, demo)
+│   │   ├── routes/             # Route plugins (places, trips, auth, nlu...)
+│   │   ├── replanner/          # Engine replanning (BeamSearch, MutationOps...)
+│   │   ├── services/           # Business logic (embedding, weather...)
+│   │   ├── middlewares/        # Auth middleware, validation
+│   │   ├── lib/                # Prisma client, shared utilities
+│   │   ├── config/             # App configuration
+│   │   ├── events/             # Internal event bus
+│   │   ├── scripts/            # Data seeding scripts
+│   │   └── types/              # TypeScript type definitions
+│   ├── __tests__/              # Unit tests (Vitest)
+│   ├── scripts/                # Data fetching & transformation scripts
+│   ├── docker-compose.yml      # PostgreSQL + PostGIS + pgvector
+│   ├── Dockerfile.postgres     # Custom Postgres image (PostGIS + pgvector)
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── vitest.config.ts
+│
+├── frontend/                   # Web Client (React + Vite)
+│   ├── src/
+│   │   ├── main.tsx            # Entry point — ReactDOM.createRoot
+│   │   ├── App.tsx             # Root component + routing
+│   │   ├── pages/              # Page components (Home, Dashboard, TripDetail...)
+│   │   ├── components/         # Reusable UI components
+│   │   ├── hooks/              # Custom React hooks
+│   │   ├── services/           # API client (axios)
+│   │   ├── store/              # Zustand stores (auth, toast...)
+│   │   ├── config/             # Firebase config
+│   │   ├── types/              # TypeScript types
+│   │   └── utils/              # Utility functions
+│   ├── index.html              # HTML entry point
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── tailwind.config.ts
+│   └── tsconfig.json
+│
+├── preference-service/         # Recommendation Engine (tuỳ chọn)
+│   ├── src/
+│   │   ├── app.ts              # Entry point
+│   │   ├── routes/             # API routes
+│   │   ├── services/           # Recommendation logic
+│   │   ├── jobs/               # Cron jobs
+│   │   └── lib/                # Prisma client
+│   ├── prisma/
+│   │   └── schema.prisma
+│   └── package.json
+│
+├── scripts/                    # Data collection scripts (OSM, amenities)
+├── docker-compose.yml          # Docker Compose gốc (legacy)
+└── README.md                   # 📖 File này
 ```
 
 ---
 
-## 6. Chạy Tests
+## 🌐 API Endpoints chính
+
+Sau khi backend chạy, bạn có thể kiểm tra tại `http://localhost:3000`:
+
+| Method | Endpoint                              | Mô tả                                 |
+| ------ | ------------------------------------- | -------------------------------------- |
+| GET    | `/health`                             | Kiểm tra server hoạt động             |
+| GET    | `/api/places`                         | Danh sách địa điểm                    |
+| GET    | `/api/trips`                          | Danh sách chuyến đi của user          |
+| POST   | `/api/plan/generate`                  | Tạo lịch trình du lịch mới            |
+| GET    | `/api/trips/:tripId`                  | Chi tiết một chuyến đi                |
+| POST   | `/api/trips/:tripId/replan/trigger`   | Kích hoạt replanning                  |
+| GET    | `/api/trips/:tripId/replan/pending`   | Xem đề xuất replan đang chờ           |
+| POST   | `/api/auth/verify`                    | Xác thực Firebase token               |
+| POST   | `/api/nlu/parse`                      | Phân tích câu lệnh tự nhiên (NLU)     |
+| GET    | `/api/landmark`                       | Nhận diện địa danh                     |
+| GET    | `/api/monitor/*`                      | Giám sát hệ thống                     |
+
+---
+
+## 🧪 Chạy Tests
 
 ```bash
 cd backend
+
+# Chạy tất cả tests một lần
 npm test
-# 100 tests pass
+
+# Chạy tests ở chế độ watch (tự chạy lại khi code thay đổi)
+npm run test:watch
 ```
 
 ---
 
-## 7. Cấu trúc thư mục
+## 📌 Các lệnh hữu ích
 
-### Backend
-
-```
-backend/
-├── src/
-│   ├── server.ts              # Entry point Fastify
-│   ├── lib/prisma.ts          # Prisma client singleton
-│   ├── config/firebase.ts     # Firebase Admin SDK
-│   ├── middlewares/           # Auth middleware (verifyToken)
-│   ├── routes/                # auth, trips, places, landmark, nlu, monitor, internalEvents
-│   ├── services/
-│   │   └── nluService.ts      # Gọi Colab NLU qua COLAB_NLU_URL
-│   ├── api/
-│   │   ├── plan/              # Greedy planner + 2-opt optimizer
-│   │   └── replan/            # BeamSearch replanner + accept/reject handlers
-│   ├── replanner/             # Core replanning engine
-│   │   ├── BeamSearch.ts
-│   │   ├── StateEvolver.ts
-│   │   ├── MutationOperators.ts
-│   │   ├── ObjectiveScorer.ts
-│   │   ├── PlanLoader.ts
-│   │   ├── CausalTraceBuilder.ts
-│   │   └── ProposalStore.ts
-│   ├── events/eventBus.ts     # In-process event bus
-│   └── types/index.ts         # Shared TypeScript types
-├── prisma/
-│   ├── schema.prisma
-│   ├── seed.ts
-│   └── migrations/
-└── firebase-service-account.json  # KHÔNG commit lên repo
-```
-
-### Frontend
-
-```
-frontend/
-├── src/
-│   ├── main.tsx
-│   ├── App.tsx
-│   ├── pages/
-│   │   ├── Welcome.tsx        # Landing page
-│   │   ├── Home.tsx           # Trang chủ sau đăng nhập
-│   │   ├── Dashboard.tsx      # Dashboard chuyến đi
-│   │   ├── PlanTrip.tsx       # Wizard lập lịch (bước 1)
-│   │   ├── PlanDestinations.tsx # Chọn địa điểm (bước 2)
-│   │   ├── PlanRoute.tsx      # Tối ưu & xác nhận lộ trình (bước 3)
-│   │   │                      #   → OSRM routing, detour detection, multi-day,
-│   │   │                      #     starting-point picker, rest-stop suggestions
-│   │   ├── TripDetail.tsx     # Chi tiết trip (timeline + bản đồ)
-│   │   ├── TripTracking.tsx   # Live tracking (slot hiện tại + replan)
-│   │   ├── ReplanPage.tsx     # Xem và duyệt replan proposal
-│   │   ├── Places.tsx         # Danh sách địa điểm
-│   │   ├── Destinations.tsx   # Danh sách điểm đến
-│   │   ├── Events.tsx         # Sự kiện du lịch
-│   │   ├── About.tsx          # Giới thiệu hệ thống
-│   │   ├── LandmarkPage.tsx   # Nhận diện địa danh qua camera/upload
-│   │   ├── Preferences.tsx    # Cài đặt sở thích (survey)
-│   │   └── Profile.tsx        # Trang cá nhân + đánh giá sau chuyến
-│   ├── components/
-│   │   ├── planning/          # NLPInput, PlanForm, FilterBar, ComparisonPanel,
-│   │   │                      #   DestinationDetailPanel, PlaceOrderStep, NLPChat
-│   │   ├── timeline/          # Timeline, SlotCard, DayGroup, ConflictBanner
-│   │   ├── map/               # TripMap (Leaflet + OSRM polyline)
-│   │   ├── places/            # PlaceCard, PlacePopup
-│   │   ├── auth/              # LoginDrawer, ProtectedRoute
-│   │   └── ui/                # Modal, Toast, Spinner, Button, Badge, Card
-│   ├── services/              # API clients (axios):
-│   │   ├── tripService.ts     #   Quản lý chuyến đi
-│   │   ├── placeService.ts    #   CRUD địa điểm
-│   │   ├── routingService.ts  #   OSRM driving route (external API)
-│   │   ├── preferenceService.ts # Sở thích người dùng
-│   │   ├── destinationService.ts # Điểm đến, gợi ý
-│   │   ├── monitorService.ts  #   Giám sát sự cố
-│   │   ├── landmarkService.ts #   Nhận diện địa danh
-│   │   ├── nluService.ts      #   Phân tích ngôn ngữ tự nhiên
-│   │   └── api.ts             #   Axios instance base
-│   ├── store/                 # Zustand stores: authStore, tripStore, toastStore
-│   ├── hooks/                 # React Query hooks: useFavorites, ...
-│   ├── types/                 # TypeScript types chung
-│   └── config/firebase.ts     # Firebase client config
-├── vite.config.ts
-├── tailwind.config.ts
-└── tsconfig.json
-```
-
-### Preference Service
-
-```
-preference-service/
-├── src/
-│   ├── app.ts                 # Entry point Fastify
-│   ├── lib/prisma.ts          # Prisma client singleton
-│   ├── middleware/auth.ts     # requireAuth (kiểm tra x-user-id header)
-│   ├── routes/
-│   │   ├── survey.routes.ts   # /api/preferences/survey/*
-│   │   ├── preferences.routes.ts  # /api/preferences/weights, /similar-users, /rating
-│   │   ├── favorite.routes.ts # /api/preferences/favorite/*
-│   │   └── internal.routes.ts # /api/preferences/internal/reward
-│   ├── services/
-│   │   ├── survey.service.ts  # CRUD survey + tính base weights
-│   │   ├── weights.service.ts # UCB1 bandit — chọn arm + cập nhật reward
-│   │   ├── interaction.service.ts  # Xử lý các loại interaction
-│   │   └── learning.service.ts    # Incremental preference vector learning
-│   └── jobs/
-│       └── similarity.job.ts  # Cosine similarity job (chạy 03:00 mỗi đêm)
-└── prisma/
-    └── schema.prisma
-```
-
----
-
-## 8. Tính năng Tối ưu Lộ trình (PlanRoute)
-
-Trang `PlanRoute.tsx` cung cấp bộ công cụ thông minh giúp người dùng tối ưu hóa lộ trình trước khi lưu:
-
-### 8.1 Routing đường bộ thực tế (OSRM)
-- Sử dụng [OSRM](https://project-osrm.org/) public API để tính khoảng cách và thời gian di chuyển thực tế giữa các điểm (không dùng đường chim bay).
-- Tuyến đường hiển thị trên bản đồ bám sát đường bộ thật sự.
-- Service: `frontend/src/services/routingService.ts`
-
-> **Lưu ý:** OSRM public API có rate-limit. Nếu triển khai production, nên dùng OSRM self-hosted hoặc Google Maps / Mapbox.
-
-### 8.2 Chọn điểm xuất phát
-- Người dùng chọn điểm xuất phát từ dropdown **"Vị trí xuất phát của bạn"** hoặc nhấn icon cờ (🚩) trên từng thẻ địa điểm.
-- Điểm xuất phát được hiển thị nổi bật với badge xanh lá `ĐIỂM XUẤT PHÁT`.
-
-### 8.3 Phát hiện cặp điểm xung đột (Detour Detection)
-- Hệ thống tự động phát hiện các **cặp điểm liền kề** cách nhau >20 phút di chuyển.
-- Hiển thị 1 thẻ cảnh báo duy nhất cho mỗi cặp (không tách riêng từng điểm), cho phép:
-  - **Bỏ điểm A** hoặc **Bỏ điểm B** — xóa 1 trong 2
-  - **Giữ cả hai** — đánh dấu `mustVisit`, cảnh báo biến mất
-
-### 8.4 Cảnh báo vượt thời gian & Hỗ trợ đa ngày
-- Nếu tổng thời gian (tham quan + di chuyển) vượt quỹ thời gian trong ngày (12h × số ngày), hiện cảnh báo kèm 2 nút:
-  - **"Kéo dài thành X ngày"** — hệ thống tự tính số ngày phù hợp
-  - **"Bỏ 1 điểm ở cuối"** — giảm tải lộ trình
-- Trường `Số ngày` trên form cho phép điều chỉnh tay.
-- Khi lưu, `endDate` tự động tính theo `startDate + (tripDays - 1)`.
-
-### 8.5 Gợi ý điểm dừng chân (Rest Stops)
-- Khi có đoạn đường >15km giữa 2 điểm liền kề, hệ thống gợi ý bật AI.
-- AI tìm điểm dừng chân ở giữa đoạn xa (bán kính 5km quanh midpoint), hiển thị kèm nút "Chèn vào giữa".
-
-### 8.6 Đánh dấu bắt buộc đi (Must Visit)
-- Icon ghim (📌) trên mỗi thẻ cho phép pin điểm là "bắt buộc".
-- Điểm `mustVisit` không bị đề xuất xóa bởi detour detection.
-
-### 8.7 Tối ưu thứ tự tự động
-- Nút **"Tối ưu thứ tự"** dùng thuật toán nearest-neighbor TSP.
-- Giữ nguyên điểm xuất phát, sắp xếp lại các điểm còn lại theo khoảng cách gần nhất.
-
-### 8.8 Xem thông tin chi tiết địa điểm
-- Click icon MapPin trên thẻ địa điểm → mở panel chi tiết bên phải.
-- Hiển thị ảnh, rating, tags, giờ mở cửa (gộp thông minh, highlight ngày hôm nay), giá vé, mô tả.
-
----
-
-## 9. Testing & Mocking (Chỉ dành cho Dev)
-
-### 9.1 Giả lập sự cố ngoại cảnh (Test Replan)
+### Database
 
 ```bash
-curl -X POST http://localhost:3000/api/monitor/mock-incident \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "rain_heavy",
-    "reason": "Mưa lớn giả lập để test Replan",
-    "severity": 0.9,
-    "affectedSlotIds": ["<SLOT_ID>"]
-  }'
+# Khởi động PostgreSQL container
+cd backend && docker compose up -d
+
+# Dừng PostgreSQL container
+cd backend && docker compose down
+
+# Dừng + xoá toàn bộ dữ liệu (volume)
+cd backend && docker compose down -v
+
+# Mở Prisma Studio (GUI quản lý database trên trình duyệt)
+cd backend && npx prisma studio
+
+# Tạo migration mới sau khi sửa schema.prisma
+cd backend && npx prisma migrate dev --name <tên_migration>
+
+# Reset database (xoá tất cả + chạy lại migration + seed)
+cd backend && npx prisma migrate reset
 ```
 
-*Endpoint này chỉ hoạt động khi `NODE_ENV !== production`.*
+### Build production
 
-### 9.2 Giả lập Nhận diện địa danh
+```bash
+# Build backend
+cd backend && npm run build
+# Chạy production
+cd backend && npm start
 
-Khi upload ảnh trong trang Landmark, hệ thống nhận diện dựa trên tên file:
-- File chứa `cau.rong` → Cầu Rồng
-- File chứa `ba.na` → Bà Nà Hills
-- File chứa `my.khe` → Bãi biển Mỹ Khê
+# Build frontend
+cd frontend && npm run build
+# Preview production build
+cd frontend && npm run preview
+```
 
-### 9.3 Seed dữ liệu fake để test
+---
+
+## ❗ Xử lý lỗi thường gặp
+
+### 1. Lỗi `ECONNREFUSED` khi backend kết nối database
+
+**Nguyên nhân:** Docker container chưa chạy hoặc chưa sẵn sàng.
+
+```bash
+# Kiểm tra container
+cd backend && docker compose ps
+
+# Nếu không chạy, khởi động lại
+docker compose up -d
+
+# Xem log container
+docker compose logs postgres
+```
+
+### 2. Lỗi `P1001: Can't reach database server`
+
+**Nguyên nhân:** Port 5433 bị chiếm hoặc DATABASE_URL sai.
+
+```bash
+# Kiểm tra port 5433
+# Windows:
+netstat -ano | findstr :5433
+# macOS/Linux:
+lsof -i :5433
+```
+
+Nếu port bị chiếm, sửa port trong `backend/docker-compose.yml` và `backend/.env`.
+
+### 3. Lỗi `prisma generate` hoặc `Cannot find module '.prisma/client'`
 
 ```bash
 cd backend
-npm run seed:fake
+npx prisma generate
 ```
 
-Tạo users, trips, slots và interaction logs mẫu để test UI mà không cần tự tạo tay.
+### 4. Lỗi `firebase-admin` — thiếu credentials
+
+Đảm bảo `backend/.env` có đầy đủ các biến `FIREBASE_*`. Nếu chỉ muốn dev nhanh không cần auth, có thể comment các route liên quan đến auth.
+
+### 5. Lỗi `VITE_FIREBASE_*` undefined trên frontend
+
+Đảm bảo:
+- File `frontend/.env` tồn tại (không bị `.gitignore` ignore nhầm)
+- Tất cả biến đều có prefix `VITE_`
+- **Restart** Vite dev server sau khi sửa `.env` (biến env chỉ được đọc khi Vite khởi động)
+
+### 6. Docker build image quá lâu (lần đầu)
+
+Lần đầu Docker sẽ build custom image `tdtt-postgres-pgvector:15-3.3` (cài PostGIS + pgvector). Quá trình này tải packages từ internet, có thể mất **3-5 phút**. Các lần sau sẽ dùng cache nên rất nhanh.
+
+### 7. Lỗi `@xenova/transformers` tải model chậm
+
+Lần chạy đầu tiên, backend sẽ tải mô hình embedding `all-MiniLM-L6-v2` (~80MB). Quá trình này diễn ra ở background và sẽ log thông báo. Request đầu tiên liên quan đến semantic search có thể chậm ~30 giây.
 
 ---
 
-## 10. Lưu ý quan trọng
+## 📄 License
 
-- `firebase-service-account.json` chứa credentials thật — **không commit lên public repo**
-- Database chạy trên port **5433** (không phải 5432 mặc định) để tránh xung đột với PostgreSQL cài local
-- Preference service dùng Prisma **5.x**, backend dùng Prisma **7.x** — không hoán đổi schema/migration giữa hai service
-- `lat`/`lng` trong bảng `place` là generated columns từ PostGIS — không INSERT trực tiếp, dùng `ST_GeogFromText` hoặc `ST_MakePoint`
-- NLU service (`/api/nlu/parse`) phụ thuộc Colab đang chạy — nếu tunnel hết hạn, cập nhật `COLAB_NLU_URL` trong `backend/.env`
-- Preference service nhận event từ backend qua HTTP POST (`/api/preferences/internal/reward`), không qua shared EventEmitter
-- Khi chạy toàn bộ hệ thống cần **3 terminal riêng**: backend, preference-service, frontend
-- OSRM routing dùng public demo server (`router.project-osrm.org`) — chỉ phù hợp cho dev/demo, không dùng cho production
-- `PlanRoute.tsx` tính toán detour/overrun client-side dựa trên OSRM + haversine fallback — cần internet để OSRM hoạt động
+ISC
+
+---
+
+> **Cần hỗ trợ?** Tạo Issue trên GitHub hoặc liên hệ team phát triển.

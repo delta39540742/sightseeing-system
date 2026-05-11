@@ -1,56 +1,86 @@
-node_modules/
-dist/
-.env
-firebase-service-account.json
-
-# Bỏ qua thư mục chứa data nặng
-data/
-
-# Bỏ qua TẤT CẢ các file PDF trong dự án
-*.pdf
-
-# Bỏ qua thư mục rác của AI
-.agent/
-
-# Bỏ qua các file text/document nháp
-PLAN-hcmc-osm-database.md
-travel_schema.md
-danang_places.json
-t03_text_extract.txt
-*.docx
+# =============================================
 # Dependencies
+# =============================================
 node_modules/
 
+# =============================================
 # Build output
+# =============================================
 dist/
+*.tsbuildinfo
 
-# Environment & secrets
+# =============================================
+# Environment & Secrets
+# =============================================
 .env
 .env.local
 .env.*.local
 firebase-service-account.json
 
+# =============================================
 # Prisma
+# =============================================
 backend/prisma/migrations/
 
+# =============================================
+# Test & Coverage
+# =============================================
+coverage/
+
+# =============================================
 # Logs
+# =============================================
 *.log
 npm-debug.log*
 logs/
 
-# OS
+# =============================================
+# OS generated files
+# =============================================
 .DS_Store
 Thumbs.db
 
-# IDE
+# =============================================
+# IDE & Editor
+# =============================================
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Claude Code memory
+# =============================================
+# AI Agent tools
+# =============================================
 .claude/
-
-# Agent
-.agents
-
-# Task for agent
+.agents/
+.agent/
+.gemini/
 CONTEXT_NEXT_TASKS.md
+CLAUDE.md
+
+# =============================================
+# Python (scripts/)
+# =============================================
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints/
+
+# =============================================
+# Documents & drafts
+# =============================================
+*.pdf
+*.docx
+PLAN-hcmc-osm-database.md
+travel_schema.md
+t03_text_extract.txt
+
+# =============================================
+# Data files
+# =============================================
+data/
+danang_places.json
+
+# =============================================
+# Misc / Junk files
+# =============================================
+backend/docker

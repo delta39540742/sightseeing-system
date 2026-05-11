@@ -24,4 +24,7 @@ export const monitorService = {
     location?: { lat: number; lon: number },
   ) =>
     api.post('/monitor/sync-trip', { tripData, state, location }).then((r) => r.data),
+
+  reportTired: (tripId: string) =>
+    api.post('/monitor/report-tired', { tripId }).then((r) => r.data),
 }

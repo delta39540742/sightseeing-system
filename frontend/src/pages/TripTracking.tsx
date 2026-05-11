@@ -5,6 +5,7 @@ import {
   AlertTriangle, Lightbulb, MapPin, Utensils, CheckCircle,
   Building2, Search, LocateFixed, Plus, Minus,
   Navigation, Bell, Settings, UserCircle, GitBranch, Zap,
+  ChevronDown, ChevronUp, Frown,
 } from 'lucide-react'
 import { tripService } from '@/services/tripService'
 import { toast } from '@/store/toastStore'
@@ -12,7 +13,7 @@ import { monitorService, type MonitorAlert } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
 import { PageSpinner } from '@/components/ui/Spinner'
 import { TripMap } from '@/components/map/TripMap'
-import { format, parseISO, isBefore, isAfter, isSameDay } from 'date-fns'
+import { format, parseISO, isBefore, isAfter, isSameDay, startOfDay } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { useMemo, useState } from 'react'
 
@@ -22,6 +23,8 @@ export default function TripTracking() {
   const { setTrip, focusedSlotId } = useTripStore()
   const queryClient = useQueryClient()
   const [now, setNow] = useState(() => new Date())
+  const [incidentExpanded, setIncidentExpanded] = useState(false)
+  const [isTiredLoading, setIsTiredLoading] = useState(false)
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60_000)
@@ -65,7 +68,6 @@ export default function TripTracking() {
       currentIdx = sorted.findIndex((s) => new Date(s.plannedStart).getTime() > nowMs)
     }
 
-    // Don't sync if the next slot is not today — avoids false traffic_jam events
     if (currentIdx < 0) return
     if (!isSameDay(new Date(sorted[currentIdx].plannedStart), new Date(nowMs))) return
 
@@ -122,14 +124,28 @@ export default function TripTracking() {
       (a, b) => new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime()
     )
   }, [trip?.slots])
-  
-  const { completedSlots, currentSlot, upcomingSlots } = useMemo(() => {
-    if (!sortedSlots.length) return { completedSlots: [], currentSlot: null, upcomingSlots: [] }
-    
+
+  const slotsByDay = useMemo(() => {
+    const groups: { date: Date; slots: typeof sortedSlots }[] = []
+    for (const slot of sortedSlots) {
+      const slotDate = parseISO(slot.plannedStart)
+      const existing = groups.find(g => isSameDay(g.date, slotDate))
+      if (existing) {
+        existing.slots.push(slot)
+      } else {
+        groups.push({ date: slotDate, slots: [slot] })
+      }
+    }
+    return groups
+  }, [sortedSlots])
+
+  const { completedSlots, currentSlot } = useMemo(() => {
+    if (!sortedSlots.length) return { completedSlots: [], currentSlot: null as typeof sortedSlots[0] | null }
+
     const completed = sortedSlots.filter((s) =>
       s.status === 'completed' || isBefore(parseISO(s.plannedEnd), now)
     )
-    
+
     const current = sortedSlots.find((s) =>
       !isBefore(parseISO(s.plannedEnd), now) && !isAfter(parseISO(s.plannedStart), now)
     ) ?? sortedSlots.find((s) =>
@@ -137,12 +153,8 @@ export default function TripTracking() {
       isAfter(parseISO(s.plannedStart), now) &&
       isSameDay(parseISO(s.plannedStart), now)
     )
-    
-    const upcoming = sortedSlots.filter((s) =>
-      s !== current && !completed.includes(s) && isAfter(parseISO(s.plannedStart), now)
-    )
-    
-    return { completedSlots: completed, currentSlot: current, upcomingSlots: upcoming }
+
+    return { completedSlots: completed, currentSlot: current ?? null }
   }, [sortedSlots, now])
 
   const hasIncident = !!(incidentData && 'type' in incidentData && incidentData.type)
@@ -150,14 +162,25 @@ export default function TripTracking() {
   const incidentAffectedIds: string[] = incidentAlert?.affectedSlotIds ?? []
   const incidentExpiresAt: Date | null = incidentAlert?.expiresAt ? new Date(incidentAlert.expiresAt) : null
 
-  // Only show the banner if at least one affected slot hasn't ended yet
-  const incidentAffectsActiveSlots = hasIncident && incidentAffectedIds.some(id => {
+  // Only show if there's at least one affected slot that is active and within the incident window
+  const incidentAffectsActiveSlots = hasIncident && incidentAffectedIds.length > 0 && incidentAffectedIds.some(id => {
     const slot = sortedSlots.find(s => s.slotId === id)
-    return slot && !isBefore(parseISO(slot.plannedEnd), now)
+    if (!slot) return false
+    const slotStart = parseISO(slot.plannedStart)
+    const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
+    return withinWindow && !isBefore(parseISO(slot.plannedEnd), now)
   })
-  const incidentReason = incidentAffectsActiveSlots && 'reason' in incidentData! ? (incidentData as MonitorAlert).reason : null
 
-  const mapImageUrl = 'https://lh3.googleusercontent.com/aida-public/AB6AXuAIIRWkmU61v_98zEqO2QOIhonwPwMkr32uuAmB5OANkJ27V_wg6IxsEmiccW21Q7RCt8wd_VCXhDEVcS05Q6_8gJ-2oBLT2PLyB-lFlFBfHrsDapoEqwAyuDP_noQbamEP9D-v-FOYkitwomjR_l-mA9rqWYJdH9b3rJJETFoDoMEZP4Zklr2BwaA8JzDPEY_qXyqKk0v1Tr8Jg2KT5W5Esj9ygtQB0ffBVBCXQOiOhX0RVffSOjFmv0FbStS8P22w6Q378quP_RM'
+  const affectedUpcomingSlots = incidentAffectsActiveSlots
+    ? sortedSlots.filter(slot => {
+        if (!incidentAffectedIds.includes(slot.slotId)) return false
+        const slotStart = parseISO(slot.plannedStart)
+        const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
+        return withinWindow && !isBefore(parseISO(slot.plannedEnd), now)
+      })
+    : []
+
+  const incidentReason = incidentAffectsActiveSlots && 'reason' in incidentData! ? (incidentData as MonitorAlert).reason : null
 
   return (
     <div className="bg-slate-50 font-sans text-slate-900 min-h-screen">
@@ -192,7 +215,7 @@ export default function TripTracking() {
         <section className="w-full md:w-5/12 lg:w-4/12 h-[calc(100vh-64px)] overflow-y-auto bg-white border-r border-slate-200 p-6">
           <div className="mb-8">
             <h1 className="text-xl font-bold text-slate-900 mb-1">
-              {currentSlot ? 'Chuyến đi đang diễn ra' : upcomingSlots.length > 0 ? 'Sắp diễn ra' : 'Theo dõi chuyến đi'}
+              {currentSlot ? 'Chuyến đi đang diễn ra' : slotsByDay.some(g => isSameDay(g.date, now)) ? 'Sắp diễn ra' : 'Theo dõi chuyến đi'}
             </h1>
             <p className="text-slate-500 text-sm">
               {format(new Date(), 'EEEE, dd MMMM, yyyy', { locale: vi })}
@@ -202,9 +225,7 @@ export default function TripTracking() {
           {/* No activity today banner */}
           {!currentSlot && !incidentAffectsActiveSlots && sortedSlots.length > 0 && !isSameDay(parseISO(sortedSlots[0].plannedStart), now) && (
             <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-              <p className="text-blue-800 text-sm font-medium">
-                Không có hoạt động nào hôm nay.
-              </p>
+              <p className="text-blue-800 text-sm font-medium">Không có hoạt động nào hôm nay.</p>
               <p className="text-blue-600 text-sm mt-1">
                 Lịch trình tiếp theo:{' '}
                 <span className="font-semibold">
@@ -214,120 +235,193 @@ export default function TripTracking() {
             </div>
           )}
 
-          {/* Incident Alert */}
+          {/* Incident Alert — only when it actually affects active slots */}
           {incidentAffectsActiveSlots && (
-            <div className="mb-8 p-4 bg-red-50 border-2 border-red-500 rounded-xl shadow-sm">
-              <div className="flex gap-3 mb-3">
-                <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-                <div>
-                  <h3 className="font-bold text-xs tracking-widest text-red-800 uppercase mb-1">Sự kiện bất thường</h3>
-                  <p className="text-red-800 text-sm opacity-90">
-                    {incidentReason ?? 'Phát hiện sự kiện ảnh hưởng đến lịch trình. Hoạt động có thể bị thay đổi.'}
-                  </p>
+            <div className="mb-8 bg-red-50 border-2 border-red-500 rounded-xl shadow-sm overflow-hidden">
+              <div className="p-4">
+                <div className="flex gap-3 mb-3">
+                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <h3 className="font-bold text-xs tracking-widest text-red-800 uppercase mb-1">
+                      Sự kiện bất thường{incidentAlert?.type ? ` — ${incidentAlert.type}` : ''}
+                    </h3>
+                    <p className="text-red-800 text-sm opacity-90">
+                      {incidentReason ?? 'Phát hiện sự kiện ảnh hưởng đến lịch trình. Hoạt động có thể bị thay đổi.'}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Collapsible list of affected places */}
+                {affectedUpcomingSlots.length > 0 && (
+                  <div className="mb-3 border border-red-200 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setIncidentExpanded(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2.5 bg-red-100 hover:bg-red-200 text-red-800 text-sm font-semibold transition-colors"
+                    >
+                      <span>{affectedUpcomingSlots.length} địa điểm bị ảnh hưởng</span>
+                      {incidentExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+                    {incidentExpanded && (
+                      <div className="divide-y divide-red-100 bg-white">
+                        {affectedUpcomingSlots.map(slot => (
+                          <div key={slot.slotId} className="flex items-center gap-3 px-3 py-2.5">
+                            <div className="w-1.5 h-1.5 bg-red-500 rounded-full shrink-0" />
+                            <span className="text-red-800 text-sm font-medium flex-1">{slot.place?.name ?? 'Địa điểm'}</span>
+                            <span className="text-red-400 text-xs font-semibold">{format(parseISO(slot.plannedStart), 'HH:mm')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  onClick={() => navigate(`/trip/${tripId}/replan`)}
+                  className="w-full py-3 bg-red-600 text-white font-bold rounded-lg hover:brightness-110 transition-all flex items-center justify-center gap-2 text-sm"
+                >
+                  <Lightbulb className="w-4 h-4" />
+                  Xem gợi ý điều chỉnh
+                </button>
               </div>
-              <button
-                onClick={() => navigate(`/trip/${tripId}/replan`)}
-                className="w-full py-3 bg-red-600 text-white font-bold rounded-lg hover:brightness-110 transition-all flex items-center justify-center gap-2 text-sm"
-              >
-                <Lightbulb className="w-4 h-4" />
-                Xem gợi ý điều chỉnh
-              </button>
             </div>
           )}
 
-          {/* Timeline items */}
-          <div className="relative space-y-8">
-            {/* Current */}
-            {currentSlot && (
-              <div className="relative pl-12">
-                <div className="absolute left-0 top-0 w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center z-10 shadow-lg shadow-blue-200">
-                  <MapPin className="w-5 h-5 text-white fill-white" />
-                </div>
-                <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-blue-200" />
-                <div className="bg-white border-2 border-blue-200 p-4 rounded-xl">
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="px-2 py-1 bg-blue-100 text-blue-700 text-[10px] font-bold rounded uppercase">Đang ở đây</span>
-                    <span className="text-slate-400 text-xs font-semibold">
-                      {format(parseISO(currentSlot.plannedStart), 'HH:mm')}
-                    </span>
-                  </div>
-                  <h4 className="font-bold text-slate-900 text-base">{currentSlot.place?.name ?? 'Địa điểm hiện tại'}</h4>
-                  {currentSlot.place?.description && (
-                    <p className="text-slate-500 text-sm mt-1 line-clamp-2">{currentSlot.place.description}</p>
-                  )}
-                  <button
-                    onClick={() => {
-                      tripService.completeSlot(trip.tripId, currentSlot.slotId)
-                        .then(() => {
-                          queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
-                          toast.success('Hoàn thành địa điểm!')
-                        })
-                        .catch(() => toast.error('Không thể cập nhật'))
-                    }}
-                    className="mt-3 w-full py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    Đã hoàn thành
-                  </button>
-                </div>
-              </div>
-            )}
+          {/* Day-grouped timeline */}
+          <div className="space-y-10">
+            {slotsByDay.map((group, dayIdx) => {
+              const isPastDay = isBefore(startOfDay(group.date), startOfDay(now))
+              const isToday = isSameDay(group.date, now)
 
-            {/* Upcoming slots */}
-            {upcomingSlots.map((slot, idx) => {
-              const slotStart = parseISO(slot.plannedStart)
-              const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
-              const isRisk = incidentAffectsActiveSlots && incidentAffectedIds.length > 0 && incidentAffectedIds.includes(slot.slotId) && withinWindow
               return (
-                <div key={slot.slotId} className="relative pl-12">
-                  <div className={`absolute left-0 top-0 w-10 h-10 bg-white border-2 rounded-full flex items-center justify-center z-10 ${isRisk ? 'border-red-500' : 'border-slate-200'}`}>
-                    {slot.activityType === 'meal'
-                      ? <Utensils className={`w-5 h-5 ${isRisk ? 'text-red-500' : 'text-slate-400'}`} />
-                      : <Building2 className={`w-5 h-5 ${isRisk ? 'text-red-500' : 'text-slate-400'}`} />
-                    }
+                <div key={dayIdx}>
+                  {/* Day separator */}
+                  <div className="flex items-center gap-3 mb-5">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold shrink-0 ${
+                      isToday
+                        ? 'bg-blue-600 text-white'
+                        : isPastDay
+                          ? 'bg-slate-100 text-slate-400'
+                          : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {isToday ? 'Hôm nay' : format(group.date, 'EEEE, dd/MM', { locale: vi })}
+                    </span>
+                    <div className="flex-1 h-px bg-slate-200" />
                   </div>
-                  {idx < upcomingSlots.length - 1 && (
-                    <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-slate-200" />
-                  )}
-                  <div className={`p-4 rounded-xl border ${isRisk ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
-                    <div className="flex justify-between items-start mb-2">
-                      <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase ${isRisk ? 'bg-red-100 text-red-700' : 'bg-slate-200 text-slate-500'}`}>
-                        {isRisk ? 'Sắp tới (Rủi ro)' : 'Kế hoạch'}
-                      </span>
-                      <span className="text-slate-400 text-xs font-semibold">
-                        {format(parseISO(slot.plannedStart), 'HH:mm')}
-                      </span>
-                    </div>
-                    <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? `Địa điểm ${idx + 2}`}</h4>
-                    {slot.place?.description && (
-                      <p className="text-slate-500 text-sm mt-1 line-clamp-2">{slot.place.description}</p>
-                    )}
+
+                  {/* Slots */}
+                  <div className="relative space-y-4">
+                    {group.slots.map((slot, slotIdx) => {
+                      const isCompleted = completedSlots.includes(slot)
+                      const isCurrent = slot === currentSlot
+                      const isLastInGroup = slotIdx === group.slots.length - 1
+                      const slotStart = parseISO(slot.plannedStart)
+                      const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
+                      const isRisk = incidentAffectsActiveSlots && incidentAffectedIds.includes(slot.slotId) && withinWindow
+
+                      if (isCurrent) {
+                        return (
+                          <div key={slot.slotId} className="relative pl-12">
+                            <div className="absolute left-0 top-0 w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center z-10 shadow-lg shadow-blue-200">
+                              <MapPin className="w-5 h-5 text-white fill-white" />
+                            </div>
+                            {!isLastInGroup && <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-blue-200" />}
+                            <div className="bg-white border-2 border-blue-200 p-4 rounded-xl">
+                              <div className="flex justify-between items-start mb-2">
+                                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-[10px] font-bold rounded uppercase">Đang ở đây</span>
+                                <span className="text-slate-400 text-xs font-semibold">{format(slotStart, 'HH:mm')}</span>
+                              </div>
+                              <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? 'Địa điểm hiện tại'}</h4>
+                              {slot.place?.description && (
+                                <p className="text-slate-500 text-sm mt-1 line-clamp-2">{slot.place.description}</p>
+                              )}
+                              <button
+                                onClick={() => {
+                                  tripService.completeSlot(trip.tripId, slot.slotId)
+                                    .then(() => {
+                                      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+                                      toast.success('Hoàn thành địa điểm!')
+                                    })
+                                    .catch(() => toast.error('Không thể cập nhật'))
+                                }}
+                                className="mt-3 w-full py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+                              >
+                                Đã hoàn thành
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  setIsTiredLoading(true)
+                                  try {
+                                    await monitorService.reportTired(trip.tripId)
+                                    await queryClient.invalidateQueries({ queryKey: ['check-incident', tripId] })
+                                    toast.success('Đã ghi nhận. Xem gợi ý điều chỉnh lịch trình.')
+                                  } catch {
+                                    toast.error('Không thể ghi nhận')
+                                  } finally {
+                                    setIsTiredLoading(false)
+                                  }
+                                }}
+                                disabled={isTiredLoading}
+                                className="mt-2 w-full py-2 border border-slate-200 text-slate-500 text-sm font-semibold rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                              >
+                                <Frown className="w-4 h-4" />
+                                {isTiredLoading ? 'Đang ghi nhận...' : 'Tôi đang mệt'}
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      if (isCompleted) {
+                        return (
+                          <div key={slot.slotId} className="relative pl-12">
+                            <div className="absolute left-0 top-0 w-10 h-10 bg-slate-100 border-2 border-slate-200 rounded-full flex items-center justify-center z-10">
+                              <CheckCircle className="w-5 h-5 text-slate-300" />
+                            </div>
+                            {!isLastInGroup && <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-slate-100" />}
+                            <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl opacity-60">
+                              <div className="flex justify-between items-start mb-2">
+                                <span className="px-2 py-1 bg-slate-200 text-slate-500 text-[10px] font-bold rounded uppercase">Đã hoàn thành</span>
+                                <span className="text-slate-400 text-xs font-semibold">{format(slotStart, 'HH:mm')}</span>
+                              </div>
+                              <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? 'Địa điểm đã qua'}</h4>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      // Upcoming
+                      return (
+                        <div key={slot.slotId} className="relative pl-12">
+                          <div className={`absolute left-0 top-0 w-10 h-10 bg-white border-2 rounded-full flex items-center justify-center z-10 ${isRisk ? 'border-red-500' : 'border-slate-200'}`}>
+                            {slot.activityType === 'meal'
+                              ? <Utensils className={`w-5 h-5 ${isRisk ? 'text-red-500' : 'text-slate-400'}`} />
+                              : <Building2 className={`w-5 h-5 ${isRisk ? 'text-red-500' : 'text-slate-400'}`} />
+                            }
+                          </div>
+                          {!isLastInGroup && <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-slate-200" />}
+                          <div className={`p-4 rounded-xl border ${isRisk ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+                            <div className="flex justify-between items-start mb-2">
+                              <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase ${isRisk ? 'bg-red-100 text-red-700' : 'bg-slate-200 text-slate-500'}`}>
+                                {isRisk ? `Rủi ro — ${incidentAlert?.type ?? 'Sự kiện'}` : 'Kế hoạch'}
+                              </span>
+                              <span className="text-slate-400 text-xs font-semibold">{format(slotStart, 'HH:mm')}</span>
+                            </div>
+                            <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? 'Địa điểm'}</h4>
+                            {slot.place?.description && (
+                              <p className="text-slate-500 text-sm mt-1 line-clamp-2">{slot.place.description}</p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )
             })}
 
-            {/* Completed slots */}
-            {completedSlots.slice(-1).map((slot) => (
-              <div key={slot.slotId} className="relative pl-12">
-                <div className="absolute left-0 top-0 w-10 h-10 bg-slate-100 border-2 border-slate-200 rounded-full flex items-center justify-center z-10">
-                  <CheckCircle className="w-5 h-5 text-slate-300" />
-                </div>
-                <div className="bg-slate-50 border border-slate-100 p-4 rounded-xl opacity-60">
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="px-2 py-1 bg-slate-200 text-slate-500 text-[10px] font-bold rounded uppercase">Đã hoàn thành</span>
-                    <span className="text-slate-400 text-xs font-semibold">
-                      {format(parseISO(slot.plannedStart), 'HH:mm')}
-                    </span>
-                  </div>
-                  <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? 'Địa điểm đã qua'}</h4>
-                </div>
-              </div>
-            ))}
-
             {/* Proactive suggestion */}
             {!incidentAffectsActiveSlots && currentSlot && (
-              <div className="mt-10 p-5 bg-blue-50 border-2 border-blue-600 rounded-2xl shadow-md">
+              <div className="p-5 bg-blue-50 border-2 border-blue-600 rounded-2xl shadow-md">
                 <div className="flex items-start gap-4 mb-4">
                   <div className="p-2 bg-blue-600 rounded-xl shrink-0">
                     <Zap className="w-6 h-6 text-white" />
@@ -356,7 +450,7 @@ export default function TripTracking() {
         {/* Right: Map */}
         <section className="w-full md:w-7/12 lg:w-8/12 h-64 md:h-[calc(100vh-64px)] relative bg-slate-200 overflow-hidden">
           <div className="absolute inset-0">
-            <TripMap 
+            <TripMap
               slots={trip.slots}
               focusedSlotId={focusedSlotId}
               className="w-full h-full rounded-none"
@@ -398,9 +492,9 @@ export default function TripTracking() {
             </div>
           )}
 
-          {/* Incident marker */}
-          {incidentAffectsActiveSlots && incidentAffectedIds.length > 0 && (() => {
-            const firstAffected = upcomingSlots.find(s => incidentAffectedIds.includes(s.slotId))
+          {/* Incident marker — only for first affected upcoming slot */}
+          {incidentAffectsActiveSlots && affectedUpcomingSlots.length > 0 && (() => {
+            const firstAffected = affectedUpcomingSlots[0]
               ?? (currentSlot && incidentAffectedIds.includes(currentSlot.slotId) ? currentSlot : null)
             if (!firstAffected) return null
             return (

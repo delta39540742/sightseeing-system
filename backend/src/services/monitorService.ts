@@ -463,6 +463,76 @@ export class MonitorService {
     }
   }
 
+  // TODO (auto-detect, option 2): trigger user_tired automatically by comparing actual
+  // dwell time (from trip_state_snapshot) against planned slot duration — if user spent
+  // >150% of planned time at a slot, infer fatigue and call reportUserTired() server-side
+  // without requiring user input. Needs a per-slot dwell tracker in runMonitoring().
+  async reportUserTired(tripId: string): Promise<{ eventId?: string; affectedSlotIds: string[] }> {
+    const slotsRes = await pool.query<{ slot_id: string; planned_start: string }>(
+      `SELECT slot_id, planned_start FROM trip_slot
+        WHERE trip_id = $1 AND status = 'planned' AND planned_end > NOW()
+        ORDER BY planned_start ASC LIMIT 2`,
+      [tripId],
+    )
+    const affectedSlotIds = slotsRes.rows.map(r => r.slot_id)
+    if (affectedSlotIds.length === 0) return { affectedSlotIds: [] }
+
+    // Cover until at least 2h after the last affected slot starts so the frontend
+    // withinWindow check (isBefore(slotStart, expiresAt)) passes even when slots
+    // are several hours away (e.g. reported at 03:00 for slots at 09:00).
+    const lastSlotStart = slotsRes.rows.at(-1)!.planned_start
+    const hoursUntilLastSlot = (new Date(lastSlotStart).getTime() - Date.now()) / 3_600_000
+    const durationHours = Math.max(2, hoursUntilLastSlot + 2)
+
+    const payload = {
+      reason: 'Người dùng báo cáo mệt mỏi',
+      started_at: new Date().toISOString(),
+      duration_hours: durationHours,
+      radius_km: 0,
+      anchor_lat: null,
+      anchor_lon: null,
+    }
+
+    let eventId: string | undefined
+    try {
+      const res = await pool.query(
+        `INSERT INTO trip_event (trip_id, event_type, severity, source, payload, affected_slot_ids, status)
+         SELECT $1, 'user_tired', 0.6, 'user_report', $2, $3, 'open'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM trip_event
+           WHERE trip_id = $1 AND event_type = 'user_tired'
+             AND detected_at > NOW() - INTERVAL '2 hours'
+         )
+         RETURNING event_id`,
+        [tripId, JSON.stringify(payload), affectedSlotIds],
+      )
+      eventId = res.rows[0]?.event_id
+    } catch (err) {
+      console.error('[MonitorService] reportUserTired failed:', err)
+    }
+
+    if (eventId) {
+      try {
+        await pool.query(
+          `DELETE FROM replan_proposal WHERE trip_id = $1 AND status = 'pending'`,
+          [tripId],
+        )
+      } catch { /* non-fatal */ }
+
+      this.lastAlert = {
+        eventId,
+        type: 'user_tired',
+        reason: payload.reason,
+        severity: 0.6,
+        affectedSlotIds,
+        timestamp: new Date().toLocaleString('vi-VN'),
+        expiresAt: new Date(Date.now() + durationHours * 3_600_000).toISOString(),
+      }
+    }
+
+    return { eventId, affectedSlotIds }
+  }
+
   async injectMockAlert(opts: {
     type: string;
     reason: string;

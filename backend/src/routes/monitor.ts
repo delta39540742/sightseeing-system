@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import cron from 'node-cron'
 import { monitorService, type TripData, type TripState } from '../services/monitorService'
+import { verifyToken } from '../middlewares/authMiddleware'
 
 export async function monitorPlugin(fastify: FastifyInstance): Promise<void> {
   cron.schedule('*/30 * * * *', async () => {
@@ -33,6 +34,19 @@ export async function monitorPlugin(fastify: FastifyInstance): Promise<void> {
       return event ?? { status: 'Ổn định' }
     }
     return monitorService.getLastAlert() ?? { status: 'Ổn định' }
+  })
+
+  fastify.post('/report-tired', { preHandler: [verifyToken] }, async (request, reply) => {
+    const { tripId } = request.body as { tripId?: string }
+    if (!tripId) return reply.status(400).send({ error: 'tripId là bắt buộc' })
+    const result = await monitorService.reportUserTired(tripId)
+    return {
+      message: result.eventId
+        ? 'Đã ghi nhận trạng thái mệt mỏi'
+        : 'Sự kiện mệt mỏi đã được ghi nhận trước đó',
+      eventId: result.eventId,
+      affectedSlotIds: result.affectedSlotIds,
+    }
   })
 
   if (process.env.NODE_ENV !== 'production') {
