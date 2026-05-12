@@ -20,7 +20,7 @@ firebase-service-account.json
 # =============================================
 # Prisma
 # =============================================
-backend/prisma/migrations/
+# Migrations MUST be committed (team cần dùng chung migration files)
 
 # =============================================
 # Test & Coverage
