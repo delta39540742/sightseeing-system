@@ -577,3 +577,137 @@ export function optimizeWith2Opt(
 
   return bestSlots;
 }
+
+// ─── I3CH (Iterative Three-Component Heuristic) ─────────────────────────────
+
+export function generateI3CHPlan(
+  days: number,
+  candidates: Place[],
+  ctx: SolverContext,
+  options?: { maxIterations?: number; perturbMoves?: number; timeBudgetMs?: number }
+): TripSlot[] {
+  const maxIterations = options?.maxIterations ?? 15;
+  const perturbMoves  = options?.perturbMoves  ?? 3;
+  const timeBudgetMs  = options?.timeBudgetMs  ?? 4000;
+
+  // Component 1: Construction
+  const initial = generateGreedyPlan(days, candidates, ctx);
+  // Component 2: First improvement
+  let bestSlots = optimizeWith2Opt(initial, ctx, candidates);
+  let bestScore = calculateItineraryScore(bestSlots, ctx, candidates);
+
+  const startTime = Date.now();
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    if (Date.now() - startTime > timeBudgetMs) break;
+
+    // Component 3: Perturbation — xáo trộn bản sao của bestSlots
+    let perturbed = bestSlots.map((s) => ({ ...s }));
+
+    for (let m = 0; m < perturbMoves; m++) {
+      // Thử tối đa 3 lần mỗi move để tìm perturbation hợp lệ
+      let moved = false;
+      for (let attempt = 0; attempt < 3 && !moved; attempt++) {
+        const op = Math.floor(Math.random() * 3);
+        const candidate = applyPerturbation(perturbed, candidates, op);
+        if (candidate) {
+          perturbed = candidate;
+          moved = true;
+        }
+      }
+    }
+
+    // Sắp xếp lại sau perturbation (Or-opt có thể thay đổi dayIndex)
+    perturbed.sort((a, b) =>
+      a.dayIndex !== b.dayIndex ? a.dayIndex - b.dayIndex : a.slotOrder - b.slotOrder
+    );
+
+    const retimed = retimeAndValidate(perturbed, ctx, candidates);
+    if (!retimed) continue;
+
+    // Component 2 lại: Re-improvement sau perturbation
+    const reImproved = optimizeWith2Opt(retimed, ctx, candidates);
+    const reScore    = calculateItineraryScore(reImproved, ctx, candidates);
+
+    if (reScore > bestScore) {
+      bestSlots = reImproved;
+      bestScore = reScore;
+    }
+    // Luôn restart từ bestSlots (không phải perturbed) — I3CH restart strategy
+  }
+
+  return bestSlots;
+}
+
+function applyPerturbation(
+  slots: TripSlot[],
+  candidates: Place[],
+  op: number
+): TripSlot[] | null {
+  if (slots.length < 2) return null;
+
+  // Các slot có thể xáo trộn (bỏ qua anchor places)
+  const mutableIdx = slots
+    .map((_, i) => i)
+    .filter((i) => !(candidates.find((c) => c.placeId === slots[i]!.placeId) as any)?.isAnchor);
+
+  if (mutableIdx.length < 1) return null;
+
+  const result = slots.map((s) => ({ ...s }));
+
+  if (op === 0) {
+    // Swap ngẫu nhiên 2 slot cùng ngày
+    const sameDay = (i: number, j: number) => result[i]!.dayIndex === result[j]!.dayIndex;
+    const pairs: [number, number][] = [];
+    for (let a = 0; a < mutableIdx.length; a++) {
+      for (let b = a + 1; b < mutableIdx.length; b++) {
+        if (sameDay(mutableIdx[a]!, mutableIdx[b]!)) pairs.push([mutableIdx[a]!, mutableIdx[b]!]);
+      }
+    }
+    if (pairs.length === 0) return null;
+    const [i, j] = pairs[Math.floor(Math.random() * pairs.length)]!;
+    [result[i], result[j]] = [result[j]!, result[i]!];
+    return result;
+  }
+
+  if (op === 1) {
+    // Or-opt: dời 1 slot sang vị trí khác (cùng hoặc khác ngày)
+    if (mutableIdx.length < 1) return null;
+    const fromIdx = mutableIdx[Math.floor(Math.random() * mutableIdx.length)]!;
+    const moved   = result.splice(fromIdx, 1)[0]!;
+    const toIdx   = Math.floor(Math.random() * result.length);
+    // Gán dayIndex theo slot xung quanh nơi chèn
+    const neighbor = result[toIdx] ?? result[result.length - 1];
+    if (neighbor) moved.dayIndex = neighbor.dayIndex;
+    result.splice(toIdx, 0, moved);
+    // Renumber slotOrder theo ngày
+    const orderMap = new Map<number, number>();
+    for (const s of result) {
+      const next = (orderMap.get(s.dayIndex) ?? 0) + 1;
+      orderMap.set(s.dayIndex, next);
+      s.slotOrder = next;
+    }
+    return result;
+  }
+
+  // op === 2: Thay thế địa điểm bằng candidate chưa ghé thăm ngày đó
+  if (mutableIdx.length < 1) return null;
+  const targetIdx  = mutableIdx[Math.floor(Math.random() * mutableIdx.length)]!;
+  const targetSlot = result[targetIdx]!;
+  const dayPlaceIds = new Set(
+    result.filter((s) => s.dayIndex === targetSlot.dayIndex).map((s) => s.placeId)
+  );
+  const pool = candidates.filter(
+    (c) => !dayPlaceIds.has(c.placeId) && c.lat != null && !(c as any).isAnchor
+  );
+  if (pool.length === 0) return null;
+  const replacement = pool[Math.floor(Math.random() * pool.length)]!;
+  result[targetIdx] = {
+    ...targetSlot,
+    placeId:       replacement.placeId,
+    estimatedCost: (replacement as any).minPrice ?? 0,
+    activityType:  'sightseeing',
+    rationale:     `i3ch-replace`,
+  };
+  return result;
+}

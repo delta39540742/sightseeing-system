@@ -49,6 +49,8 @@ export default function PlanTrip() {
   const toggleAnchor = (id: number) =>
     setAnchorIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
 
+  const [planningAlgorithm, setPlanningAlgorithm] = useState<'greedy_2opt' | 'i3ch'>('greedy_2opt')
+
   const candidatesReq: PlanRequest | null = parsed
     ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles, experienceKeywords: parsed.experienceKeywords }
     : null
@@ -162,6 +164,7 @@ export default function PlanTrip() {
       anchorPlaceIds: anchorIds,
       orderedPlaceIds: ordered.map((o) => o.placeId),
       mustVisitPlaceIds: ordered.filter((o) => o.mustVisit).map((o) => o.placeId),
+      planningAlgorithm,
     }
     lastReqRef.current = reqToSubmit
     generate(reqToSubmit)
@@ -291,19 +294,49 @@ export default function PlanTrip() {
               ) : (
                 /* Step 4: sắp xếp thứ tự ưu tiên */
                 candidates && planRequest ? (
-                  <PlaceOrderStep
-                    candidates={candidates}
-                    selectedIds={anchorIds}
-                    tripDays={
-                      differenceInDays(
-                        parseISO(planRequest.endDate),
-                        parseISO(planRequest.startDate),
-                      ) + 1
-                    }
-                    isPending={isPending}
-                    onConfirm={handleGenerateFromOrder}
-                    onBack={() => setStep(3)}
-                  />
+                  <>
+                    <div className="flex items-center gap-2 px-4 pt-3 text-xs">
+                      <span className="shrink-0 text-gray-500">Chế độ lập lịch:</span>
+                      <div className="flex gap-0.5 rounded-lg bg-gray-100 p-0.5">
+                        <button
+                          onClick={() => setPlanningAlgorithm('greedy_2opt')}
+                          className={`rounded-md px-3 py-1 font-medium transition-all ${
+                            planningAlgorithm === 'greedy_2opt'
+                              ? 'bg-white text-blue-600 shadow'
+                              : 'text-gray-500'
+                          }`}
+                        >
+                          Nhanh
+                        </button>
+                        <button
+                          onClick={() => setPlanningAlgorithm('i3ch')}
+                          className={`rounded-md px-3 py-1 font-medium transition-all ${
+                            planningAlgorithm === 'i3ch'
+                              ? 'bg-white text-purple-600 shadow'
+                              : 'text-gray-500'
+                          }`}
+                        >
+                          Tối ưu (I3CH)
+                        </button>
+                      </div>
+                      {planningAlgorithm === 'i3ch' && (
+                        <span className="text-gray-400">mất thêm 3–5 giây, cho kết quả tốt hơn</span>
+                      )}
+                    </div>
+                    <PlaceOrderStep
+                      candidates={candidates}
+                      selectedIds={anchorIds}
+                      tripDays={
+                        differenceInDays(
+                          parseISO(planRequest.endDate),
+                          parseISO(planRequest.startDate),
+                        ) + 1
+                      }
+                      isPending={isPending}
+                      onConfirm={handleGenerateFromOrder}
+                      onBack={() => setStep(3)}
+                    />
+                  </>
                 ) : null
               )}
             </div>

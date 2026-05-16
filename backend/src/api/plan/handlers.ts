@@ -1,7 +1,7 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma, pool } from '../../lib/prisma';
-import { generateGreedyPlan, optimizeWith2Opt, SolverContext, SoftConstraint, descriptionMatchScore } from './solver';
+import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore } from './solver';
 import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
 import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
@@ -353,6 +353,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // Lấy candidates từ DB
         const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
         const strictMode: boolean = payload.strictMode === true;
+        const planningAlgorithm: 'greedy_2opt' | 'i3ch' = payload.planningAlgorithm ?? 'greedy_2opt';
         const destinationCity: string | undefined = payload.destinationCity;
         const mobilityRestrictions: string[] | undefined = payload.mobilityRestrictions;
 
@@ -508,8 +509,16 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 experienceKeywords: expKws,
             };
 
-            const greedyPlan = generateGreedyPlan(days, candidates as any, solverCtx);
-            optimizedPlan = optimizeWith2Opt(greedyPlan, solverCtx, candidates as any);
+            if (planningAlgorithm === 'i3ch') {
+                optimizedPlan = generateI3CHPlan(days, candidates as any, solverCtx, {
+                    maxIterations: 15,
+                    perturbMoves: 3,
+                    timeBudgetMs: 4000,
+                });
+            } else {
+                const greedyPlan = generateGreedyPlan(days, candidates as any, solverCtx);
+                optimizedPlan = optimizeWith2Opt(greedyPlan, solverCtx, candidates as any);
+            }
         }
 
         // Atomic: Trip + Slots phải insert cùng nhau, tránh orphan trip nếu slot insert fail.

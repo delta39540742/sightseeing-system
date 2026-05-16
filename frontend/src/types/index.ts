@@ -71,6 +71,7 @@ export interface PlanRequest {
   numPeople?: number
   additionalNotes?: string
   strictMode?: boolean
+  planningAlgorithm?: 'greedy_2opt' | 'i3ch'
 }
 
 export interface PlaceOrderItem {

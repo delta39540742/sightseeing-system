@@ -31,6 +31,7 @@ const generateBodySchema = {
     strictMode:           { type: 'boolean' },
     mobilityRestrictions: { type: 'array', items: { type: 'string' }, maxItems: 10 },
     additionalNotes:      { type: 'string', maxLength: 1000 },
+    planningAlgorithm:    { type: 'string', enum: ['greedy_2opt', 'i3ch'], default: 'greedy_2opt' },
   },
   additionalProperties: false,
 } as const;
