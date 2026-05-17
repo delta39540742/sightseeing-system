@@ -1,0 +1,85 @@
+services:
+  # ── Backend (Fastify API) ──────────────────────────────────────────────────
+  - type: web
+    name: tdtt-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      # Set "true" để bật semantic embedding (cần ~512MB RAM, tắt mặc định trên free tier)
+      - key: EMBEDDING_ENABLED
+        value: false
+      # Supabase direct connection (sslmode=require)
+      - key: DATABASE_URL
+        sync: false
+      # Render URL của tdtt-preference-service bên dưới
+      - key: PREFERENCE_SERVICE_URL
+        sync: false
+      # Ngrok/Colab tunnel cho NLU
+      - key: COLAB_NLU_URL
+        sync: false
+      # Firebase Admin SDK
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY_ID
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_CLIENT_ID
+        sync: false
+
+  # ── Preference Service (UCB1 Bandit) ──────────────────────────────────────
+  - type: web
+    name: tdtt-preference-service
+    env: node
+    plan: free
+    rootDir: preference-service
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      # Cùng Supabase DATABASE_URL với backend
+      - key: DATABASE_URL
+        sync: false
+
+  # ── Frontend (React Static Site) ──────────────────────────────────────────
+  - type: web
+    name: tdtt-frontend
+    env: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      # URL đầy đủ tới backend, kết thúc bằng /api
+      # Ví dụ: https://tdtt-backend.onrender.com/api
+      - key: VITE_API_BASE_URL
+        sync: false
+      # URL đầy đủ tới preference-service, kết thúc bằng /api
+      # Ví dụ: https://tdtt-preference-service.onrender.com/api
+      - key: VITE_PREF_API_BASE_URL
+        sync: false
+      # Firebase Web Client
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_PROJECT_ID
+        sync: false
+      - key: VITE_FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
