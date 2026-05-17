@@ -4,8 +4,8 @@ import { useAuthStore } from '@/store/authStore'
 
 type RetryConfig = InternalAxiosRequestConfig & { _retried?: boolean }
 
-export const api = axios.create({ baseURL: '/api' })
-export const prefApi = axios.create({ baseURL: '/pref/api' })
+export const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api' })
+export const prefApi = axios.create({ baseURL: import.meta.env.VITE_PREF_API_BASE_URL ?? '/pref/api' })
 
 export const authApi = {
   deleteAccount: () => api.delete('/auth/account').then((r) => r.data),

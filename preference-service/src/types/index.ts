@@ -94,6 +94,6 @@ export interface LandmarkRecognizedEvent {
 
 // ─── Request với user đã auth ─────────────────────────────────────────────────
 
-export interface AuthenticatedRequest extends Request {
+export interface AuthenticatedRequest {
   userId: string;  // UUID từ token, inject bởi middleware
 }
