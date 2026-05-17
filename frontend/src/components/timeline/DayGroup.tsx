@@ -13,11 +13,12 @@ interface DayGroupProps {
   slots: TripSlot[]
   focusedSlotId: string | null
   onFocus: (id: string) => void
-  onAddSlot?: (dayIndex: number) => void   // callback khi nhấn "+ Thêm slot"
+  onAddSlot?: (dayIndex: number) => void
+  onLockToggle?: (slot: TripSlot) => void
   dayColors: string[]
 }
 
-export function DayGroup({ dayIndex, date, slots, focusedSlotId, onFocus, onAddSlot, dayColors }: DayGroupProps) {
+export function DayGroup({ dayIndex, date, slots, focusedSlotId, onFocus, onAddSlot, onLockToggle, dayColors }: DayGroupProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayIndex}` })
 
@@ -117,6 +118,7 @@ export function DayGroup({ dayIndex, date, slots, focusedSlotId, onFocus, onAddS
                   index={i}
                   isActive={slot.slotId === focusedSlotId}
                   onFocus={onFocus}
+                  onLockToggle={onLockToggle ? () => onLockToggle(slot) : undefined}
                 />
               ))}
               {/* Inline add button after list */}

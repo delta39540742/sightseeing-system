@@ -79,7 +79,7 @@ interface ProposalContentProps {
   onAccepted: () => void;
   onRejected: () => void;
   refetch: () => void;
-  accept: { mutate: (id: string) => void; mutateAsync: (id: string) => Promise<void>; isPending: boolean; error: Error | null };
+  accept: { mutate: (args: { proposalId: string; partialNewSlotIds?: string[] }) => void; mutateAsync: (args: { proposalId: string; partialNewSlotIds?: string[] }) => Promise<void>; isPending: boolean; error: Error | null };
   reject: {
     mutate: (args: { proposalId: string; reason?: string }) => void;
     isPending: boolean;
@@ -104,7 +104,7 @@ function ProposalContent({
 
   async function handleAccept() {
     try {
-      await accept.mutateAsync(proposal.proposalId);
+      await accept.mutateAsync({ proposalId: proposal.proposalId });
       onAccepted();
     } catch {
       // lỗi hiển thị qua accept.error bên dưới

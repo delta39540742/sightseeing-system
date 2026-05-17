@@ -21,9 +21,11 @@ const DAY_COLORS = [
 interface TimelineProps {
   /** Callback triggered when user clicks "+ Thêm slot" for a specific day */
   onAddSlot?: (dayIndex: number) => void
+  /** Callback triggered when user clicks lock/unlock on a slot */
+  onLockToggle?: (slot: TripSlot) => void
 }
 
-export function Timeline({ onAddSlot }: TimelineProps) {
+export function Timeline({ onAddSlot, onLockToggle }: TimelineProps) {
   const {
     trip, pendingSlots, hasPending, focusedSlotId,
     movePendingSlot, movePendingToDay, commitPending, discardPending,
@@ -188,6 +190,7 @@ export function Timeline({ onAddSlot }: TimelineProps) {
               focusedSlotId={focusedSlotId}
               onFocus={setFocus}
               onAddSlot={onAddSlot}
+              onLockToggle={onLockToggle}
               dayColors={DAY_COLORS}
             />
           ))}

@@ -315,6 +315,7 @@ model trip_slot {
   activity_type       String
   rationale           String?
   status              String                @default("planned")
+  is_locked           Boolean               @default(false)
   place               place                 @relation(fields: [place_id], references: [place_id], onDelete: NoAction, onUpdate: NoAction)
   trip                trip                  @relation(fields: [trip_id], references: [trip_id], onDelete: Cascade, onUpdate: NoAction)
   trip_state_snapshot trip_state_snapshot[]

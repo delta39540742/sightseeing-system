@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle, Info, Timer } from 'lucide-react'
+import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle, Info, Timer, Lock } from 'lucide-react'
 import type { TripSlot } from '@/types'
 import { ConflictBanner } from './ConflictBanner'
 import { format, differenceInMinutes, parseISO } from 'date-fns'
@@ -12,6 +12,7 @@ interface SlotCardProps {
   isActive?: boolean
   onFocus: (id: string) => void
   onClickInfo?: () => void
+  onLockToggle?: () => void
 }
 
 const activityColors: Record<TripSlot['activityType'], string> = {
@@ -49,7 +50,7 @@ function formatDuration(start: string, end: string): string {
   }
 }
 
-export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCardProps) {
+export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockToggle }: SlotCardProps) {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [hovered, setHovered] = useState(false)
   const {
@@ -59,7 +60,7 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCa
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: slot.slotId })
+  } = useSortable({ id: slot.slotId, disabled: slot.isLocked })
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -84,31 +85,39 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCa
           'flex gap-3 px-4 py-3 transition-all cursor-pointer border-l-4',
           isActive
             ? 'bg-blue-50 border-l-blue-500'
-            : slot.conflict
-              ? 'border-l-red-400 hover:bg-red-50/40'
-              : 'border-l-transparent hover:bg-gray-50',
+            : slot.isLocked
+              ? 'border-l-amber-400 hover:bg-amber-50/30'
+              : slot.conflict
+                ? 'border-l-red-400 hover:bg-red-50/40'
+                : 'border-l-transparent hover:bg-gray-50',
           isSkipped  ? 'opacity-50' : '',
           slot.pending ? 'opacity-60' : '',
         ].join(' ')}
       >
-        {/* Drag handle */}
-        <button
-          {...attributes}
-          {...listeners}
-          aria-label="Kéo để sắp xếp"
-          className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 touch-none shrink-0 mt-1"
-          onTouchStart={() => {
-            longPressRef.current = setTimeout(() => {
-              document.body.style.overflow = 'hidden'
-            }, 300)
-          }}
-          onTouchEnd={() => {
-            if (longPressRef.current) clearTimeout(longPressRef.current)
-            document.body.style.overflow = ''
-          }}
-        >
-          <GripVertical className="w-4 h-4" />
-        </button>
+        {/* Drag handle — hidden for locked slots */}
+        {slot.isLocked ? (
+          <span className="text-amber-400 shrink-0 mt-1" title="Giờ cố định, không thể di chuyển">
+            <Lock className="w-4 h-4" />
+          </span>
+        ) : (
+          <button
+            {...attributes}
+            {...listeners}
+            aria-label="Kéo để sắp xếp"
+            className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 touch-none shrink-0 mt-1"
+            onTouchStart={() => {
+              longPressRef.current = setTimeout(() => {
+                document.body.style.overflow = 'hidden'
+              }, 300)
+            }}
+            onTouchEnd={() => {
+              if (longPressRef.current) clearTimeout(longPressRef.current)
+              document.body.style.overflow = ''
+            }}
+          >
+            <GripVertical className="w-4 h-4" />
+          </button>
+        )}
 
         {/* Order badge */}
         <div className="flex items-center justify-center w-7 h-7 rounded-full bg-blue-500 text-white text-xs font-bold shrink-0 mt-0.5">
@@ -128,6 +137,16 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCa
                 className="shrink-0 text-gray-400 hover:text-blue-500 transition-colors"
               >
                 <Info className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {onLockToggle && hovered && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onLockToggle() }}
+                aria-label={slot.isLocked ? 'Bỏ cố định giờ' : 'Cố định giờ'}
+                title={slot.isLocked ? 'Bỏ cố định giờ' : 'Cố định giờ'}
+                className={`shrink-0 transition-colors ${slot.isLocked ? 'text-amber-500 hover:text-gray-400' : 'text-gray-400 hover:text-amber-500'}`}
+              >
+                <Lock className="w-3.5 h-3.5" />
               </button>
             )}
             {slot.conflict && (
@@ -160,6 +179,13 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo }: SlotCa
 
           {/* Badge row */}
           <div className="flex flex-wrap items-center gap-1.5 mt-2">
+            {/* Locked badge */}
+            {slot.isLocked && (
+              <span className="flex items-center gap-0.5 text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700 border border-amber-200">
+                <Lock className="w-2.5 h-2.5" />
+                Cố định giờ
+              </span>
+            )}
             {/* Status badge */}
             <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold tracking-wide ${status.className}`}>
               {status.label}

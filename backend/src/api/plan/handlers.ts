@@ -354,6 +354,8 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
         const strictMode: boolean = payload.strictMode === true;
         const planningAlgorithm: 'greedy_2opt' | 'i3ch' = payload.planningAlgorithm ?? 'greedy_2opt';
+        const rawLockedSlots: Array<{ placeId: number; dayIndex: number; fixedStart: string; durationMin?: number }> =
+            Array.isArray(payload.lockedSlots) ? payload.lockedSlots : [];
         const destinationCity: string | undefined = payload.destinationCity;
         const mobilityRestrictions: string[] | undefined = payload.mobilityRestrictions;
 
@@ -521,6 +523,45 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             }
         }
 
+        // Merge locked slots: pre-built from payload, inserted at correct position by time order.
+        if (rawLockedSlots.length > 0) {
+            const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
+            const lockedBuilt = rawLockedSlots.map((ls, i) => {
+                const place = placeMap.get(ls.placeId);
+                const duration = ls.durationMin ?? (place as any)?.avgVisitDurationMin ?? 60;
+                const fixedStart = new Date(ls.fixedStart);
+                const fixedEnd = new Date(fixedStart.getTime() + duration * 60_000);
+                return {
+                    slotId:        `locked_${ls.dayIndex}_${i}`,
+                    tripId:        'temp_trip',
+                    dayIndex:      ls.dayIndex,
+                    slotOrder:     999,
+                    version:       1,
+                    placeId:       ls.placeId,
+                    plannedStart:  fixedStart.toISOString(),
+                    plannedEnd:    fixedEnd.toISOString(),
+                    estimatedCost: (place as any)?.minPrice ?? 0,
+                    activityType:  'transport' as const,
+                    rationale:     'Cố định giờ bởi người dùng',
+                    status:        'planned' as const,
+                    isLocked:      true,
+                };
+            });
+
+            // Merge: combine + sort by (dayIndex, plannedStart), then re-assign slotOrder per day
+            const combined = [...optimizedPlan, ...lockedBuilt].sort((a: any, b: any) => {
+                if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+                return new Date(a.plannedStart).getTime() - new Date(b.plannedStart).getTime();
+            });
+            const dayCounters = new Map<number, number>();
+            for (const slot of combined as any[]) {
+                const cur = dayCounters.get(slot.dayIndex) ?? 0;
+                slot.slotOrder = cur;
+                dayCounters.set(slot.dayIndex, cur + 1);
+            }
+            optimizedPlan = combined;
+        }
+
         // Atomic: Trip + Slots phải insert cùng nhau, tránh orphan trip nếu slot insert fail.
         const { newTrip, persistedSlots } = await prisma.$transaction(async (tx) => {
             const newTrip = await tx.trip.create({
@@ -548,6 +589,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                         activity_type:  slot.activityType || 'sightseeing',
                         status:         'planned',
                         rationale:      slot.rationale || null,
+                        is_locked:      slot.isLocked === true,
                     })),
                 });
             }
@@ -597,6 +639,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 activityType:  s.activity_type,
                 rationale:     s.rationale,
                 status:        s.status,
+                isLocked:      s.is_locked,
             })),
         });
     } catch (error: any) {

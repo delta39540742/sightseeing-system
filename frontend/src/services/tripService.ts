@@ -67,6 +67,12 @@ export const tripService = {
   completeSlot: (tripId: string, slotId: string) =>
     api.patch(`/trips/${tripId}/slots/${slotId}`, { status: 'completed' }).then((r) => r.data),
 
+  lockSlot: (tripId: string, slotId: string, plannedStart: string, plannedEnd?: string) =>
+    api.patch(`/trips/${tripId}/slots/${slotId}`, { isLocked: true, plannedStart, ...(plannedEnd ? { plannedEnd } : {}) }).then((r) => r.data),
+
+  unlockSlot: (tripId: string, slotId: string) =>
+    api.patch(`/trips/${tripId}/slots/${slotId}`, { isLocked: false }).then((r) => r.data),
+
   generate: (req: PlanRequest) =>
     api.post<Trip>('/plan/generate', toIsoDateTimeRange(req)).then((r) => r.data),
 
@@ -102,11 +108,13 @@ export const tripService = {
     replanScope: ReplanScope,
     triggeredByEventId?: string,
     currentLocation?: { lat: number; lng: number },
+    preferredPlaceId?: number,
   ) =>
     api.post(`/trips/${tripId}/replan`, {
       replanScope,
       ...(triggeredByEventId ? { triggeredByEventId } : {}),
       ...(currentLocation ? { currentLocation } : {}),
+      ...(preferredPlaceId != null ? { preferredPlaceId } : {}),
     }).then((r) => r.data),
 
   getPendingReplan: (tripId: string) =>

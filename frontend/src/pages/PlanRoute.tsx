@@ -662,7 +662,7 @@ export default function PlanRoute() {
                   className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-8 py-2 text-sm text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 appearance-none cursor-pointer"
                   value={routePlaces[0]?.place.placeId || ''}
                   onChange={(e) => {
-                    const idx = routePlaces.findIndex((rp) => rp.place.placeId === e.target.value)
+                    const idx = routePlaces.findIndex((rp) => rp.place.placeId === Number(e.target.value))
                     if (idx > 0) setAsStart(idx)
                   }}
                 >

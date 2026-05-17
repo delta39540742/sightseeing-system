@@ -120,6 +120,7 @@ export class MutationOperators {
 
     for (let i = 0; i < plan.length; i++) {
       const anchor = plan[i]!;
+      if (anchor.isLocked) continue;
 
       for (const shiftMin of TIME_SHIFT_DELTAS_MIN) {
         const mutated = plan.map((slot, idx) =>
@@ -238,6 +239,7 @@ export class MutationOperators {
       const a = sortedPlan[i]!;
       const b = sortedPlan[i + 1]!;
 
+      if (a.isLocked || b.isLocked) continue;
       if (a.dayIndex !== b.dayIndex) continue;
 
       const mutated = sortedPlan.map((slot) => ({ ...slot }));
@@ -308,6 +310,8 @@ export class MutationOperators {
 
     for (let i = 0; i < plan.length; i++) {
       const currentSlot = plan[i]!;
+
+      if (currentSlot.isLocked) continue;
 
       // Ràng buộc trạng thái
       if (currentSlot.status !== 'planned' && currentSlot.status !== 'replaced') {
@@ -412,6 +416,7 @@ export class MutationOperators {
     for (let i = 0; i < plan.length; i++) {
       const slot = plan[i]!;
 
+      if (slot.isLocked) continue;
       // không cho phép xoá bữa ăn và các slot đã diễn ra, đã bị skip
       if (slot.activityType === 'meal') continue;
       if (slot.status === 'completed' || slot.status === 'skipped') continue;
@@ -631,6 +636,13 @@ export class MutationOperators {
     let startLng = ctx.initialState.currentLng ?? 0;
 
     for (const [dayIdx, daySlots] of [...dayGroups.entries()].sort(([a], [b]) => a - b)) {
+      // Skip reorder if any slot in the day is locked (locked slots must stay at their fixed time)
+      if (daySlots.some(s => s.isLocked)) {
+        newByDay.set(dayIdx, daySlots.map((s, i) => ({ ...s, slotOrder: i })));
+        const lp = daySlots[daySlots.length - 1] ? placeMap.get(daySlots[daySlots.length - 1]!.placeId) : null;
+        if (lp) { startLat = lp.lat; startLng = lp.lng; }
+        continue;
+      }
       if (daySlots.length < 2) {
         newByDay.set(dayIdx, daySlots.map((s, i) => ({ ...s, slotOrder: i })));
         const lp = daySlots[0] ? placeMap.get(daySlots[0].placeId) : null;
@@ -1369,6 +1381,18 @@ export class MutationOperators {
 
     for (let i = fromIndex; i < repaired.length; i++) {
       const slot = repaired[i]!;
+
+      // Locked slots are immovable anchors: cursor must not overflow into their window.
+      if (slot.isLocked) {
+        const lockedStartMs = new Date(slot.plannedStart).getTime();
+        if (cursorMs > lockedStartMs) return null;  // infeasible: preceding slots overflow
+        cursorMs = new Date(slot.plannedEnd).getTime();
+        currentDayIndex = slot.dayIndex;
+        repaired[i] = { ...slot };
+        dayOrderCounters.set(slot.dayIndex, (dayOrderCounters.get(slot.dayIndex) ?? 0) + 1);
+        continue;
+      }
+
       const place = placeMap.get(slot.placeId);
       if (!place) return null;
 

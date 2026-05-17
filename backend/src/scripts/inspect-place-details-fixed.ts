@@ -18,7 +18,7 @@ async function main() {
   });
 
   if (place) {
-    console.log('ID:', place.id);
+    console.log('ID:', place.place_id);
     console.log('Name:', place.name);
     console.log('Description:', place.description);
     console.log('Address:', place.address);

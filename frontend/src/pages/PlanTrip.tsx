@@ -13,7 +13,8 @@ import type { ParsedNLPResult, PlanRequest, PlaceOrderItem } from '@/types'
 import { useTripStore } from '@/store/tripStore'
 import { useAuthStore } from '@/store/authStore'
 import { FilterBar } from '@/components/planning/FilterBar'
-import type { FilterCategory } from '@/types'
+import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
+import type { FilterCategory, Place } from '@/types'
 import { differenceInDays, parseISO } from 'date-fns'
 
 type MobileTab = 'form' | 'map'
@@ -49,6 +50,15 @@ export default function PlanTrip() {
   const toggleAnchor = (id: number) =>
     setAnchorIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
 
+  // Places added manually via PlaceSearchBar (not in the AI-recommended candidates list)
+  const [extraCandidates, setExtraCandidates] = useState<Place[]>([])
+
+  const handleSearchBarSelect = (place: Place) => {
+    setExtraCandidates((prev) => prev.some((p) => p.placeId === place.placeId) ? prev : [...prev, place])
+    setAnchorIds((prev) => prev.includes(place.placeId) ? prev : [...prev, place.placeId])
+    toast.success(`Đã thêm "${place.name}" vào danh sách`)
+  }
+
   const [planningAlgorithm, setPlanningAlgorithm] = useState<'greedy_2opt' | 'i3ch'>('greedy_2opt')
 
   const candidatesReq: PlanRequest | null = parsed
@@ -82,8 +92,11 @@ export default function PlanTrip() {
     }),
   })
 
+  // All candidates = AI-recommended + manually added via PlaceSearchBar
+  const allCandidates = [...(candidates ?? []), ...extraCandidates.filter((e) => !candidates?.some((c) => c.placeId === e.placeId))]
+
   // Filtered candidates
-  const filteredCandidates = candidates?.filter((c) => {
+  const filteredCandidates = allCandidates.filter((c) => {
     if (filterActive !== 'all') {
       const isSightseeing = c.tags.some(t => t.name === 'sightseeing') || !c.priceType;
       const isMeal = c.tags.some(t => t.name === 'food' || t.name === 'restaurant') || c.priceType;
@@ -98,8 +111,8 @@ export default function PlanTrip() {
   })
 
   // Prepare map preview slots
-  const previewSlots = candidates
-    ?.filter((c) => anchorIds.includes(c.placeId))
+  const previewSlots = allCandidates
+    .filter((c) => anchorIds.includes(c.placeId))
     .map((c, i) => ({
       slotId: `preview-${c.placeId}`,
       tripId: '',
@@ -237,6 +250,12 @@ export default function PlanTrip() {
                     </button>
                   </div>
 
+                  <PlaceSearchBar
+                    onPlaceSelect={handleSearchBarSelect}
+                    label="Tìm thêm địa điểm cụ thể"
+                    placeholder="Tên địa điểm hoặc dán link Google Maps..."
+                  />
+
                   <div className="border-b border-gray-100 pb-3">
                     <FilterBar
                       active={filterActive}
@@ -324,7 +343,7 @@ export default function PlanTrip() {
                       )}
                     </div>
                     <PlaceOrderStep
-                      candidates={candidates}
+                      candidates={allCandidates}
                       selectedIds={anchorIds}
                       tripDays={
                         differenceInDays(

@@ -83,7 +83,7 @@ export function ToastContainer() {
     <div
       aria-live="polite"
       aria-atomic="false"
-      className="fixed bottom-4 md:bottom-4 right-4 z-[60] flex flex-col gap-2 w-full max-w-sm pointer-events-none mb-20 md:mb-0"
+      className="fixed bottom-24 md:bottom-4 right-4 z-[60] flex flex-col gap-2 w-full max-w-sm pointer-events-none"
     >
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} dismiss={dismiss} />

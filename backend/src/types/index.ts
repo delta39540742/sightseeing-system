@@ -15,6 +15,7 @@ export interface TripSlot {
   activityType: 'sightseeing' | 'meal' | 'rest' | 'transport' | 'activity';
   rationale: string | null;
   status: 'planned' | 'completed' | 'skipped' | 'replaced';
+  isLocked?: boolean;
 }
 
 export interface Trip {

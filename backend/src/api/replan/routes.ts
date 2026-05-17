@@ -57,6 +57,7 @@ const replanBodySchema = {
       },
       additionalProperties: false,
     },
+    preferredPlaceId: { type: 'number', minimum: 1 },
   },
   additionalProperties: false,
 } as const;

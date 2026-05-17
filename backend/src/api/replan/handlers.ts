@@ -50,6 +50,8 @@ export interface ReplanBody {
    *  overrides the simulated/default position in initialState so travel-time
    *  calculations start from where the user actually is. */
   currentLocation?: { lat: number; lng: number };
+  /** Optional: force the replanner to include this place in the new plan (forceIncludePlaceId). */
+  preferredPlaceId?: number;
 }
 export interface RejectBody {
   reason?: string;
@@ -898,7 +900,7 @@ export function makeReplanHandler(deps: ReplanDeps) {
      * sang ngày sớm hơn ngày gốc, hoặc cần một cơ chế ràng buộc mềm hơn.
      */
     const { tripId } = request.params;
-    const { triggeredByEventId, replanScope, currentLocation } = request.body;
+    const { triggeredByEventId, replanScope, currentLocation, preferredPlaceId } = request.body;
     const userId = request.headers['x-user-id'] as string;
 
     console.log(`\n[REPLAN] ── START ──────────────────────────────────`);
@@ -1005,6 +1007,12 @@ export function makeReplanHandler(deps: ReplanDeps) {
           capturedAt: new Date().toISOString(),
         },
       };
+
+      // ── 4.0. Preferred place override (user-specified via PlaceSearchBar) ──
+      if (preferredPlaceId != null) {
+        ctx = { ...ctx, forceIncludePlaceId: preferredPlaceId };
+        console.log(`[REPLAN] STEP 4.0: preferredPlaceId=${preferredPlaceId} → forceIncludePlaceId set`);
+      }
 
       // ── 4.1. Override position from GPS if provided ───────────────────────
       if (currentLocation?.lat != null && currentLocation?.lng != null) {

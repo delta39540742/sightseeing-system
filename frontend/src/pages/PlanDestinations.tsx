@@ -9,6 +9,7 @@ import {
 import { TripMap } from '@/components/map/TripMap'
 import { NluSlotEditor } from '@/components/planning/NluSlotEditor'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
+import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
 import { tripService } from '@/services/tripService'
 import { nluService } from '@/services/nluService'
 import { parseNLP } from '@/utils/nlpParser'
@@ -158,6 +159,8 @@ export default function PlanDestinations() {
           mobilityRestrictions: [],
           dietaryPreferences: [],
           pace: null,
+          vibe: [],
+          amenities: [],
         },
         missingSlots: [],
         confidence: 0.5,
@@ -303,6 +306,12 @@ export default function PlanDestinations() {
           {/* Scrollable content */}
           <div className="flex-1 overflow-y-auto">
             <div className="p-4 space-y-4">
+              {/* Place search bar — tìm theo tên hoặc link Google Maps */}
+              <PlaceSearchBar
+                onPlaceSelect={(place) => addPlace(place)}
+                placeholder="Tên địa điểm hoặc dán link Google Maps..."
+              />
+
               {/* Selected destinations dark card */}
               {selectedPlaces.length > 0 && (
                 <div className="bg-slate-900 rounded-xl p-4">

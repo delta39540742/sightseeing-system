@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity } from 'lucide-react'
+import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity, Lock, LockOpen } from 'lucide-react'
+import type { TripSlot, Place } from '@/types'
 import { tripService } from '@/services/tripService'
-import { placeService } from '@/services/placeService'
 import { monitorService } from '@/services/monitorService'
 import type { MonitorAlert } from '@/services/monitorService'
 import { useTripStore } from '@/store/tripStore'
@@ -14,6 +14,7 @@ import { Modal } from '@/components/ui/Modal'
 import { BottomSheet } from '@/components/ui/BottomSheet'
 import { LandmarkRecognizer } from '@/components/landmark/LandmarkRecognizer'
 import { ReplanModal } from '@/components/replan/ReplanModal'
+import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
 import { ConflictBanner } from '@/components/timeline/ConflictBanner'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from '@/store/toastStore'
@@ -39,8 +40,11 @@ export default function TripDetail() {
   const [isReplanning, setIsReplanning] = useState(false)
   const [addPlaceSheet, setAddPlaceSheet] = useState(false)
   const [addSlotDay, setAddSlotDay] = useState<number | undefined>(undefined)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [preferredPlace, setPreferredPlace] = useState<Place | null>(null)
   const [dismissedIncidentId, setDismissedIncidentId] = useState<string | null>(null)
+  const [lockSheet, setLockSheet] = useState(false)
+  const [lockingSlot, setLockingSlot] = useState<TripSlot | null>(null)
+  const [lockTime, setLockTime] = useState('')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
@@ -48,14 +52,7 @@ export default function TripDetail() {
     enabled: !!tripId,
   })
 
-  const { data: placesData } = useQuery({
-    queryKey: ['places-search'],
-    queryFn: () => placeService.list({ page: 1, limit: 50 }),
-    enabled: addPlaceSheet,
-    staleTime: 60_000,
-  })
-
-  const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
+const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     queryKey: ['check-incident', tripId],
     queryFn: () => monitorService.checkIncident(tripId),
     refetchInterval: 30_000,
@@ -77,6 +74,52 @@ export default function TripDetail() {
   const handleOpenAddSlot = (dayIndex?: number) => {
     setAddSlotDay(dayIndex)
     setAddPlaceSheet(true)
+  }
+
+  const { mutate: doLockSlot, isPending: isLocking } = useMutation({
+    mutationFn: ({ slotId, plannedStart }: { slotId: string; plannedStart: string }) =>
+      tripService.lockSlot(tripId!, slotId, plannedStart),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+      toast.success('Đã cố định giờ cho slot')
+      setLockSheet(false)
+      setLockingSlot(null)
+    },
+    onError: () => toast.error('Không thể cố định giờ, thử lại sau'),
+  })
+
+  const { mutate: doUnlockSlot, isPending: isUnlocking } = useMutation({
+    mutationFn: (slotId: string) => tripService.unlockSlot(tripId!, slotId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+      toast.success('Đã bỏ cố định giờ')
+      setLockSheet(false)
+      setLockingSlot(null)
+    },
+    onError: () => toast.error('Không thể bỏ cố định giờ, thử lại sau'),
+  })
+
+  const handleLockToggle = (slot: TripSlot) => {
+    setLockingSlot(slot)
+    if (!slot.isLocked) {
+      // Pre-fill time picker with current plannedStart (local HH:mm)
+      try {
+        const d = new Date(slot.plannedStart)
+        const hh = String(d.getHours()).padStart(2, '0')
+        const mm = String(d.getMinutes()).padStart(2, '0')
+        setLockTime(`${hh}:${mm}`)
+      } catch { setLockTime('08:00') }
+    }
+    setLockSheet(true)
+  }
+
+  const handleConfirmLock = () => {
+    if (!lockingSlot || !lockTime) return
+    // Build ISO datetime: take date part from plannedStart, combine with lockTime
+    const baseDate = new Date(lockingSlot.plannedStart)
+    const [hh, mm] = lockTime.split(':').map(Number)
+    baseDate.setHours(hh, mm, 0, 0)
+    doLockSlot({ slotId: lockingSlot.slotId, plannedStart: baseDate.toISOString() })
   }
 
   useEffect(() => {
@@ -158,9 +201,11 @@ export default function TripDetail() {
     if (!tripId) return
     setReplanScopeSheet(false)
     setIsReplanning(true)
+    const placeIdToForce = preferredPlace?.placeId
+    setPreferredPlace(null)
     try {
       const triggeredByEventId = incidentData && 'eventId' in incidentData ? incidentData.eventId : undefined
-      await tripService.replan(tripId, scope, triggeredByEventId)
+      await tripService.replan(tripId, scope, triggeredByEventId, undefined, placeIdToForce)
       setReplanModal(true)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
@@ -290,7 +335,7 @@ export default function TripDetail() {
                 );
               })()
             )}
-            <Timeline onAddSlot={handleOpenAddSlot} />
+            <Timeline onAddSlot={handleOpenAddSlot} onLockToggle={handleLockToggle} />
 
             {/* Bottom action bar */}
             <div className="border-t border-gray-100 p-3 shrink-0 space-y-2">
@@ -382,9 +427,24 @@ export default function TripDetail() {
       </BottomSheet>
 
       {/* Replan Scope Selector BottomSheet */}
-      <BottomSheet open={replanScopeSheet} onClose={() => setReplanScopeSheet(false)}>
+      <BottomSheet open={replanScopeSheet} onClose={() => { setReplanScopeSheet(false); setPreferredPlace(null) }}>
         <div className="p-4 space-y-3">
           <h2 className="font-semibold text-gray-900">Điều chỉnh lộ trình</h2>
+
+          <div className="pb-1">
+            <PlaceSearchBar
+              label="Địa điểm muốn thêm vào (tùy chọn)"
+              placeholder="Tìm tên hoặc dán link Google Maps..."
+              onPlaceSelect={(p) => setPreferredPlace(p)}
+            />
+            {preferredPlace && (
+              <div className="mt-2 flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                <span className="text-blue-700 font-medium truncate flex-1">{preferredPlace.name}</span>
+                <button onClick={() => setPreferredPlace(null)} className="text-blue-400 hover:text-blue-600 shrink-0">✕</button>
+              </div>
+            )}
+          </div>
+
           <p className="text-sm text-gray-500">Chọn phạm vi điều chỉnh:</p>
           <button
             onClick={() => void handleReplan('remaining_day')}
@@ -434,30 +494,65 @@ export default function TripDetail() {
         title={addSlotDay !== undefined ? `Thêm địa điểm — Ngày ${addSlotDay + 1}` : 'Thêm địa điểm'}
       >
         <div className="px-4 pb-6 space-y-3">
-          <input
-            type="text"
-            placeholder="Tìm địa điểm..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            autoFocus
+          <PlaceSearchBar
+            placeholder="Tên địa điểm hoặc dán link Google Maps..."
+            onPlaceSelect={(place) => {
+              addSlot({ placeId: place.placeId, dayIndex: addSlotDay })
+            }}
           />
-          <div className="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto">
-            {placesData?.places
-              .filter((p) => !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()))
-              .map((place) => (
-                <button
-                  key={place.placeId}
-                  onClick={() => addSlot({ placeId: place.placeId, dayIndex: addSlotDay })}
-                  disabled={isAddingSlot}
-                  className="text-left p-3 border border-gray-200 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all disabled:opacity-50"
-                >
-                  <div className="h-14 rounded-lg bg-gradient-to-br from-blue-400 to-indigo-500 mb-2" />
-                  <p className="text-xs font-semibold text-gray-800 truncate">{place.name}</p>
-                  <p className="text-xs text-gray-400">{place.avgVisitDurationMin} phút</p>
-                </button>
-              ))}
-          </div>
+          {isAddingSlot && (
+            <p className="text-xs text-center text-gray-400">Đang thêm địa điểm…</p>
+          )}
+        </div>
+      </BottomSheet>
+
+      {/* Lock / Unlock slot BottomSheet */}
+      <BottomSheet open={lockSheet} onClose={() => { setLockSheet(false); setLockingSlot(null) }}>
+        <div className="p-4 space-y-4">
+          {lockingSlot?.isLocked ? (
+            <>
+              <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                <LockOpen className="w-4 h-4 text-amber-500" />
+                Bỏ cố định giờ
+              </h2>
+              <p className="text-sm text-gray-500">
+                Slot <span className="font-medium text-gray-800">{lockingSlot.place?.name ?? `#${lockingSlot.placeId}`}</span> sẽ được phép điều chỉnh thời gian bởi hệ thống.
+              </p>
+              <button
+                onClick={() => doUnlockSlot(lockingSlot.slotId)}
+                disabled={isUnlocking}
+                className="btn-secondary w-full py-2.5 text-sm"
+              >
+                {isUnlocking ? 'Đang xử lý…' : 'Bỏ cố định giờ'}
+              </button>
+            </>
+          ) : (
+            <>
+              <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-500" />
+                Cố định giờ
+              </h2>
+              <p className="text-sm text-gray-500">
+                Chọn giờ cố định cho <span className="font-medium text-gray-800">{lockingSlot?.place?.name ?? `slot #${lockingSlot?.placeId}`}</span>. Hệ thống sẽ không dịch chuyển slot này khi điều chỉnh lộ trình.
+              </p>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-600">Giờ bắt đầu cố định</label>
+                <input
+                  type="time"
+                  value={lockTime}
+                  onChange={(e) => setLockTime(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+              </div>
+              <button
+                onClick={handleConfirmLock}
+                disabled={isLocking || !lockTime}
+                className="w-full py-2.5 text-sm font-semibold rounded-xl bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {isLocking ? 'Đang lưu…' : 'Cố định giờ này'}
+              </button>
+            </>
+          )}
         </div>
       </BottomSheet>
     </div>

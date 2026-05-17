@@ -46,6 +46,7 @@ function serializeSlot(s: any) {
     estimatedCost: s.estimated_cost,
     activityType: s.activity_type,
     status: s.status,
+    isLocked: s.is_locked ?? false,
     rationale: s.rationale ?? null,
   };
 }
@@ -414,8 +415,11 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // PATCH /api/trips/:tripId/slots/:slotId — cập nhật trạng thái slot (VD: completed)
-  fastify.patch<{ Params: { tripId: string; slotId: string }; Body: { status: string } }>(
+  // PATCH /api/trips/:tripId/slots/:slotId — cập nhật trạng thái, lock, hoặc thời gian slot
+  fastify.patch<{
+    Params: { tripId: string; slotId: string };
+    Body: { status?: string; isLocked?: boolean; plannedStart?: string; plannedEnd?: string }
+  }>(
     '/:tripId/slots/:slotId',
     { preHandler: verifyToken },
     async (request, reply) => {
@@ -433,10 +437,16 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
         });
         if (!slot) return reply.status(404).send({ error: 'Slot not found' });
 
-        const { status } = request.body;
+        const { status, isLocked, plannedStart, plannedEnd } = request.body;
+        const updateData: any = {};
+        if (status !== undefined) updateData.status = status;
+        if (isLocked !== undefined) updateData.is_locked = isLocked;
+        if (plannedStart !== undefined) updateData.planned_start = new Date(plannedStart);
+        if (plannedEnd !== undefined) updateData.planned_end = new Date(plannedEnd);
+
         const updated = await prisma.trip_slot.update({
           where: { slot_id: request.params.slotId },
-          data: { status },
+          data: updateData,
           include: {
             place: {
               include: {

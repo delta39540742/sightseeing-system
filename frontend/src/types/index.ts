@@ -29,6 +29,7 @@ export interface TripSlot {
   estimatedCost: number
   activityType: 'sightseeing' | 'meal' | 'rest' | 'transport' | 'activity'
   status: 'planned' | 'completed' | 'skipped' | 'replaced'
+  isLocked?: boolean
   conflict?: ConflictInfo
   pending?: boolean
 }
@@ -72,6 +73,7 @@ export interface PlanRequest {
   additionalNotes?: string
   strictMode?: boolean
   planningAlgorithm?: 'greedy_2opt' | 'i3ch'
+  lockedSlots?: Array<{ placeId: number; dayIndex: number; fixedStart: string; durationMin?: number }>
 }
 
 export interface PlaceOrderItem {
