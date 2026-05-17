@@ -142,7 +142,7 @@ async function start() {
   await fastify.register(demoSimulatePlugin, { prefix: '/api/demo', pool });
   await fastify.register(demoHistoryPlugin, { prefix: '/api/demo', pool });
 
-  fastify.get('/health', async () => ({ status: 'ok', message: 'TDTT Backend is running' }));
+  fastify.get('/health', { logLevel: 'silent' }, async () => ({ status: 'ok', message: 'TDTT Backend is running' }));
 
   // Hook: log lỗi uncaught trong handler
   fastify.setErrorHandler<FastifyError>((error, req, reply) => {
