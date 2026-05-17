@@ -273,7 +273,7 @@ const FIELDS: EditKey[] = [
 ]
 
 export function NluSlotEditor({ response, onConfirm }: Props) {
-  const [slots, setSlots]   = useState<NluSlots>(() => normaliseSlots(response.slots))
+  const [slots, setSlots]   = useState<NluSlots>(() => normaliseSlots(response?.slots))
   const [editing, setEditing] = useState<EditKey | null>(null)
 
   const handleSave = (patch: Partial<NluSlots>) => {

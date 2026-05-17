@@ -70,67 +70,69 @@ const VALID_TAGS   = new Set(TAG_OPTIONS.map((t) => t.value))
  * Validate and normalise NluSlots locally — no AI call needed.
  * Safe to call after every user edit.
  */
-export function normaliseSlots(raw: Partial<NluSlots>): NluSlots {
+export function normaliseSlots(raw: Partial<NluSlots> | null | undefined): NluSlots {
+  const r: Partial<NluSlots> = raw ?? {}
+
   const destinationCity =
-    typeof raw.destinationCity === 'string' && raw.destinationCity.trim()
-      ? raw.destinationCity.trim()
+    typeof r.destinationCity === 'string' && r.destinationCity.trim()
+      ? r.destinationCity.trim()
       : null
 
   const durationDays =
-    typeof raw.durationDays === 'number' && Number.isFinite(raw.durationDays) && raw.durationDays >= 1
-      ? Math.round(raw.durationDays)
+    typeof r.durationDays === 'number' && Number.isFinite(r.durationDays) && r.durationDays >= 1
+      ? Math.round(r.durationDays)
       : null
 
   let startDate: string | null = null
-  if (typeof raw.startDate === 'string' && raw.startDate) {
-    const d = parseISO(raw.startDate)
+  if (typeof r.startDate === 'string' && r.startDate) {
+    const d = parseISO(r.startDate)
     if (isValid(d)) startDate = format(d, 'yyyy-MM-dd')
   }
 
-  const preferredTagNames = Array.isArray(raw.preferredTagNames)
-    ? raw.preferredTagNames
+  const preferredTagNames = Array.isArray(r.preferredTagNames)
+    ? r.preferredTagNames
         .map((t) => (typeof t === 'string' ? (LEGACY_TAG_MAP[t] ?? t) : t))
         .filter((t): t is string => typeof t === 'string' && VALID_TAGS.has(t))
     : []
 
-  const experienceKeywords = Array.isArray(raw.experienceKeywords)
-    ? raw.experienceKeywords.filter(
+  const experienceKeywords = Array.isArray(r.experienceKeywords)
+    ? r.experienceKeywords.filter(
         (x): x is string => typeof x === 'string' && x.trim().length > 0,
       )
     : []
 
   const budgetTotal =
-    typeof raw.budgetTotal === 'number' && Number.isFinite(raw.budgetTotal) && raw.budgetTotal > 0
-      ? raw.budgetTotal
+    typeof r.budgetTotal === 'number' && Number.isFinite(r.budgetTotal) && r.budgetTotal > 0
+      ? r.budgetTotal
       : null
 
   const groupType =
-    typeof raw.groupType === 'string' && VALID_GROUPS.has(raw.groupType)
-      ? (raw.groupType as GroupType)
+    typeof r.groupType === 'string' && VALID_GROUPS.has(r.groupType)
+      ? (r.groupType as GroupType)
       : null
 
-  const mobilityRestrictions = Array.isArray(raw.mobilityRestrictions)
-    ? raw.mobilityRestrictions.filter((x): x is string => typeof x === 'string')
+  const mobilityRestrictions = Array.isArray(r.mobilityRestrictions)
+    ? r.mobilityRestrictions.filter((x): x is string => typeof x === 'string')
     : []
 
-  const dietaryPreferences = Array.isArray(raw.dietaryPreferences)
-    ? raw.dietaryPreferences.filter((x): x is string => typeof x === 'string')
+  const dietaryPreferences = Array.isArray(r.dietaryPreferences)
+    ? r.dietaryPreferences.filter((x): x is string => typeof x === 'string')
     : []
 
   const pace =
-    typeof raw.pace === 'number' && Number.isInteger(raw.pace) && raw.pace >= 1 && raw.pace <= 5
-      ? raw.pace
+    typeof r.pace === 'number' && Number.isInteger(r.pace) && r.pace >= 1 && r.pace <= 5
+      ? r.pace
       : null
 
-  const vibe = Array.isArray(raw.vibe)
-    ? raw.vibe.filter((x): x is string => typeof x === 'string')
+  const vibe = Array.isArray(r.vibe)
+    ? r.vibe.filter((x): x is string => typeof x === 'string')
     : []
 
-  const amenities = Array.isArray(raw.amenities)
-    ? raw.amenities.filter((x): x is string => typeof x === 'string')
+  const amenities = Array.isArray(r.amenities)
+    ? r.amenities.filter((x): x is string => typeof x === 'string')
     : []
 
-  const originalPrompt = typeof raw.originalPrompt === 'string' ? raw.originalPrompt : ''
+  const originalPrompt = typeof r.originalPrompt === 'string' ? r.originalPrompt : ''
 
   return {
     destinationCity, durationDays, startDate,

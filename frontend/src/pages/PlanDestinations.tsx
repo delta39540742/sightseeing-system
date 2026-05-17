@@ -161,6 +161,7 @@ export default function PlanDestinations() {
           pace: null,
           vibe: [],
           amenities: [],
+          originalPrompt: text,
         },
         missingSlots: [],
         confidence: 0.5,
