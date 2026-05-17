@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node dist/server.js",
+    "start": "npx prisma migrate deploy && node dist/server.js",
     "dev": "nodemon src/server.ts",
-    "build": "tsc",
+    "build": "npx prisma generate && tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",

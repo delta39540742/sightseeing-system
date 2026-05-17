@@ -7,6 +7,9 @@
 const MODEL_ID = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
 export const EMBEDDING_DIM = 384;
 
+// Disable embedding on free-tier production to avoid OOM (model ~120MB).
+const EMBEDDING_ENABLED = process.env.EMBEDDING_ENABLED === 'true' || process.env.NODE_ENV !== 'production';
+
 type FeatureExtractionPipeline = (
   texts: string | string[],
   opts?: { pooling?: 'mean' | 'cls' | 'none'; normalize?: boolean },
@@ -31,7 +34,7 @@ async function getPipeline(): Promise<FeatureExtractionPipeline> {
  * Embed một text → vector 384 chiều (đã normalize, dùng cosine).
  */
 export async function embedText(text: string): Promise<number[]> {
-  if (!text || !text.trim()) {
+  if (!EMBEDDING_ENABLED || !text || !text.trim()) {
     return new Array(EMBEDDING_DIM).fill(0);
   }
   const pipe = await getPipeline();
@@ -43,7 +46,7 @@ export async function embedText(text: string): Promise<number[]> {
  * Batch embed — nhanh hơn loop từng câu.
  */
 export async function embedTexts(texts: string[]): Promise<number[][]> {
-  if (texts.length === 0) return [];
+  if (!EMBEDDING_ENABLED || texts.length === 0) return texts.map(() => new Array(EMBEDDING_DIM).fill(0));
   const pipe = await getPipeline();
   const output = await pipe(texts, { pooling: 'mean', normalize: true });
   // output.dims = [batch, dim]
@@ -67,6 +70,7 @@ export function vectorToSqlLiteral(vec: number[]): string {
  * Gọi không-await trong server bootstrap.
  */
 export async function warmUpEmbedding(): Promise<void> {
+  if (!EMBEDDING_ENABLED) return;
   try {
     await embedText('khởi tạo model embedding');
   } catch (err) {
