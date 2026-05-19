@@ -114,6 +114,7 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
       const rawLimit = parseInt(query['limit'] ?? '') || 20;
       const limit = q ? Math.min(rawLimit, 10) : rawLimit;
       const skip = (page - 1) * limit;
+      const city = query['city']?.trim() || '';
 
       const indoor_outdoor = query['indoor_outdoor'];
       const is_landmark = query['is_landmark'] === 'true';
@@ -124,20 +125,41 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
       // Khi có từ khóa tìm kiếm: dùng raw SQL với unaccent + pg_trgm để tìm gần đúng,
       // bỏ dấu tiếng Việt và hỗ trợ typo nhẹ.
       if (q) {
-        const rows = await prisma.$queryRaw<any[]>`
-          SELECT p.place_id, p.name, p.description, p.lat, p.lng,
-                 p.avg_visit_duration_min, p.indoor_outdoor, p.is_landmark,
-                 p.min_price, p.max_price, p.price_type, p.address,
-                 p.popularity_score
-          FROM place p
-          WHERE
-            unaccent(lower(p.name)) LIKE '%' || unaccent(lower(${q})) || '%'
-            OR word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) > 0.25
-          ORDER BY
-            word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) DESC,
-            p.popularity_score DESC
-          LIMIT ${limit} OFFSET ${skip}
-        `;
+        const rows = city
+          ? await prisma.$queryRaw<any[]>`
+              SELECT p.place_id, p.name, p.description, p.lat, p.lng,
+                     p.avg_visit_duration_min, p.indoor_outdoor, p.is_landmark,
+                     p.min_price, p.max_price, p.price_type, p.address,
+                     p.popularity_score
+              FROM place p
+              WHERE (
+                unaccent(lower(p.name)) LIKE '%' || unaccent(lower(${q})) || '%'
+                OR word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) > 0.25
+              )
+              AND (
+                unaccent(lower(p.address))      LIKE '%' || unaccent(lower(${city})) || '%'
+                OR unaccent(lower(p.name))      LIKE '%' || unaccent(lower(${city})) || '%'
+                OR unaccent(lower(COALESCE(p.description, ''))) LIKE '%' || unaccent(lower(${city})) || '%'
+              )
+              ORDER BY
+                word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) DESC,
+                p.popularity_score DESC
+              LIMIT ${limit} OFFSET ${skip}
+            `
+          : await prisma.$queryRaw<any[]>`
+              SELECT p.place_id, p.name, p.description, p.lat, p.lng,
+                     p.avg_visit_duration_min, p.indoor_outdoor, p.is_landmark,
+                     p.min_price, p.max_price, p.price_type, p.address,
+                     p.popularity_score
+              FROM place p
+              WHERE
+                unaccent(lower(p.name)) LIKE '%' || unaccent(lower(${q})) || '%'
+                OR word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) > 0.25
+              ORDER BY
+                word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) DESC,
+                p.popularity_score DESC
+              LIMIT ${limit} OFFSET ${skip}
+            `;
 
         InternalEventBus.publish('places.listed', { page, limit, totalFound: rows.length });
 

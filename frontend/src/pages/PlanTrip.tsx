@@ -268,6 +268,7 @@ export default function PlanTrip() {
                     onPlaceSelect={handleSearchBarSelect}
                     label="Tìm thêm địa điểm cụ thể"
                     placeholder="Tên địa điểm hoặc dán link Google Maps..."
+                    destinationCity={parsed?.destinationCity}
                   />
 
                   <div className="border-b border-gray-100 pb-3">

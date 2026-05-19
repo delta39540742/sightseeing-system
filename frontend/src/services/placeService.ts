@@ -29,8 +29,8 @@ export const placeService = {
     api.get<{ success: boolean; data: Place }>(`/places/${placeId}`)
        .then((r) => r.data.data),
 
-  searchByName: (q: string) =>
-    api.get<{ success: boolean; data: any[] }>('/places', { params: { q, limit: 10 } })
+  searchByName: (q: string, city?: string) =>
+    api.get<{ success: boolean; data: any[] }>('/places', { params: { q, limit: 10, ...(city ? { city } : {}) } })
        .then((r) => r.data.data.map(mapPlace)),
 
   searchNearby: (lat: number, lng: number, radius = 500) =>

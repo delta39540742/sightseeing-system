@@ -10,6 +10,8 @@ interface PlaceSearchBarProps {
   className?: string
   /** Label hiển thị trên thanh tìm kiếm */
   label?: string
+  /** Lọc kết quả theo thành phố đang lập kế hoạch */
+  destinationCity?: string
 }
 
 /** Trích xuất lat/lng từ URL Google Maps trực tiếp. Trả null nếu không parse được. */
@@ -54,7 +56,7 @@ function formatDistance(m: number): string {
   return `${(m / 1000).toFixed(1)} km`
 }
 
-export function PlaceSearchBar({ onPlaceSelect, placeholder, className, label }: PlaceSearchBarProps) {
+export function PlaceSearchBar({ onPlaceSelect, placeholder, className, label, destinationCity }: PlaceSearchBarProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<PlaceWithDistance[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -115,7 +117,7 @@ export function PlaceSearchBar({ onPlaceSelect, placeholder, className, label }:
     setError(null)
     setIsLoading(true)
     try {
-      const found = await placeService.searchByName(trimmed)
+      const found = await placeService.searchByName(trimmed, destinationCity)
       setResults(found)
       setOpen(true)
     } catch {
