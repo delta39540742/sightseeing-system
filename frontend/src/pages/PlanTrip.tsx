@@ -65,9 +65,23 @@ export default function PlanTrip() {
     ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles, experienceKeywords: parsed.experienceKeywords }
     : null
 
+  const [noCityPlaces, setNoCityPlaces] = useState<string | null>(null)
+
   const { data: candidates, isFetching: candidatesLoading, isError: candidatesError } = useQuery({
     queryKey: ['candidates', candidatesReq],
-    queryFn: () => tripService.candidates(candidatesReq!),
+    queryFn: async () => {
+      setNoCityPlaces(null)
+      try {
+        return await tripService.candidates(candidatesReq!)
+      } catch (err: unknown) {
+        const axiosErr = err as { response?: { data?: { error?: string; destinationCity?: string } } }
+        if (axiosErr?.response?.data?.error === 'NO_PLACES_FOR_CITY') {
+          setNoCityPlaces(axiosErr.response!.data!.destinationCity ?? candidatesReq!.destinationCity)
+          return []
+        }
+        throw err
+      }
+    },
     enabled: !!candidatesReq,
     staleTime: 60_000,
     retry: 1,
@@ -279,6 +293,12 @@ export default function PlanTrip() {
                       <p className="text-2xl">⚠️</p>
                       <p className="text-xs text-red-500 font-medium">Không thể tải danh sách địa điểm</p>
                       <p className="text-xs text-gray-400">Kiểm tra backend đang chạy tại localhost:3000</p>
+                    </div>
+                  ) : noCityPlaces ? (
+                    <div className="text-center py-8 space-y-2">
+                      <p className="text-2xl">🏙️</p>
+                      <p className="text-xs text-amber-600 font-medium">Chưa có địa điểm nào cho "{noCityPlaces}"</p>
+                      <p className="text-xs text-gray-400">Hệ thống hiện chỉ hỗ trợ Đà Nẵng. Thử chọn thành phố khác.</p>
                     </div>
                   ) : filteredCandidates !== undefined && filteredCandidates.length === 0 ? (
                     <div className="text-center py-8 text-xs text-gray-400">

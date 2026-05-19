@@ -137,15 +137,16 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
       include: includeRelations,
     });
 
-    // Fallback: nếu city filter quá hẹp → bỏ city filter, giữ budget
+    // Nếu city filter không tìm thấy kết quả → báo lỗi rõ ràng, KHÔNG fallback sang thành phố khác
     if (places.length === 0 && destinationCity) {
-      places = await prisma.place.findMany({
-        where: { AND: [budgetCondition, ...(mobilityFilter.wheelchair_access ? [{ wheelchair_access: true }] : [])] },
-        include: includeRelations,
+      return reply.status(404).send({
+        error: 'NO_PLACES_FOR_CITY',
+        message: `Chưa có địa điểm nào cho "${destinationCity}" trong hệ thống. Thử chọn thành phố khác.`,
+        destinationCity,
       });
     }
 
-    // Nếu DB hoàn toàn rỗng → trả mock data để test UI
+    // Nếu DB hoàn toàn rỗng (không có city filter) → trả mock data để test UI
     if (places.length === 0) {
       return reply.send({ places: MOCK_PLACES, _mock: true });
     }
