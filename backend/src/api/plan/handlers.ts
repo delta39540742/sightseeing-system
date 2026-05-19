@@ -5,6 +5,23 @@ import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, 
 import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
 import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
+// DB lưu tên thành phố bằng tiếng Anh không dấu; NLU trả về tiếng Việt có dấu.
+// Map này giúp filter khớp cả hai dạng.
+const CITY_ALIASES: Record<string, string[]> = {
+  'đà nẵng':  ['Da Nang', 'Đà Nẵng'],
+  'phú quốc': ['Phu Quoc', 'Phú Quốc'],
+  'nha trang': ['Nha Trang'],
+  'vũng tàu': ['Vung Tau', 'Vũng Tàu'],
+  'hội an':   ['Hoi An', 'Hội An'],
+  'đà lạt':   ['Da Lat', 'Đà Lạt'],
+  'huế':      ['Hue', 'Huế'],
+};
+
+function expandCityTerms(city: string): string[] {
+  const key = city.toLowerCase().trim();
+  return CITY_ALIASES[key] ?? [city];
+}
+
 const DEFAULT_WEIGHTS = {
   wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
   wStability: 0.05, wPotentialBias: 0.10, wProximity: 0,
@@ -119,11 +136,13 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     if (destinationCity) {
       // Lọc theo address/description — KHÔNG lọc theo name vì nhà hàng ở Hà Nội
       // có thể đặt tên "Đà Nẵng Quán Bánh Tráng" nhưng tọa độ thực vẫn là Hà Nội.
+      // DB lưu địa chỉ bằng tiếng Anh (Da Nang, Phu Quoc...) nên expand alias để khớp cả hai dạng.
+      const cityTerms = expandCityTerms(destinationCity);
       andConditions.push({
-        OR: [
-          { address:     { contains: destinationCity, mode: 'insensitive' as const } },
-          { description: { contains: destinationCity, mode: 'insensitive' as const } },
-        ],
+        OR: cityTerms.flatMap((term) => [
+          { address:     { contains: term, mode: 'insensitive' as const } },
+          { description: { contains: term, mode: 'insensitive' as const } },
+        ]),
       });
     }
     if (mobilityRestrictions?.includes('xe_lan')) {
@@ -369,11 +388,13 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             const ands: any[] = [];
             if (destinationCity) {
                 // Lọc theo address/description — KHÔNG lọc theo name (xem getTripCandidates).
+                // Expand alias để khớp cả tiếng Việt lẫn tiếng Anh (Da Nang / Đà Nẵng).
+                const cityTerms = expandCityTerms(destinationCity);
                 ands.push({
-                    OR: [
-                        { address:     { contains: destinationCity, mode: 'insensitive' as const } },
-                        { description: { contains: destinationCity, mode: 'insensitive' as const } },
-                    ],
+                    OR: cityTerms.flatMap((term) => [
+                        { address:     { contains: term, mode: 'insensitive' as const } },
+                        { description: { contains: term, mode: 'insensitive' as const } },
+                    ]),
                 });
             }
             if (mobilityRestrictions?.includes('xe_lan')) {
