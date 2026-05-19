@@ -29,6 +29,12 @@ export function parseNLP(input: string): ParsedNLPResult {
     if (lower.includes(alias)) { destinationCity = city; break }
   }
 
+  // Extract explicit date in DD/MM/YYYY format before falling back to duration
+  const explicitDateMatch = lower.match(/(?:ngày\s+)?(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  const extractedStartDate = explicitDateMatch
+    ? `${explicitDateMatch[3]}-${explicitDateMatch[2].padStart(2, '0')}-${explicitDateMatch[1].padStart(2, '0')}`
+    : null
+
   const dayMatch = lower.match(/(\d+)\s*ngày/)
   const days = dayMatch ? parseInt(dayMatch[1]) : 3
 
@@ -44,8 +50,8 @@ export function parseNLP(input: string): ParsedNLPResult {
     if (keywords.some((k) => lower.includes(k))) styles.push(style)
   }
 
-  const startDate = format(new Date(), 'yyyy-MM-dd')
-  const endDate = format(addDays(new Date(), days - 1), 'yyyy-MM-dd')
+  const startDate = extractedStartDate ?? format(new Date(), 'yyyy-MM-dd')
+  const endDate = format(addDays(new Date(startDate), days - 1), 'yyyy-MM-dd')
 
   return { destinationCity, days, budget, styles, startDate, endDate, numPeople: 1 }
 }

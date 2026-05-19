@@ -85,7 +85,12 @@ export function normaliseSlots(raw: Partial<NluSlots> | null | undefined): NluSl
 
   let startDate: string | null = null
   if (typeof r.startDate === 'string' && r.startDate) {
-    const d = parseISO(r.startDate)
+    // Accept YYYY-MM-DD (ISO) or DD/MM/YYYY (Vietnamese format from NLU)
+    const ddmmyyyy = r.startDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    const isoStr = ddmmyyyy
+      ? `${ddmmyyyy[3]}-${ddmmyyyy[2].padStart(2, '0')}-${ddmmyyyy[1].padStart(2, '0')}`
+      : r.startDate
+    const d = parseISO(isoStr)
     if (isValid(d)) startDate = format(d, 'yyyy-MM-dd')
   }
 

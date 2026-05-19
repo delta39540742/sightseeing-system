@@ -125,7 +125,7 @@ export function PlaceSearchBar({ onPlaceSelect, placeholder, className, label, d
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [destinationCity])
 
   async function handleUseLocation() {
     if (!parsedCoords) return
