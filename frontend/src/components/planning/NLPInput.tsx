@@ -43,9 +43,29 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
       setNluResponse(nluResult)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
-      // 503 = Colab NLU đang down — fallback về local parser, bỏ qua editor
       if (!status || status === 503) {
-        onParsed(parseNLP(value))
+        // Colab down — dùng local parser làm seed nhưng vẫn hiển thị editor để user xác nhận
+        const fallback = parseNLP(value)
+        setNluResponse({
+          slots: {
+            destinationCity: null, // parseNLP luôn default 'Đà Nẵng' kể cả khi user không đề cập — để trống để user tự điền
+            durationDays: fallback.days,
+            startDate: fallback.startDate,
+            preferredTagNames: [],
+            experienceKeywords: fallback.experienceKeywords ?? [],
+            budgetTotal: fallback.budget,
+            groupType: null,
+            mobilityRestrictions: [],
+            dietaryPreferences: [],
+            pace: null,
+            vibe: fallback.vibe ?? [],
+            amenities: fallback.amenities ?? [],
+            originalPrompt: value,
+          },
+          missingSlots: ['destinationCity'],
+          confidence: 0.4,
+        })
+        toast.error('AI đang bảo trì — kết quả có thể thiếu, vui lòng kiểm tra lại')
       } else {
         toast.error('Phân tích thất bại, thử lại sau')
       }
