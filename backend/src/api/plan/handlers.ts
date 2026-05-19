@@ -117,13 +117,11 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
     // Build AND array to avoid OR key collision when spreading multiple OR filters
     const andConditions: any[] = [budgetCondition];
     if (destinationCity) {
-      // Chỉ nhận place thực sự khớp city qua address / name / description.
-      // KHÔNG include `address: null` vì như vậy sẽ nuốt mọi place ở tỉnh khác mà
-      // chỉ đơn giản là thiếu address → đề xuất bị "lạc đoàn".
+      // Lọc theo address/description — KHÔNG lọc theo name vì nhà hàng ở Hà Nội
+      // có thể đặt tên "Đà Nẵng Quán Bánh Tráng" nhưng tọa độ thực vẫn là Hà Nội.
       andConditions.push({
         OR: [
           { address:     { contains: destinationCity, mode: 'insensitive' as const } },
-          { name:        { contains: destinationCity, mode: 'insensitive' as const } },
           { description: { contains: destinationCity, mode: 'insensitive' as const } },
         ],
       });
@@ -370,12 +368,10 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             }
             const ands: any[] = [];
             if (destinationCity) {
-                // Tránh `address: null` (gây "lạc đoàn"). Cho phép match qua name/description
-                // để place không khai address nhưng có chứa tên city vẫn lọt.
+                // Lọc theo address/description — KHÔNG lọc theo name (xem getTripCandidates).
                 ands.push({
                     OR: [
                         { address:     { contains: destinationCity, mode: 'insensitive' as const } },
-                        { name:        { contains: destinationCity, mode: 'insensitive' as const } },
                         { description: { contains: destinationCity, mode: 'insensitive' as const } },
                     ],
                 });
