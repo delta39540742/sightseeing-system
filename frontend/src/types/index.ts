@@ -1,5 +1,14 @@
 export type TripStatus = 'draft' | 'active' | 'confirmed' | 'completed' | 'cancelled'
 
+export interface ScoreBreakdown {
+  interest: number    // raw dot-product (before ×10)
+  popularity: number  // raw popularity_score (before ×0.3)
+  softAdj: number
+  cfBoost: number
+  semBoost: number    // 12 × cosine_sim; range [-12, 12]
+  expBoost: number    // 6 × keyword_hits; range [0, ∞)
+}
+
 export interface Place {
   placeId: number
   name: string
@@ -15,6 +24,10 @@ export interface Place {
   rating?: number
   tags: Array<{ tagId: number; name?: string }>
   openingHours: Array<{ dayOfWeek: number; openTime: string; closeTime: string }>
+}
+
+export interface PlaceCandidate extends Place {
+  scoreBreakdown?: ScoreBreakdown
 }
 
 export interface TripSlot {

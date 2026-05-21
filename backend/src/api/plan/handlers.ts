@@ -269,12 +269,23 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
       const expBoost = 6 * descriptionMatchScore(p, expKws);
 
       const score = interest * 10 + (p.popularity_score ?? 0) * 0.3 + softAdj + cfBoost + semBoost + expBoost;
-      return { p, score };
+      return {
+        p,
+        score,
+        breakdown: {
+          interest,
+          popularity: p.popularity_score ?? 0,
+          softAdj,
+          cfBoost,
+          semBoost,
+          expBoost,
+        },
+      };
     });
     scored.sort((a: any, b: any) => b.score - a.score);
 
     // Serialize to Place type
-    const result = scored.slice(0, 20).map(({ p }: any) => ({
+    const result = scored.slice(0, 20).map(({ p, breakdown }: any) => ({
       placeId:             Number(p.place_id),
       name:                p.name,
       description:         p.description ?? null,
@@ -295,6 +306,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
         openTime:  h.open_time,
         closeTime: h.close_time,
       })),
+      scoreBreakdown: breakdown,
     }));
 
     return reply.send({ places: result });

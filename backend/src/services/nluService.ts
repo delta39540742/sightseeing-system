@@ -15,7 +15,6 @@ export interface NluSlots {
   mobilityRestrictions: string[];
   dietaryPreferences: string[];
   pace: number | null;
-  // New fields
   vibe: string[];
   amenities: string[];
   originalPrompt: string;
@@ -23,7 +22,7 @@ export interface NluSlots {
 
 export interface NluParseRequest {
   prompt: string;
-  today?: string; // e.g. "2024-04-28"
+  today?: string;
 }
 
 export interface NluParseResponse {
@@ -34,49 +33,111 @@ export interface NluParseResponse {
 
 // --- CONFIG ---
 
-// Đọc từ .env: COLAB_NLU_URL=https://storeroom-rewrap-doable.ngrok-free.dev
-// (hoặc bất kỳ ngrok tunnel nào bạn đang chạy Colab)
-const COLAB_NLU_URL = process.env.COLAB_NLU_URL;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions";
+const DEEPSEEK_MODEL = "deepseek-chat";
+const DEEPSEEK_TIMEOUT_MS = 20_000;
 
-const COLAB_TIMEOUT_MS = 30_000; // Colab chậm, cần thời gian
+// --- SYSTEM PROMPT ---
 
-// --- MAIN PROXY FUNCTION ---
+function buildSystemPrompt(today: string): string {
+  return `You are a travel intent parser. Extract travel planning information from the user's message and return a JSON object.
+
+Today's date is ${today}.
+
+Return ONLY valid JSON with this exact structure (no markdown, no explanation):
+{
+  "slots": {
+    "destinationCity": string or null,
+    "durationDays": number or null,
+    "startDate": "YYYY-MM-DD" or null,
+    "preferredTagNames": string[],
+    "experienceKeywords": string[],
+    "budgetTotal": number or null,
+    "groupType": "solo" or "couple" or "family" or "friends" or "business" or null,
+    "mobilityRestrictions": string[],
+    "dietaryPreferences": string[],
+    "pace": number (1-5) or null,
+    "vibe": string[],
+    "amenities": string[],
+    "originalPrompt": string
+  },
+  "missingSlots": string[],
+  "confidence": number
+}
+
+Rules:
+- destinationCity: city name in English or Vietnamese (e.g. "Da Nang", "Hội An", "Hà Nội")
+- durationDays: number of days ("3 ngày" → 3)
+- startDate: absolute YYYY-MM-DD; resolve relative dates ("thứ 6 tuần sau") using today's date
+- preferredTagNames: activity/place categories (e.g. ["beach", "food", "cultural", "nightlife"])
+- experienceKeywords: descriptive keywords from the prompt (e.g. ["romantic", "relaxing"])
+- budgetTotal: total budget in VND ("5 triệu" → 5000000), null if not mentioned
+- groupType: one of "solo" | "couple" | "family" | "friends" | "business"
+- mobilityRestrictions: physical constraints (e.g. ["wheelchair"])
+- dietaryPreferences: food restrictions (e.g. ["vegetarian", "halal"])
+- pace: 1=very relaxed, 3=normal, 5=packed schedule; infer from tone
+- vibe: emotional/aesthetic vibes (e.g. ["romantic", "chill", "adventurous"])
+- amenities: desired amenities (e.g. ["pool", "wifi", "parking"])
+- missingSlots: slot names that are absent but needed (e.g. ["destinationCity", "durationDays"])
+- confidence: extraction confidence 0.0–1.0
+- originalPrompt: copy the user's message verbatim`;
+}
+
+// --- MAIN FUNCTION ---
 
 export async function parseNlu(prompt: string, today?: string): Promise<NluParseResponse> {
-
-  if (!COLAB_NLU_URL) {
-    throw new NluUnavailableError("COLAB_NLU_URL chưa được set trong file .env");
+  if (!DEEPSEEK_API_KEY) {
+    throw new NluUnavailableError("DEEPSEEK_API_KEY chưa được set trong file .env");
   }
 
-  const url = `${COLAB_NLU_URL.replace(/\/$/, "")}/api/nlu/parse`;
-    console.log(`URL parser: ${url}`);
+  const todayStr = today ?? new Date().toISOString().split("T")[0];
+
   let raw: unknown;
 
   try {
-    const res = await axios.post<unknown>(
-      url,
-      { prompt, today } satisfies NluParseRequest,
+    const res = await axios.post(
+      DEEPSEEK_API_URL,
       {
-        timeout: COLAB_TIMEOUT_MS,
-        headers: { "Content-Type": "application/json" },
+        model: DEEPSEEK_MODEL,
+        messages: [
+          { role: "system", content: buildSystemPrompt(todayStr) },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0,
+        response_format: { type: "json_object" },
+      },
+      {
+        timeout: DEEPSEEK_TIMEOUT_MS,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+        },
       }
     );
-    raw = res.data;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const content = (res.data as any)?.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      throw new NluUnavailableError("DeepSeek returned unexpected response format");
+    }
+    raw = JSON.parse(content);
   } catch (err) {
+    if (err instanceof NluUnavailableError) throw err;
+    if (err instanceof SyntaxError) {
+      throw new NluUnavailableError("DeepSeek returned invalid JSON");
+    }
     const axiosErr = err as AxiosError;
-    throw new NluUnavailableError(
-      `Colab tunnel unreachable: ${axiosErr.message}`
-    );
+    throw new NluUnavailableError(`DeepSeek API error: ${axiosErr.message}`);
   }
 
-  // --- Validate & normalise Colab response ---
   if (!isObject(raw)) {
-    throw new NluUnavailableError("Colab returned non-object response.");
+    throw new NluUnavailableError("DeepSeek returned non-object response.");
   }
 
   if ("error" in raw) {
     throw new NluUnavailableError(
-      `Colab NLU error: ${(raw as Record<string, unknown>).error}`
+      `DeepSeek NLU error: ${(raw as Record<string, unknown>).error}`
     );
   }
 
@@ -101,10 +162,9 @@ function normalise(raw: Record<string, unknown>): NluParseResponse {
     mobilityRestrictions: stringArray(rawSlots.mobilityRestrictions),
     dietaryPreferences: stringArray(rawSlots.dietaryPreferences),
     pace: numberOrNull(rawSlots.pace),
-    // Map new fields from Colab response
     vibe: stringArray(rawSlots.vibe),
     amenities: stringArray(rawSlots.amenities),
-    originalPrompt: typeof rawSlots.originalPrompt === 'string' ? rawSlots.originalPrompt : '',
+    originalPrompt: typeof rawSlots.originalPrompt === "string" ? rawSlots.originalPrompt : "",
   };
 
   return {
@@ -155,4 +215,3 @@ function asGroupType(v: unknown): GroupType | null {
   }
   return null;
 }
-

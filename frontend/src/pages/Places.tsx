@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { MapPin, Camera, X } from 'lucide-react'
 import { LandmarkRecognizer } from '@/components/landmark/LandmarkRecognizer'
 import { tripService } from '@/services/tripService'
+import { useAuthStore } from '@/store/authStore'
 import type { Place } from '@/types'
 import { placeService } from '@/services/placeService'
 import { PlaceCard } from '@/components/places/PlaceCard'
@@ -210,7 +211,8 @@ export default function Places() {
 }
 
 function AddToTripModal({ place, onClose }: { place: Place; onClose: () => void }) {
-  const { data: trips, isLoading } = useQuery({ queryKey: ['trips'], queryFn: tripService.list })
+  const { user } = useAuthStore()
+  const { data: trips, isLoading } = useQuery({ queryKey: ['trips'], queryFn: tripService.list, enabled: !!user })
   const activeTrips = trips?.filter(t => t.status === 'active' || t.status === 'draft') || []
   const [adding, setAdding] = useState(false)
 

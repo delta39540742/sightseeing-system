@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { Place, Trip, PlanRequest, ReplanScope } from '@/types'
+import type { Place, PlaceCandidate, Trip, PlanRequest, ReplanScope } from '@/types'
 
 // Backend yêu cầu format date-time (ISO 8601). Nếu nhận YYYY-MM-DD thì append giờ.
 const toIsoDateTime = (s: string | undefined | null): string | undefined => {
@@ -26,7 +26,7 @@ interface CreateDraftBody {
 }
 
 export const tripService = {
-  list: () => api.get<Trip[]>('/trips').then((r) => r.data),
+  list: () => api.get<Trip[]>('/trips').then((r) => Array.isArray(r.data) ? r.data : []),
 
   get: (tripId: string) => api.get<Trip>(`/trips/${tripId}`).then((r) => r.data),
 
@@ -78,7 +78,7 @@ export const tripService = {
 
   candidates: (req: PlanRequest) =>
     api
-      .post<{ places: Place[] }>('/plan/candidates', toIsoDateTimeRange(req))
+      .post<{ places: PlaceCandidate[] }>('/plan/candidates', toIsoDateTimeRange(req))
       .then((r) => r.data.places),
 
   listPlaces: (params?: { page?: number; limit?: number; ids?: number[] }) =>

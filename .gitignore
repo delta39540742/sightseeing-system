@@ -20,7 +20,7 @@ firebase-service-account.json
 # =============================================
 # Prisma
 # =============================================
-# Migrations MUST be committed (team cần dùng chung migration files)
+backend/prisma/migrations/
 
 # =============================================
 # Test & Coverage
@@ -79,8 +79,15 @@ t03_text_extract.txt
 # =============================================
 data/
 danang_places.json
+.seed-progress
 
 # =============================================
 # Misc / Junk files
 # =============================================
 backend/docker
+
+# =============================================
+# spec 
+# =============================================
+spec/
+

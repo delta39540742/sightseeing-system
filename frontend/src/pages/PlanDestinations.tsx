@@ -10,11 +10,12 @@ import { TripMap } from '@/components/map/TripMap'
 import { NluSlotEditor } from '@/components/planning/NluSlotEditor'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
 import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
+import { PlaceExplanation, useExplanations } from '@/components/planning/PlaceExplanation'
 import { tripService } from '@/services/tripService'
 import { nluService } from '@/services/nluService'
 import { parseNLP } from '@/utils/nlpParser'
 import { useAuthStore } from '@/store/authStore'
-import type { Place, PlanRequest, TripSlot, NluParseResponse, ParsedNLPResult } from '@/types'
+import type { Place, PlaceCandidate, PlanRequest, TripSlot, NluParseResponse, ParsedNLPResult } from '@/types'
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371
@@ -67,16 +68,27 @@ export default function PlanDestinations() {
   const [conflicts, setConflicts] = useState<ConflictWarning[]>([])
   const [showNearby, setShowNearby] = useState(false)
   const [selectedNearby, setSelectedNearby] = useState<Place | null>(null)
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  const { data: candidates, isLoading: candidatesLoading } = useQuery({
+  const { data: candidates, isLoading: candidatesLoading } = useQuery<PlaceCandidate[]>({
     queryKey: ['candidates', planRequest],
     queryFn: () => tripService.candidates(planRequest!),
     enabled: !!planRequest,
     staleTime: 60_000,
   })
 
-  const visibleCandidates = candidates?.filter((p) => !dismissedIds.includes(p.placeId)) ?? []
+  const visibleCandidates: PlaceCandidate[] = candidates?.filter((p) => !dismissedIds.includes(p.placeId)) ?? []
+
+  const explanations = useExplanations(visibleCandidates)
+
+  function toggleExplanation(placeId: number) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      next.has(placeId) ? next.delete(placeId) : next.add(placeId)
+      return next
+    })
+  }
 
   const nearbyPlaces: Place[] = useMemo(() => {
     if (!showNearby || selectedPlaces.length === 0 || !candidates) return []
@@ -115,7 +127,6 @@ export default function PlanDestinations() {
     }
     setConflicts(newConflicts)
     setSelectedPlaces((prev) => [...prev, place])
-    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
   }
 
   function removePlace(placeId: number) {
@@ -579,6 +590,13 @@ export default function PlanDestinations() {
                               </div>
                             </div>
                           </div>
+                          {explanations.has(place.placeId) && (
+                            <PlaceExplanation
+                              lines={explanations.get(place.placeId)!}
+                              isOpen={expandedIds.has(place.placeId)}
+                              onToggle={() => toggleExplanation(place.placeId)}
+                            />
+                          )}
                         </div>
                       )
                     })}

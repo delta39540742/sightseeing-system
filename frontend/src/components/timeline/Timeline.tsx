@@ -103,7 +103,7 @@ export function Timeline({ onAddSlot, onLockToggle }: TimelineProps) {
   if (!trip) return null
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-100 shrink-0">
         <button
