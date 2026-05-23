@@ -128,6 +128,7 @@ model place {
   is_landmark                                                       Boolean                  @default(false)
   landmark_class_id                                                 Int?
   address                                                           String?
+  province                                                          String?
   location_updated_at                                               DateTime                 @default(now()) @db.Timestamptz(6)
   description_embedding                                             Unsupported("vector(384)")?
   interaction_log                                                   interaction_log[]
@@ -146,6 +147,7 @@ model place {
   @@index([indoor_outdoor], map: "idx_place_indoor")
   @@index([landmark_class_id], map: "idx_place_landmark", where: raw("(is_landmark = true)"))
   @@index([popularity_score(sort: Desc)], map: "idx_place_popularity")
+  @@index([province], map: "idx_place_province")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
