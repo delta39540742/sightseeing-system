@@ -122,8 +122,6 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
         ? query['ids'].split(',').map((s) => BigInt(s.trim())).filter(Boolean)
         : null;
 
-      // Khi có từ khóa tìm kiếm: dùng raw SQL với unaccent + pg_trgm để tìm gần đúng,
-      // bỏ dấu tiếng Việt và hỗ trợ typo nhẹ.
       if (q) {
         const rows = city
           ? await prisma.$queryRaw<any[]>`
@@ -134,6 +132,7 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
               FROM place p
               WHERE (
                 unaccent(lower(p.name)) LIKE '%' || unaccent(lower(${q})) || '%'
+                OR unaccent(lower(p.address)) LIKE '%' || unaccent(lower(${q})) || '%'
                 OR word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) > 0.25
               )
               AND (
@@ -154,6 +153,7 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
               FROM place p
               WHERE
                 unaccent(lower(p.name)) LIKE '%' || unaccent(lower(${q})) || '%'
+                OR unaccent(lower(p.address)) LIKE '%' || unaccent(lower(${q})) || '%'
                 OR word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) > 0.25
               ORDER BY
                 word_similarity(unaccent(lower(${q})), unaccent(lower(p.name))) DESC,
