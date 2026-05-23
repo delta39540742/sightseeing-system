@@ -61,6 +61,10 @@ services:
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       # URL đầy đủ tới backend, kết thúc bằng /api
       # Ví dụ: https://tdtt-backend.onrender.com/api
