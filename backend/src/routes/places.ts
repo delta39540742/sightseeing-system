@@ -123,11 +123,10 @@ export async function placesPlugin(fastify: FastifyInstance): Promise<void> {
 
       // Nếu từ khóa q quá ngắn (1 ký tự), trả về mảng rỗng để tránh rác và đỡ tải DB
       if (q.length === 1 && !city) {
-        return response.send({
+        return reply.status(200).send({
+          success: true,
           data: [],
-          total: 0,
-          page,
-          limit,
+          meta: { total: 0, page, limit, totalPages: 0 },
         });
       }
 
