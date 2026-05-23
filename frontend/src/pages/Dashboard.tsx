@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, MapPin, Calendar, ChevronRight, User, Trash2 } from 'lucide-react'
 import { format, parseISO, differenceInDays } from 'date-fns'
@@ -38,7 +38,10 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { user, openLoginDrawer } = useAuthStore()
-  const [filter, setFilter] = useState<TripStatus | 'all'>('all')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filter = (searchParams.get('filter') ?? 'all') as TripStatus | 'all'
+  const setFilter = (f: TripStatus | 'all') =>
+    setSearchParams(f === 'all' ? {} : { filter: f }, { replace: true })
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const { data: trips, isLoading } = useQuery({

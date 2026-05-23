@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { MapPin, Camera, X } from 'lucide-react'
 import { LandmarkRecognizer } from '@/components/landmark/LandmarkRecognizer'
@@ -19,10 +20,25 @@ export default function Places() {
   const [places, setPlaces] = useState<Place[]>([])
   const [selectedPlaceToAdd, setSelectedPlaceToAdd] = useState<Place | null>(null)
   const [showRecognizer, setShowRecognizer] = useState(false)
-  const [filters, setFilters] = useState<PlacesFilters>({
-    indoor_outdoor: undefined,
-    is_landmark: undefined,
-  })
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const filters: PlacesFilters = {
+    indoor_outdoor: (searchParams.get('indoor') as PlacesFilters['indoor_outdoor']) || undefined,
+    is_landmark: searchParams.get('landmark') === 'true' ? true : undefined,
+  }
+
+  function updateFilter(key: 'indoor_outdoor' | 'is_landmark', value: string | boolean | undefined) {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      const paramKey = key === 'indoor_outdoor' ? 'indoor' : 'landmark'
+      if (value === undefined || value === null) {
+        p.delete(paramKey)
+      } else {
+        p.set(paramKey, String(value))
+      }
+      return p
+    }, { replace: true })
+  }
   const { isFavorite, add, remove } = useFavorites()
 
   const { data, isLoading, isFetching } = useQuery({
@@ -51,7 +67,7 @@ export default function Places() {
   useEffect(() => {
     setPage(1)
     setPlaces([])
-  }, [filters])
+  }, [filters.indoor_outdoor, filters.is_landmark])
 
   const hasMore = data ? places.length < data.total : false
 
@@ -88,9 +104,7 @@ export default function Places() {
               {indoorOutdoorOptions.map((opt) => (
                 <button
                   key={String(opt.value)}
-                  onClick={() =>
-                    setFilters((f) => ({ ...f, indoor_outdoor: opt.value }))
-                  }
+                  onClick={() => updateFilter('indoor_outdoor', opt.value)}
                   className={`chip shrink-0 ${
                     filters.indoor_outdoor === opt.value
                       ? 'chip-active'
@@ -105,12 +119,7 @@ export default function Places() {
             {/* Landmark toggle */}
             <div className="flex gap-1.5">
               <button
-                onClick={() =>
-                  setFilters((f) => ({
-                    ...f,
-                    is_landmark: f.is_landmark ? undefined : true,
-                  }))
-                }
+                onClick={() => updateFilter('is_landmark', filters.is_landmark ? undefined : true)}
                 className={`chip shrink-0 ${
                   filters.is_landmark ? 'chip-active' : 'chip-inactive'
                 }`}

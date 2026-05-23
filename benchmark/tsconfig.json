@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "bundler",
+    "typeRoots": ["../backend/node_modules/@types"],
+    "types": ["node"],
+    "paths": {
+      "@app/types": ["../backend/src/types/index.ts"],
+      "@prisma/client": ["../backend/node_modules/.prisma/client/index.d.ts"]
+    },
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"],
+  "references": []
+}

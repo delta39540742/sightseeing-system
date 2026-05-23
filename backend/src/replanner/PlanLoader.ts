@@ -27,7 +27,7 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 const DEFAULT_WEIGHTS: ObjectiveWeights = {
   wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
-  wStability: 0.05, wPotentialBias: 0.10, wProximity: 0, wSynergy: 0.3,
+  wStability: 0.5, wPotentialBias: 1.0, wProximity: 0, wSynergy: 0.3,
 };
 
 export class PlanLoader {
@@ -125,14 +125,19 @@ export class PlanLoader {
         preference_vector: number[]; pace: number; mobility_restrictions: string[];
         w_interest: number; w_pace: number; w_distance: number;
         w_budget: number; w_weather: number; w_risk: number;
+        w_stability: number; w_potential_bias: number; w_proximity: number; w_synergy: number;
       }>(
         `SELECT up.preference_vector, up.pace, up.mobility_restrictions,
-                COALESCE(uow.w_interest, 1.0) AS w_interest,
-                COALESCE(uow.w_pace,     1.0) AS w_pace,
-                COALESCE(uow.w_distance, 1.0) AS w_distance,
-                COALESCE(uow.w_budget,   1.0) AS w_budget,
-                COALESCE(uow.w_weather,  1.0) AS w_weather,
-                COALESCE(uow.w_risk,     1.0) AS w_risk
+                COALESCE(uow.w_interest,       1.0) AS w_interest,
+                COALESCE(uow.w_pace,           1.0) AS w_pace,
+                COALESCE(uow.w_distance,       1.5) AS w_distance,
+                COALESCE(uow.w_budget,         1.0) AS w_budget,
+                COALESCE(uow.w_weather,        1.0) AS w_weather,
+                COALESCE(uow.w_risk,           1.0) AS w_risk,
+                COALESCE(uow.w_stability,      0.5) AS w_stability,
+                COALESCE(uow.w_potential_bias, 1.0) AS w_potential_bias,
+                COALESCE(uow.w_proximity,      0.0) AS w_proximity,
+                COALESCE(uow.w_synergy,        0.3) AS w_synergy
            FROM user_preference up
            LEFT JOIN user_objective_weights uow ON uow.user_id = up.user_id
           WHERE up.user_id = $1`,
@@ -212,17 +217,17 @@ export class PlanLoader {
       : { preferenceVector: new Array(10).fill(0.1), pace: 0.5, mobilityRestrictions: [] };
 
     const weights: ObjectiveWeights = prefRow
-      ? { //TODO: thêm wStability và wPotentialBias vào DB tương tự như wInterest...
+      ? {
         wInterest: prefRow.w_interest,
         wPace: prefRow.w_pace,
         wDistance: prefRow.w_distance,
         wBudget: prefRow.w_budget,
         wWeather: prefRow.w_weather,
         wRisk: prefRow.w_risk,
-        wStability: 0.05,
-        wPotentialBias: 0.10,
-        wProximity: 0,
-        wSynergy: 0.3,
+        wStability: prefRow.w_stability,
+        wPotentialBias: prefRow.w_potential_bias,
+        wProximity: prefRow.w_proximity,
+        wSynergy: prefRow.w_synergy,
       }
       : DEFAULT_WEIGHTS;
 
@@ -446,7 +451,8 @@ export class PlanLoader {
            FROM place p,
                 (SELECT AVG(lat) AS clat, AVG(lng) AS clng
                    FROM place WHERE place_id = ANY($1::bigint[])) AS c
-          ORDER BY (p.lat - c.clat)^2 + (p.lng - c.clng)^2
+          ORDER BY CASE WHEN p.place_id = ANY($1::bigint[]) THEN 0 ELSE 1 END,
+                   (p.lat - c.clat)^2 + (p.lng - c.clng)^2
           LIMIT 60`,
         [mustIncludePlaceIds],
       );

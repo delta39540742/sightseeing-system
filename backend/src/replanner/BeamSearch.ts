@@ -1,7 +1,16 @@
 import type { TripSlot, TripState, ObjectiveWeights } from '@app/types';
 import { type StateEvolver, type ReplanContext, type WeatherSnapshot, dot, tagVectorOf } from './StateEvolver';
-import type { MutationOperators, MutationResult } from './MutationOperators';
+import { MutationOperators, GENERATE_ALL_CAP, type MutationResult, type OperatorName } from './MutationOperators';
 import { clearSetFeasibilityCache } from './FeasibilityFilter';
+import { UCB1Bandit, ALL_OPERATORS, type OperatorFeedback } from './OperatorBandit';
+import { propagateConstraints } from './ConstraintPropagation';
+import { canPrune } from './CandidatePruner';
+import {
+  type TrajectoryCache,
+  type SlotScoreBreakdown,
+  computePlanHash,
+  ZERO_SLOT_SCORE,
+} from './TrajectoryCache';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -12,12 +21,20 @@ export interface BeamSearchConfig {
   maxIterations: number;
   improvementThreshold: number;
   latencyBudgetMs: number;
+  /** UCB1 exploration constant c. Default √2. Set Infinity for uniform (A/B baseline). */
+  banditExploration?: number;
+  /** Minimum candidates guaranteed to each operator per iteration. Default 1. */
+  banditMinAllocation?: number;
+  /** Enable UCB1 adaptive allocation. Default true. */
+  adaptiveOperators?: boolean;
+  /** Log bandit allocation stats to console each iteration. Default false. */
+  logBandit?: boolean;
 }
 
 const DEFAULT_CONFIG: BeamSearchConfig = {
   beamWidth: 6,
   maxIterations: 20,
-  improvementThreshold: 0.01,
+  improvementThreshold: 0.001,
   latencyBudgetMs: 4500,
 };
 
@@ -31,6 +48,8 @@ export interface BeamNode {
   score: number;
   mutationHistory: MutationResult[];
   parent: BeamNode | null;
+  /** Cached prefix states and per-slot scores for incremental computation. */
+  trajectoryCache?: TrajectoryCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +290,7 @@ export class ObjectiveScorer {
       }
 
       if (stateAfter.budgetRemaining < 0) {
-        budget -= Math.abs(stateAfter.budgetRemaining) * 0.001;
+        budget -= 10000 + Math.abs(stateAfter.budgetRemaining) * 0.1;
       }
 
       const rainMmPerH = ctx.weatherForecast?.[slot.dayIndex]?.rainMmPerH ?? 0;
@@ -286,6 +305,9 @@ export class ObjectiveScorer {
       }
 
       risk -= stateAfter.fatigue;
+      if (stateAfter.fatigue > 0.95) {
+        risk -= 10000 + (stateAfter.fatigue - 0.95) * 100000;
+      }
     }
 
     for (const slot of plan) {
@@ -315,6 +337,14 @@ export class ObjectiveScorer {
     const paceFit = this.computePaceFit(plan, ctx.user.pace);
     stability = -countChanges(history);
 
+    let timePenalty = 0;
+    if (states.length > 0) {
+      const finalState = states[states.length - 1];
+      if (finalState && finalState.timeRemainingMin < 0) {
+        timePenalty = 10000 + Math.abs(finalState.timeRemainingMin) * 1000;
+      }
+    }
+
     return (
       weights.wInterest * interest +
       weights.wPace * paceFit +
@@ -325,7 +355,8 @@ export class ObjectiveScorer {
       weights.wStability * stability +
       weights.wPotentialBias * potentialBias +
       weights.wProximity * proximity +
-      (weights.wSynergy ?? 0) * synergy
+      (weights.wSynergy ?? 0) * synergy -
+      timePenalty
     );
   }
 
@@ -398,6 +429,287 @@ export class ObjectiveScorer {
     const diff = Math.abs(avgSlotsPerDay - targetSlotsPerDay);
     return 1 - diff / 4;
   }
+
+  // ---------------------------------------------------------------------------
+  // Incremental scoring helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Compute raw (unweighted) per-slot score contributions for one slot.
+   * `prevState` is states[i] (the state BEFORE visiting slot i).
+   * `stateAfter` is states[i+1] (the state AFTER visiting slot i).
+   */
+  private computeSlotBreakdown(
+    slot: TripSlot,
+    place: { lat: number; lng: number; indoorOutdoor: string; tags?: ReadonlyArray<{ tagId: number }> | null },
+    stateAfter: TripState,
+    prevState: TripState | undefined,
+    ctx: BeamSearchContext,
+    potentialSet: Set<number>,
+    requiredSet: Set<number>,
+  ): SlotScoreBreakdown {
+    const interest = dot(ctx.user.preferenceVector, tagVectorOf(place));
+    const distance = prevState ? -this.travelTimeMin(prevState, place as { lat: number; lng: number }) / 60 : 0;
+    const budget = stateAfter.budgetRemaining < 0
+      ? -(10000 + Math.abs(stateAfter.budgetRemaining) * 0.1)
+      : 0;
+
+    const rainMmPerH = ctx.weatherForecast?.[slot.dayIndex]?.rainMmPerH ?? 0;
+    let weather = 0;
+    if (rainMmPerH >= 5) {
+      if (place.indoorOutdoor === 'indoor') weather += 1;
+      else if (place.indoorOutdoor === 'outdoor') weather -= 1;
+      if (prevState) {
+        weather -= this.travelTimeMin(prevState, place as { lat: number; lng: number }) / 30;
+      }
+    }
+
+    let risk = -stateAfter.fatigue;
+    if (stateAfter.fatigue > 0.95) {
+      risk -= 10000 + (stateAfter.fatigue - 0.95) * 100000;
+    }
+
+    let potentialBias = 0;
+    if (potentialSet.has(slot.placeId)) potentialBias += 0.75;
+    if (requiredSet.has(slot.placeId)) potentialBias += 1.25;
+
+    let proximity = 0;
+    if (ctx.userIsAtVenue && ctx.venueLatLng) {
+      const { lat: vLat, lng: vLng } = ctx.venueLatLng;
+      const travelMin = this.evolver.estimateTravelTime(vLat, vLng,
+        (place as { lat: number; lng: number }).lat, (place as { lat: number; lng: number }).lng);
+      proximity = Math.max(0, 1 - travelMin / 15);
+    }
+
+    return { interest, distance, budget, weather, risk, potentialBias, proximity };
+  }
+
+  /**
+   * Like {@link score} but also returns a populated {@link TrajectoryCache} for
+   * use in subsequent incremental scoring calls.
+   *
+   * This is the entry point for the root beam node and for any fallback path
+   * where no parent cache is available.
+   */
+  scoreFullAndCache(
+    plan: TripSlot[],
+    states: TripState[],
+    weights: ObjectiveWeights,
+    ctx: BeamSearchContext,
+    history: MutationResult[] = [],
+  ): { total: number; cache: TrajectoryCache } {
+    const placeMap = ctx.placeMap ?? new Map(ctx.candidatePool.map((p) => [p.placeId, p]));
+    const potentialSet = new Set(ctx.potentialPlaceIds ?? []);
+    const requiredSet = new Set(ctx.requiredPlaceIds ?? []);
+
+    const slotScores: SlotScoreBreakdown[] = [];
+    const synergyPairs: number[] = [];
+    let slotScoreSum = 0;
+    let synergy = 0;
+
+    for (let i = 0; i < plan.length; i++) {
+      const slot = plan[i]!;
+      const place = placeMap.get(slot.placeId);
+      const stateAfter = states[i + 1];
+
+      if (!place || !stateAfter) {
+        slotScores.push({ ...ZERO_SLOT_SCORE });
+        continue;
+      }
+
+      const prevState = states[i];
+      const bd = this.computeSlotBreakdown(slot, place, stateAfter, prevState, ctx, potentialSet, requiredSet);
+      slotScores.push(bd);
+
+      slotScoreSum +=
+        weights.wInterest * bd.interest +
+        weights.wDistance * bd.distance +
+        weights.wBudget * bd.budget +
+        weights.wWeather * bd.weather +
+        weights.wRisk * bd.risk +
+        weights.wPotentialBias * bd.potentialBias +
+        weights.wProximity * bd.proximity;
+
+      if (i < plan.length - 1) {
+        const pB = placeMap.get(plan[i + 1]!.placeId);
+        const pairScore = pB ? dot(tagVectorOf(place), tagVectorOf(pB)) : 0;
+        synergyPairs.push(pairScore);
+        synergy += pairScore;
+      }
+    }
+
+    const pace = this.computePaceFit(plan, ctx.user.pace);
+    const stability = -countChanges(history);
+
+    let timePenalty = 0;
+    if (states.length > 0) {
+      const finalState = states[states.length - 1];
+      if (finalState && finalState.timeRemainingMin < 0) {
+        timePenalty = 10000 + Math.abs(finalState.timeRemainingMin) * 1000;
+      }
+    }
+
+    const total =
+      slotScoreSum +
+      weights.wPace * pace +
+      weights.wStability * stability +
+      (weights.wSynergy ?? 0) * synergy -
+      timePenalty;
+
+    const cache: TrajectoryCache = {
+      states,
+      slotScores,
+      planScores: { pace, synergy, synergyPairs },
+      planHash: computePlanHash(plan),
+    };
+    return { total, cache };
+  }
+
+  /**
+   * Incremental scoring.
+   *
+   * Reuses per-slot score breakdowns from `parentCache` for slots
+   * 0..resumeIndex-1 (the unchanged prefix) and recomputes from `resumeIndex`.
+   * Plan-level components (pace, synergy) are updated incrementally.
+   * Stability is always recomputed from `history` (history-dependent).
+   *
+   * Falls back to {@link scoreFullAndCache} when `parentCache` is absent or
+   * `resumeIndex` is 0.
+   */
+  scoreDelta(
+    plan: TripSlot[],
+    states: TripState[],
+    weights: ObjectiveWeights,
+    ctx: BeamSearchContext,
+    history: MutationResult[],
+    parentCache: TrajectoryCache | null | undefined,
+    resumeIndex: number,
+  ): { total: number; cache: TrajectoryCache } {
+    if (!parentCache || resumeIndex <= 0) {
+      return this.scoreFullAndCache(plan, states, weights, ctx, history);
+    }
+
+    const placeMap = ctx.placeMap ?? new Map(ctx.candidatePool.map((p) => [p.placeId, p]));
+    const potentialSet = new Set(ctx.potentialPlaceIds ?? []);
+    const requiredSet = new Set(ctx.requiredPlaceIds ?? []);
+
+    // === Per-slot components ===
+    // Reuse prefix slot scores (index 0..resumeIndex-1), recompute suffix.
+    const prefixLen = Math.min(resumeIndex, parentCache.slotScores.length, plan.length);
+    const slotScores: SlotScoreBreakdown[] = parentCache.slotScores.slice(0, prefixLen);
+
+    let slotScoreSum = 0;
+    for (const bd of slotScores) {
+      slotScoreSum +=
+        weights.wInterest * bd.interest +
+        weights.wDistance * bd.distance +
+        weights.wBudget * bd.budget +
+        weights.wWeather * bd.weather +
+        weights.wRisk * bd.risk +
+        weights.wPotentialBias * bd.potentialBias +
+        weights.wProximity * bd.proximity;
+    }
+
+    for (let i = prefixLen; i < plan.length; i++) {
+      const slot = plan[i]!;
+      const place = placeMap.get(slot.placeId);
+      const stateAfter = states[i + 1];
+
+      if (!place || !stateAfter) {
+        slotScores.push({ ...ZERO_SLOT_SCORE });
+        continue;
+      }
+
+      const prevState = states[i];
+      const bd = this.computeSlotBreakdown(slot, place, stateAfter, prevState, ctx, potentialSet, requiredSet);
+      slotScores.push(bd);
+
+      slotScoreSum +=
+        weights.wInterest * bd.interest +
+        weights.wDistance * bd.distance +
+        weights.wBudget * bd.budget +
+        weights.wWeather * bd.weather +
+        weights.wRisk * bd.risk +
+        weights.wPotentialBias * bd.potentialBias +
+        weights.wProximity * bd.proximity;
+    }
+
+    // === Synergy: reuse pairs 0..resumeIndex-2, recompute from resumeIndex-1 ===
+    const keepPairs = Math.max(0, prefixLen - 1);
+    const synergyPairs: number[] = parentCache.planScores.synergyPairs.slice(0, keepPairs);
+    let synergy = synergyPairs.reduce((a, b) => a + b, 0);
+
+    for (let i = Math.max(0, prefixLen - 1); i < plan.length - 1; i++) {
+      const pA = placeMap.get(plan[i]!.placeId);
+      const pB = placeMap.get(plan[i + 1]!.placeId);
+      const pairScore = pA && pB ? dot(tagVectorOf(pA), tagVectorOf(pB)) : 0;
+      synergyPairs.push(pairScore);
+      synergy += pairScore;
+    }
+
+    // Pace: always recompute (O(N) but very cheap — just a dayMap count).
+    const pace = this.computePaceFit(plan, ctx.user.pace);
+    // Stability: always recompute (depends on history, which grows each iteration).
+    const stability = -countChanges(history);
+
+    let timePenalty = 0;
+    if (states.length > 0) {
+      const finalState = states[states.length - 1];
+      if (finalState && finalState.timeRemainingMin < 0) {
+        timePenalty = 10000 + Math.abs(finalState.timeRemainingMin) * 1000;
+      }
+    }
+
+    const total =
+      slotScoreSum +
+      weights.wPace * pace +
+      weights.wStability * stability +
+      (weights.wSynergy ?? 0) * synergy -
+      timePenalty;
+
+    const cache: TrajectoryCache = {
+      states,
+      slotScores,
+      planScores: { pace, synergy, synergyPairs },
+      planHash: computePlanHash(plan),
+    };
+    return { total, cache };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reward collection (for UCB1 bandit)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute per-operator survival counts for one beam-search iteration.
+ *
+ * A candidate "survived" if its plan signature appears in `newBeam`.
+ * Reward is attributed to the last mutation in the candidate's history,
+ * which is the operator that produced the plan for this iteration.
+ */
+export function collectFeedback(
+  newBeam: BeamNode[],
+  allCandidates: BeamNode[],
+  generatedCounts: Map<OperatorName, number>,
+): OperatorFeedback[] {
+  const beamSigs = new Set(newBeam.map(n => planSignature(n.plan)));
+  const survivedCounts = new Map<OperatorName, number>();
+  for (const op of ALL_OPERATORS) survivedCounts.set(op, 0);
+
+  for (const candidate of allCandidates) {
+    if (!beamSigs.has(planSignature(candidate.plan))) continue;
+    const lastMut = candidate.mutationHistory[candidate.mutationHistory.length - 1];
+    if (lastMut) {
+      survivedCounts.set(lastMut.operator, (survivedCounts.get(lastMut.operator) ?? 0) + 1);
+    }
+  }
+
+  return ALL_OPERATORS.map(op => ({
+    operator: op,
+    candidatesGenerated: generatedCounts.get(op) ?? 0,
+    candidatesSurvived: survivedCounts.get(op) ?? 0,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -421,12 +733,19 @@ export class ObjectiveScorer {
  * Kết quả hoàn toàn xác định theo input nếu `Date.now()` được mock trong test.
  */
 export class BeamSearch {
+  private readonly bandit: UCB1Bandit;
+
   constructor(
     private readonly evolver: StateEvolver,
     public readonly operators: MutationOperators,
     private readonly scorer: ObjectiveScorer,
     public readonly config: BeamSearchConfig = DEFAULT_CONFIG
-  ) { }
+  ) {
+    this.bandit = new UCB1Bandit({
+      explorationConstant: config.banditExploration,
+      minAllocation: config.banditMinAllocation,
+    });
+  }
 
   /**
    * @summary Thực thi Beam Search và trả về BeamNode tốt nhất tìm được trong latency budget.
@@ -482,7 +801,8 @@ export class BeamSearch {
 
     const rootPlan = ctxWithMap.remainingSlots;
     const rootStates = this.evolver.computeTrajectory(rootPlan, ctxWithMap.initialState, ctxWithMap);
-    const rootScore = this.scorer.score(rootPlan, rootStates, ctxWithMap.weights, ctxWithMap, []);
+    const { total: rootScore, cache: rootCache } =
+      this.scorer.scoreFullAndCache(rootPlan, rootStates, ctxWithMap.weights, ctxWithMap, []);
 
     const rootNode: BeamNode = {
       plan: rootPlan,
@@ -490,20 +810,47 @@ export class BeamSearch {
       score: rootScore,
       mutationHistory: [],
       parent: null,
+      trajectoryCache: rootCache,
     };
 
     let beam: BeamNode[] = [rootNode];
     let bestNode = rootNode;
     let prevBestScore = rootScore;
 
+    const useAdaptive = this.config.adaptiveOperators !== false;
+    this.bandit.reset();
+
     for (let iter = 0; iter < this.config.maxIterations; iter++) {
       if (Date.now() - startTime > this.config.latencyBudgetMs) break;
 
       const candidates: BeamNode[] = [];
+      const iterGeneratedCounts = new Map<OperatorName, number>();
+      const allocation = useAdaptive ? this.bandit.allocate(GENERATE_ALL_CAP) : null;
+
       for (const node of beam) {
         if (Date.now() - startTime > this.config.latencyBudgetMs) break;
 
-        const mutations = this.operators.generateAll(node.plan, ctxWithMap);
+        let mutations: MutationResult[];
+        if (useAdaptive && allocation) {
+          const result = this.operators.generateAllAdaptive(node.plan, ctxWithMap, allocation);
+          mutations = result.candidates;
+          for (const [op, count] of result.generatedCounts) {
+            iterGeneratedCounts.set(op, (iterGeneratedCounts.get(op) ?? 0) + count);
+          }
+        } else {
+          const windows = propagateConstraints(
+            node.plan, ctxWithMap.initialState, this.evolver, ctxWithMap.placeMap!,
+          );
+          const proposed = this.operators.generateAllProposed(node.plan, ctxWithMap);
+          const surviving = proposed.filter((p) => !canPrune(p, node.plan, windows));
+          const materialized: MutationResult[] = [];
+          for (const p of surviving) {
+            const m = this.operators.materializeMutation(p, node.plan, ctxWithMap);
+            if (m) materialized.push(m);
+          }
+          mutations = materialized;
+        }
+
         for (const m of mutations) {
           // [Design 4] Latency check per-mutation, not only per-node. generateAll() can return
           // up to GENERATE_ALL_CAP=30 items and each trajectory below costs O(slots) work.
@@ -524,13 +871,23 @@ export class BeamSearch {
             if (!states.slice(1).every((s) => this.evolver.isFeasible(s))) continue;
           }
 
-          const score = this.scorer.score(m.newPlan, states, ctxWithMap.weights, ctxWithMap, [...node.mutationHistory, m]);
+          const newHistory = [...node.mutationHistory, m];
+          const { total: score, cache: newCache } = this.scorer.scoreDelta(
+            m.newPlan,
+            states,
+            ctxWithMap.weights,
+            ctxWithMap,
+            newHistory,
+            node.trajectoryCache ?? null,
+            m.resumeIndex ?? 0,
+          );
           candidates.push({
             plan: m.newPlan,
             stateTrajectory: states,
             score,
-            mutationHistory: [...node.mutationHistory, m],
+            mutationHistory: newHistory,
             parent: node,
+            trajectoryCache: newCache,
           });
         }
       }
@@ -547,6 +904,26 @@ export class BeamSearch {
       }
 
       beam = mmrSelect(deduped, this.config.beamWidth);
+
+      if (useAdaptive && allocation) {
+        const feedbacks = collectFeedback(beam, candidates, iterGeneratedCounts);
+        this.bandit.update(feedbacks);
+        if (this.config.logBandit) {
+          const stats = this.bandit.getStats();
+          console.log(`[BeamSearch iter=${iter}] Bandit allocation:`,
+            Object.fromEntries(
+              [...stats.perOperator.entries()].map(([op, s]) =>
+                [op, {
+                  alloc: allocation.get(op),
+                  avgReward: s.avgReward.toFixed(3),
+                  ucb: isFinite(s.ucbScore) ? s.ucbScore.toFixed(3) : 'Inf',
+                }]
+              )
+            )
+          );
+        }
+      }
+
       if (beam.length === 0) break;
 
       if (beam[0]!.score > bestNode.score) {

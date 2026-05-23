@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, MapPin, Calendar, Search, Tag } from 'lucide-react'
 
 interface Event {
@@ -148,8 +147,24 @@ const CATEGORIES = [
 
 export default function Events() {
   const navigate = useNavigate()
-  const [activeCategory, setActiveCategory] = useState<string>('all')
-  const [search, setSearch] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeCategory = searchParams.get('category') ?? 'all'
+  const search = searchParams.get('q') ?? ''
+
+  function setActiveCategory(cat: string) {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      cat === 'all' ? p.delete('category') : p.set('category', cat)
+      return p
+    }, { replace: true })
+  }
+  function setSearch(q: string) {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      q ? p.set('q', q) : p.delete('q')
+      return p
+    }, { replace: true })
+  }
 
   const filtered = MOCK_EVENTS.filter((ev) => {
     const matchCat = activeCategory === 'all' || ev.category === activeCategory
@@ -237,7 +252,7 @@ export default function Events() {
               <Calendar className="w-12 h-12 mx-auto mb-3 opacity-50" />
               <p className="font-semibold text-lg">Không tìm thấy sự kiện phù hợp</p>
               <button
-                onClick={() => { setActiveCategory('all'); setSearch('') }}
+                onClick={() => setSearchParams({}, { replace: true })}
                 className="mt-4 text-blue-600 font-semibold hover:underline text-sm"
               >
                 Xem tất cả sự kiện

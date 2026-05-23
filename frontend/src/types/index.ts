@@ -30,6 +30,32 @@ export interface PlaceCandidate extends Place {
   scoreBreakdown?: ScoreBreakdown
 }
 
+export interface SlotScoreComponent {
+  name: string
+  label: string
+  weighted: number
+  pct: number
+  detail?: string
+}
+
+export interface SlotExplanation {
+  summary: string
+  score: {
+    total: number
+    rank: number
+    poolSize: number
+    components: SlotScoreComponent[]
+    runnerUp?: { name: string; score: number; mainLoss: string }
+  }
+  order?: {
+    changed: boolean
+    from?: number
+    to?: number
+    reason?: string
+    tradeoff?: string
+  }
+}
+
 export interface TripSlot {
   slotId: string
   tripId: string
@@ -45,6 +71,7 @@ export interface TripSlot {
   isLocked?: boolean
   conflict?: ConflictInfo
   pending?: boolean
+  explanation?: SlotExplanation
 }
 
 export interface ConflictInfo {

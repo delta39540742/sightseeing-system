@@ -30,4 +30,26 @@ export const preferenceService = {
     prefApi.get<{ items: { userId: string; similarity: number; rankPosition: number }[]; isStale: boolean }>(
       `/preferences/similar-users?limit=${limit}`
     ).then((r) => r.data),
+
+  getProfile: (limit = 30) =>
+    prefApi.get<{
+      preferenceVector: { tagId: number; label: string; value: number }[];
+      arms: { armId: number; name: string; pulls: number; avgReward: number; totalReward: number; isActive: boolean }[];
+      interactions: {
+        interactionId: string;
+        interactionType: string;
+        placeId: number | null;
+        placeName: string | null;
+        rating: number | null;
+        context: unknown;
+        createdAt: string;
+      }[];
+      currentArmId: number | null;
+    }>(`/preferences/profile?limit=${limit}`).then((r) => r.data),
+
+  updateVector: (vector: number[]) =>
+    prefApi.patch('/preferences/vector', { vector }).then((r) => r.data),
+
+  selectArm: (armId: number) =>
+    prefApi.patch('/preferences/arm', { armId }).then((r) => r.data),
 }

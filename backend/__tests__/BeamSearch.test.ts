@@ -210,7 +210,7 @@ describe('BeamSearch', () => {
   // -------------------------------------------------------------------------
 
   it('returns root node if no improvement found (no mutations generated)', () => {
-    vi.spyOn(operators, 'generateAll').mockReturnValue([]);
+    vi.spyOn(operators, 'generateAllAdaptive').mockReturnValue({ candidates: [], generatedCounts: new Map() });
 
     const beam = new BeamSearch(evolver, operators, scorer, FAST_CONFIG);
     const result = beam.search(makeCtx());
@@ -317,18 +317,21 @@ describe('BeamSearch', () => {
 
     // Each expansion "costs" 2000 ms of fake wall-clock time
     let expandCount = 0;
-    vi.spyOn(operators, 'generateAll').mockImplementation(() => {
+    vi.spyOn(operators, 'generateAllAdaptive').mockImplementation(() => {
       expandCount++;
       vi.advanceTimersByTime(2000);
       // Return one valid mutation: replace PLACE_A with PLACE_B
-      return [
-        {
-          newPlan: [makeSlot({ slotId: 'mut-slot', placeId: PLACE_B.placeId })],
-          operator: 'REPLACE_PLACE' as const,
-          affectedSlotIds: [SLOT_A.slotId],
-          description: 'mock replacement',
-        } satisfies MutationResult,
-      ];
+      return {
+        candidates: [
+          {
+            newPlan: [makeSlot({ slotId: 'mut-slot', placeId: PLACE_B.placeId })],
+            operator: 'REPLACE_PLACE' as const,
+            affectedSlotIds: [SLOT_A.slotId],
+            description: 'mock replacement',
+          } satisfies MutationResult,
+        ],
+        generatedCounts: new Map([['REPLACE_PLACE', 1]] as [import('../src/replanner/MutationOperators').OperatorName, number][]),
+      };
     });
 
     const config: BeamSearchConfig = {
@@ -361,14 +364,17 @@ describe('BeamSearch', () => {
     const FIXED_SCORE = 0.5;
     vi.spyOn(scorer, 'score').mockReturnValue(FIXED_SCORE);
 
-    const expandSpy = vi.spyOn(operators, 'generateAll').mockReturnValue([
-      {
-        newPlan: [makeSlot({ slotId: 'es-slot', placeId: PLACE_B.placeId })],
-        operator: 'REPLACE_PLACE' as const,
-        affectedSlotIds: [SLOT_A.slotId],
-        description: 'plateau mutation',
-      } satisfies MutationResult,
-    ]);
+    const expandSpy = vi.spyOn(operators, 'generateAllAdaptive').mockReturnValue({
+      candidates: [
+        {
+          newPlan: [makeSlot({ slotId: 'es-slot', placeId: PLACE_B.placeId })],
+          operator: 'REPLACE_PLACE' as const,
+          affectedSlotIds: [SLOT_A.slotId],
+          description: 'plateau mutation',
+        } satisfies MutationResult,
+      ],
+      generatedCounts: new Map([['REPLACE_PLACE', 1]] as [import('../src/replanner/MutationOperators').OperatorName, number][]),
+    });
 
     const config: BeamSearchConfig = {
       beamWidth: 2,
@@ -414,14 +420,17 @@ describe('BeamSearch', () => {
     );
 
     // Operators do return a candidate, but its states are infeasible
-    vi.spyOn(operators, 'generateAll').mockReturnValue([
-      {
-        newPlan: [makeSlot({ slotId: 'bad-slot', placeId: PLACE_B.placeId })],
-        operator: 'REPLACE_PLACE' as const,
-        affectedSlotIds: [SLOT_A.slotId],
-        description: 'infeasible candidate',
-      } satisfies MutationResult,
-    ]);
+    vi.spyOn(operators, 'generateAllAdaptive').mockReturnValue({
+      candidates: [
+        {
+          newPlan: [makeSlot({ slotId: 'bad-slot', placeId: PLACE_B.placeId })],
+          operator: 'REPLACE_PLACE' as const,
+          affectedSlotIds: [SLOT_A.slotId],
+          description: 'infeasible candidate',
+        } satisfies MutationResult,
+      ],
+      generatedCounts: new Map([['REPLACE_PLACE', 1]] as [import('../src/replanner/MutationOperators').OperatorName, number][]),
+    });
 
     const beam = new BeamSearch(evolver, operators, scorer, FAST_CONFIG);
     const result = beam.search(makeCtx());
@@ -441,7 +450,7 @@ describe('BeamSearch', () => {
 
   it('handles empty remainingSlots gracefully — does not throw, root plan is empty', () => {
     // Mock operators so no mutations are generated → root (empty plan) is always returned
-    vi.spyOn(operators, 'generateAll').mockReturnValue([]);
+    vi.spyOn(operators, 'generateAllAdaptive').mockReturnValue({ candidates: [], generatedCounts: new Map() });
 
     const beam = new BeamSearch(evolver, operators, scorer, FAST_CONFIG);
     const ctx = makeCtx({ remainingSlots: [] });

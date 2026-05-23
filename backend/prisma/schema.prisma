@@ -357,18 +357,22 @@ model user_arm_stat {
 }
 
 model user_objective_weights {
-  user_id          String     @id @db.Uuid
-  w_interest       Float
-  w_pace           Float
-  w_distance       Float
-  w_budget         Float
-  w_weather        Float
-  w_risk           Float
-  current_arm_id   Int
-  soft_constraints Json       @default("[]")
-  updated_at       DateTime   @default(now()) @db.Timestamptz(6)
-  bandit_arm       bandit_arm @relation(fields: [current_arm_id], references: [arm_id], onDelete: NoAction, onUpdate: NoAction)
-  app_user         app_user   @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction)
+  user_id           String     @id @db.Uuid
+  w_interest        Float
+  w_pace            Float
+  w_distance        Float
+  w_budget          Float
+  w_weather         Float
+  w_risk            Float
+  w_stability       Float      @default(0.5)
+  w_potential_bias  Float      @default(1.0)
+  w_proximity       Float      @default(0.0)
+  w_synergy         Float      @default(0.3)
+  current_arm_id    Int
+  soft_constraints  Json       @default("[]")
+  updated_at        DateTime   @default(now()) @db.Timestamptz(6)
+  bandit_arm        bandit_arm @relation(fields: [current_arm_id], references: [arm_id], onDelete: NoAction, onUpdate: NoAction)
+  app_user          app_user   @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

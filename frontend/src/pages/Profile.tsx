@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, Settings, LogOut, ChevronRight,
   Star, ThumbsUp, ThumbsDown, User, Mail,
-  CheckCircle2, Clock, MapPin, Trash2, RotateCcw, ChevronDown, ChevronUp,
+  CheckCircle2, Clock, MapPin, Trash2, RotateCcw, ChevronDown, ChevronUp, Brain,
 } from 'lucide-react'
 import { format, parseISO, isAfter } from 'date-fns'
 import { vi } from 'date-fns/locale'
@@ -263,6 +263,13 @@ export default function Profile() {
               >
                 <User className="w-4 h-4" />
                 Sở thích
+              </button>
+              <button
+                onClick={() => navigate('/preference-profile')}
+                className="flex-1 btn-secondary text-sm flex items-center justify-center gap-1.5"
+              >
+                <Brain className="w-4 h-4 text-violet-500" />
+                Hồ sơ học
               </button>
               <Button
                 variant="destructive"

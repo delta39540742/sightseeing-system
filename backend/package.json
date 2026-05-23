@@ -13,7 +13,9 @@
     "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
     "seed:places": "ts-node --project tsconfig.seed.json src/scripts/seed-places.ts",
     "seed:fake": "ts-node --project tsconfig.seed.json src/scripts/seed-fake.ts",
-    "backfill:embeddings": "ts-node --project tsconfig.seed.json src/scripts/backfill-embeddings.ts"
+    "backfill:embeddings": "ts-node --project tsconfig.seed.json src/scripts/backfill-embeddings.ts",
+    "crawl:vietnam": "ts-node --project tsconfig.seed.json src/scripts/crawl-vietnam.ts",
+    "push:production": "ts-node --project tsconfig.seed.json src/scripts/push-to-production.ts"
   },
   "keywords": [],
   "author": "",

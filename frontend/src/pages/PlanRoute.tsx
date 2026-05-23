@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, useNavigationType } from 'react-router-dom'
+import { useSessionState, clearPlanningSession } from '@/hooks/useSessionState'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   MapPin, Clock, ChevronUp, ChevronDown, ArrowLeft,
@@ -12,14 +13,40 @@ import { DestinationDetailPanel } from '@/components/planning/DestinationDetailP
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
 import { toast } from '@/store/toastStore'
-import type { Place, PlanRequest, TripSlot } from '@/types'
+import type { Place, PlanRequest, TripSlot, ScoreBreakdown, SlotExplanation } from '@/types'
 import { routingService, type OsrmRoute } from '@/services/routingService'
 
+type PlaceWithBreakdown = Place & { scoreBreakdown?: ScoreBreakdown }
+
 interface RoutePlace {
-  place: Place
+  place: PlaceWithBreakdown
   nickname: string
   visitMinutes: number
   mustVisit?: boolean
+}
+
+// Labels for scoreBreakdown fields from the candidates endpoint
+const BREAKDOWN_LABELS: Record<keyof ScoreBreakdown, string> = {
+  interest:   'Phù hợp sở thích',
+  popularity: 'Được nhiều người thích',
+  softAdj:    'Phù hợp mong muốn',
+  cfBoost:    'Người tương tự thích',
+  semBoost:   'Khớp trải nghiệm',
+  expBoost:   'Khớp từ khoá',
+}
+
+function breakdownToComponents(bd: ScoreBreakdown) {
+  const entries = (Object.keys(BREAKDOWN_LABELS) as Array<keyof ScoreBreakdown>)
+    .map(k => ({ name: k, label: BREAKDOWN_LABELS[k], value: bd[k] }))
+    .filter(e => Math.abs(e.value) > 0.001)
+  const total = entries.reduce((s, e) => s + Math.abs(e.value), 0) || 1
+  return entries.map(e => ({
+    name: e.name,
+    label: e.label,
+    value: e.value,
+    pct: Math.round(Math.abs(e.value) / total * 100),
+    positive: e.value >= 0,
+  })).sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
 }
 
 const EARTH_R_KM = 6371
@@ -147,30 +174,61 @@ export default function PlanRoute() {
   const { user } = useAuthStore()
 
   const state = location.state as { selectedPlaces?: Place[]; planRequest?: PlanRequest } | null
-  const initialPlaces: Place[] = state?.selectedPlaces ?? []
   const initialRequest: PlanRequest | null = state?.planRequest ?? null
+  // PUSH = fresh navigation from PlanDestinations; POP = back/forward button (session wins)
+  const navType = useNavigationType()
+  const isFreshNav = navType === 'PUSH' && (state?.selectedPlaces?.length ?? 0) > 0
 
-  const [routePlaces, setRoutePlaces] = useState<RoutePlace[]>(
-    initialPlaces.map((p) => ({
-      place: p,
-      nickname: p.name,
-      visitMinutes: estimateVisitMinutes(p),
-      mustVisit: false,
-    })),
+  const freshRoutePlaces: RoutePlace[] | undefined = isFreshNav
+    ? state!.selectedPlaces!.map((p) => ({
+        place: p,
+        nickname: p.name,
+        visitMinutes: estimateVisitMinutes(p),
+        mustVisit: false as const,
+      }))
+    : undefined
+
+  const [routePlaces, setRoutePlaces] = useSessionState<RoutePlace[]>(
+    'plan-route-places',
+    [],
+    freshRoutePlaces,
   )
-  const [startTime, setStartTime] = useState('08:00')
-  const [startDate, setStartDate] = useState(
+  const [startTime, setStartTime] = useSessionState(
+    'plan-start-time',
+    '08:00',
+    isFreshNav ? '08:00' : undefined,
+  )
+  const [startDate, setStartDate] = useSessionState(
+    'plan-start-date',
     initialRequest?.startDate ?? format(new Date(), 'yyyy-MM-dd'),
+    isFreshNav ? (initialRequest?.startDate ?? format(new Date(), 'yyyy-MM-dd')) : undefined,
   )
-  const [tripDays, setTripDays] = useState(1)
-  const [budget, setBudget] = useState(initialRequest?.budgetTotal ?? 3_000_000)
-  const [city, setCity] = useState(initialRequest?.destinationCity ?? 'Đà Nẵng')
-  const [additionalNotes, setAdditionalNotes] = useState(initialRequest?.additionalNotes ?? '')
+  const [tripDays, setTripDays] = useSessionState(
+    'plan-trip-days',
+    1,
+    isFreshNav ? 1 : undefined,
+  )
+  const [budget, setBudget] = useSessionState(
+    'plan-budget',
+    initialRequest?.budgetTotal ?? 3_000_000,
+    isFreshNav ? (initialRequest?.budgetTotal ?? 3_000_000) : undefined,
+  )
+  const [city, setCity] = useSessionState(
+    'plan-city',
+    initialRequest?.destinationCity ?? 'Đà Nẵng',
+    isFreshNav ? (initialRequest?.destinationCity ?? 'Đà Nẵng') : undefined,
+  )
+  const [additionalNotes, setAdditionalNotes] = useSessionState(
+    'plan-additional-notes',
+    initialRequest?.additionalNotes ?? '',
+    isFreshNav ? (initialRequest?.additionalNotes ?? '') : undefined,
+  )
   const [allowAiSuggestions, setAllowAiSuggestions] = useState(false)
   const [aiSuggestions, setAiSuggestions] = useState<Place[]>([])
   const [loadingAi, setLoadingAi] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState<Place | null>(null)
   const [osrmRoute, setOsrmRoute] = useState<OsrmRoute | null>(null)
+  const [expandedExplanationIdx, setExpandedExplanationIdx] = useState<number | null>(null)
 
   useEffect(() => {
     const coords = routePlaces.map(rp => ({ lat: rp.place.lat!, lng: rp.place.lng! }))
@@ -368,6 +426,7 @@ export default function PlanRoute() {
     onSuccess: (trip) => {
       queryClient.invalidateQueries({ queryKey: ['trips'] })
       toast.success('Hành trình đã được lưu!')
+      clearPlanningSession()
       navigate(`/trip/${trip.tripId}`)
     },
     onError: () => toast.error('Không thể lưu hành trình. Thử lại sau.'),
@@ -471,7 +530,7 @@ export default function PlanRoute() {
     activityType: 'sightseeing' as const,
   }))
 
-  if (initialPlaces.length === 0) {
+  if (routePlaces.length === 0) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-50">
         <div className="text-center">
@@ -876,6 +935,44 @@ export default function PlanRoute() {
                         ))}
                       </select>
                     </div>
+
+                    {/* Explanation panel — shown when place has scoreBreakdown */}
+                    {rp.place.scoreBreakdown && (() => {
+                      const comps = breakdownToComponents(rp.place.scoreBreakdown!)
+                      const summary = comps.filter(c => c.positive).slice(0, 3).map(c => c.label).join(' · ')
+                      const isExpanded = expandedExplanationIdx === i
+                      return (
+                        <div className="mt-2 border-t border-slate-100 pt-2">
+                          {/* Summary line — always visible */}
+                          {summary && (
+                            <p className="text-[11px] text-slate-500 leading-relaxed mb-1">{summary}</p>
+                          )}
+                          <button
+                            onClick={() => setExpandedExplanationIdx(isExpanded ? null : i)}
+                            className="flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-700 transition-colors"
+                          >
+                            <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            {isExpanded ? 'Thu gọn' : 'Xem chi tiết'}
+                          </button>
+                          {isExpanded && (
+                            <div className="mt-2 space-y-1.5">
+                              {comps.map(c => (
+                                <div key={c.name} className="flex items-center gap-2">
+                                  <div className="w-28 shrink-0 text-[10px] text-slate-500 truncate">{c.label}</div>
+                                  <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${c.positive ? 'bg-blue-400' : 'bg-red-300'}`}
+                                      style={{ width: `${c.pct}%` }}
+                                    />
+                                  </div>
+                                  <div className="w-7 text-right text-[10px] text-slate-400">{c.pct}%</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   {/* Transit gap */}

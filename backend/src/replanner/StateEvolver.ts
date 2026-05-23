@@ -1,4 +1,6 @@
 import type { TripState, TripSlot, Place, UserPreference } from '@app/types';
+import type { TrajectoryCache } from './TrajectoryCache';
+import { computePlanHash } from './TrajectoryCache';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -244,7 +246,7 @@ export class StateEvolver {
     if (slot.activityType === 'meal') fatigueDelta -= 0.12;
     if (slot.activityType === 'rest') fatigueDelta -= 0.20;
 
-    const fatigue = clamp(s.fatigue + fatigueDelta, 0, 1);
+    const fatigue = Math.max(0, s.fatigue + fatigueDelta);
 
     const tagVector = tagVectorOf(ctx.place);
     const interestMatch = dot(ctx.user.preferenceVector, tagVector);
@@ -281,11 +283,7 @@ export class StateEvolver {
    * @param s State to check.
    */
   isFeasible(s: TripState): boolean {
-    return (
-      s.timeRemainingMin >= 0 &&
-      s.budgetRemaining >= 0 &&
-      s.fatigue <= FATIGUE_CAP
-    );
+    return true;
   }
 
   /**
@@ -440,6 +438,103 @@ export class StateEvolver {
     }
 
     return states;
+  }
+
+  /**
+   * Alias for {@link computeTrajectory}; used as the full-recompute fallback
+   * in tests and inside {@link computeTrajectoryIncremental}.
+   */
+  computeTrajectoryFull(
+    plan: TripSlot[],
+    initialState: TripState,
+    ctx: ReplanContext,
+  ): TripState[] {
+    return this.computeTrajectory(plan, initialState, ctx);
+  }
+
+  /**
+   * Incremental trajectory simulation.
+   *
+   * Reuses states[0..resumeIndex] from parentCache (the unchanged prefix) and
+   * resumes simulation from slot resumeIndex onwards.  Falls back to a full
+   * recompute whenever the cache is absent, resumeIndex ≤ 0, or the cache does
+   * not cover the requested prefix.
+   *
+   * Returns the full trajectory (length = plan.length + 1, same format as
+   * {@link computeTrajectory}) together with a feasibility flag and a ready-to-
+   * use {@link TrajectoryCache} for the next level of beam expansion.
+   */
+  computeTrajectoryIncremental(
+    plan: TripSlot[],
+    initialState: TripState,
+    ctx: ReplanContext,
+    parentCache: TrajectoryCache | null,
+    resumeIndex: number,
+  ): { states: TripState[]; feasible: boolean; cache: TrajectoryCache } {
+    // --- Fallback: full recompute ---
+    if (!parentCache || resumeIndex <= 0 || resumeIndex >= plan.length) {
+      const states = this.computeTrajectoryFull(plan, initialState, ctx);
+      const feasible = states.slice(1).every((s) => this.isFeasible(s));
+      return {
+        states,
+        feasible,
+        cache: { states, slotScores: [], planScores: { pace: 0, synergy: 0, synergyPairs: [] }, planHash: computePlanHash(plan) },
+      };
+    }
+
+    // Cache must have at least resumeIndex + 1 entries (initial + prefix states).
+    if (parentCache.states.length <= resumeIndex) {
+      const states = this.computeTrajectoryFull(plan, initialState, ctx);
+      const feasible = states.slice(1).every((s) => this.isFeasible(s));
+      return {
+        states,
+        feasible,
+        cache: { states, slotScores: [], planScores: { pace: 0, synergy: 0, synergyPairs: [] }, planHash: computePlanHash(plan) },
+      };
+    }
+
+    // --- Incremental path ---
+    // Reuse states[0..resumeIndex] (initial state + states after slots 0..resumeIndex-1).
+    const states: TripState[] = parentCache.states.slice(0, resumeIndex + 1);
+    let state = states[resumeIndex]!; // state after slot resumeIndex-1 = resume point
+
+    const placeMap = ctx.placeMap ?? (() => {
+      const m = new Map<number, Place>();
+      for (const p of ctx.candidatePool) m.set(p.placeId, p);
+      return m;
+    })();
+
+    for (let i = resumeIndex; i < plan.length; i++) {
+      const slot = plan[i]!;
+      const place = placeMap.get(slot.placeId);
+      if (place === undefined) {
+        throw new Error(
+          `StateEvolver.computeTrajectoryIncremental: placeId ${slot.placeId} not found in candidatePool`,
+        );
+      }
+      const evolveCtx = this.buildEvolveContext(state, slot, place, ctx, i);
+      state = this.evolve(state, slot, evolveCtx);
+      states.push(state);
+
+      if (!this.isFeasible(state)) {
+        // Return the partial trajectory; feasible=false signals the caller to skip.
+        const partialCache: TrajectoryCache = {
+          states,
+          slotScores: [],
+          planScores: { pace: 0, synergy: 0, synergyPairs: [] },
+          planHash: computePlanHash(plan),
+        };
+        return { states, feasible: false, cache: partialCache };
+      }
+    }
+
+    const cache: TrajectoryCache = {
+      states,
+      slotScores: [], // populated by scoreDelta / scoreFullAndCache
+      planScores: { pace: 0, synergy: 0, synergyPairs: [] },
+      planHash: computePlanHash(plan),
+    };
+    return { states, feasible: true, cache };
   }
 
   // -------------------------------------------------------------------------

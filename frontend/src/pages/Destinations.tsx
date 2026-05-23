@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, MapPin, TrendingUp, Star, Users, Flame,
@@ -44,8 +43,24 @@ function ScoreBar({ score }: { score: number }) {
 
 export default function Destinations() {
   const navigate = useNavigate()
-  const [activeRegion, setActiveRegion] = useState<string>('all')
-  const [search, setSearch] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeRegion = searchParams.get('region') ?? 'all'
+  const search = searchParams.get('q') ?? ''
+
+  function setActiveRegion(region: string) {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      region === 'all' ? p.delete('region') : p.set('region', region)
+      return p
+    }, { replace: true })
+  }
+  function setSearch(q: string) {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      q ? p.set('q', q) : p.delete('q')
+      return p
+    }, { replace: true })
+  }
 
   const { data: destinations = [], isFetching, refetch } = useQuery({
     queryKey: ['trending-destinations'],
@@ -157,7 +172,7 @@ export default function Destinations() {
               <MapPin className="w-12 h-12 mx-auto mb-3 opacity-40" />
               <p className="font-semibold text-lg">Không tìm thấy điểm đến</p>
               <button
-                onClick={() => { setActiveRegion('all'); setSearch('') }}
+                onClick={() => setSearchParams({}, { replace: true })}
                 className="mt-4 text-blue-600 font-semibold hover:underline text-sm"
               >
                 Xem tất cả

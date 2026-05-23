@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useSessionState } from '@/hooks/useSessionState'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Info, Check,
@@ -263,8 +264,8 @@ const DEFAULT_PREFS: FormState = {
 
 export default function Preferences() {
   const navigate = useNavigate()
-  const [prefs, setPrefs] = useState<FormState>(DEFAULT_PREFS)
-  const [stepIndex, setStepIndex] = useState(0)
+  const [prefs, setPrefs] = useSessionState<FormState>('pref-prefs', DEFAULT_PREFS)
+  const [stepIndex, setStepIndex] = useSessionState('pref-step-index', 0)
   const [isExistingSurvey, setIsExistingSurvey] = useState(false)
   const [weights, setWeights] = useState<Record<string, number> | null>(null)
   const [completed, setCompleted] = useState(false)
@@ -298,6 +299,7 @@ export default function Preferences() {
     },
     onSuccess: async () => {
       toast.success(isExistingSurvey ? 'Đã cập nhật sở thích!' : 'Đã lưu sở thích!')
+      setStepIndex(0)
       setIsExistingSurvey(true)
       setCompleted(true)
       try {

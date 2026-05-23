@@ -109,10 +109,6 @@ export function isSetFeasible(places: Place[], ctx: ReplanContext): boolean {
   if (cached !== undefined) return cached;
 
   const lbCost = places.reduce((s, p) => s + (p.minPrice ?? 0), 0);
-  if (lbCost > ctx.initialState.budgetRemaining) {
-    setFeasibilityCache.set(key, false);
-    return false;
-  }
 
   const lbTimeVisits = places.reduce((s, p) => s + p.avgVisitDurationMin, 0);
   const mstKm = mstHaversineKm(places);

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { arrayMove } from '@dnd-kit/sortable'
 import type { Trip, TripSlot, TripVersion, SortMode, PlanRequest } from '@/types'
-import { detectConflicts } from '@/utils/conflictDetector'
+import { detectConflicts, repairTimestamps } from '@/utils/conflictDetector'
 
 const MAX_HISTORY = 50
 
@@ -87,7 +87,9 @@ export const useTripStore = create<TripStore>((set, get) => ({
   commitPending: () => {
     const { trip, pendingSlots, past } = get()
     if (!trip || !pendingSlots) return
-    const withConflicts = detectConflicts(pendingSlots.map(s => ({ ...s, pending: false })))
+    const cleaned = pendingSlots.map(s => ({ ...s, pending: false }))
+    const repaired = repairTimestamps(cleaned)
+    const withConflicts = detectConflicts(repaired)
     const newPast = [...past, trip.slots].slice(-MAX_HISTORY)
     set({
       trip: { ...trip, slots: withConflicts },

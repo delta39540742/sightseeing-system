@@ -1,7 +1,7 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma, pool } from '../../lib/prisma';
-import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore } from './solver';
+import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore, EnrichedSlot } from './solver';
 import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
 import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
@@ -553,6 +553,15 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             }
         }
 
+        // Keep enriched plan for explanation merge after DB persist
+        const enrichedPlanByKey = new Map<string, EnrichedSlot>();
+        for (const slot of optimizedPlan as any[]) {
+            if (slot.scoreExplanation || slot.orderExplanation) {
+                const key = `${slot.dayIndex}_${slot.slotOrder}`;
+                enrichedPlanByKey.set(key, slot as EnrichedSlot);
+            }
+        }
+
         // Merge locked slots: pre-built from payload, inserted at correct position by time order.
         if (rawLockedSlots.length > 0) {
             const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
@@ -657,20 +666,54 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             objectiveScore:  newTrip.objective_score,
             createdAt:       newTrip.created_at.toISOString(),
             updatedAt:       newTrip.updated_at.toISOString(),
-            slots: persistedSlots.map((s) => ({
-                slotId:        s.slot_id,
-                tripId:        s.trip_id,
-                dayIndex:      s.day_index,
-                slotOrder:     s.slot_order,
-                placeId:       Number(s.place_id),
-                plannedStart:  s.planned_start.toISOString(),
-                plannedEnd:    s.planned_end.toISOString(),
-                estimatedCost: s.estimated_cost,
-                activityType:  s.activity_type,
-                rationale:     s.rationale,
-                status:        s.status,
-                isLocked:      s.is_locked,
-            })),
+            slots: persistedSlots.map((s) => {
+                const enriched = enrichedPlanByKey.get(`${s.day_index}_${s.slot_order}`);
+                const scoreExp = enriched?.scoreExplanation;
+                const orderExp = enriched?.orderExplanation;
+                return {
+                    slotId:        s.slot_id,
+                    tripId:        s.trip_id,
+                    dayIndex:      s.day_index,
+                    slotOrder:     s.slot_order,
+                    placeId:       Number(s.place_id),
+                    plannedStart:  s.planned_start.toISOString(),
+                    plannedEnd:    s.planned_end.toISOString(),
+                    estimatedCost: s.estimated_cost,
+                    activityType:  s.activity_type,
+                    rationale:     s.rationale,
+                    status:        s.status,
+                    isLocked:      s.is_locked,
+                    explanation: scoreExp ? {
+                        summary: scoreExp.summary,
+                        score: {
+                            total:      scoreExp.totalScore,
+                            rank:       scoreExp.rank,
+                            poolSize:   scoreExp.poolSize,
+                            components: scoreExp.components.map(c => ({
+                                name:     c.name,
+                                label:    c.label,
+                                weighted: c.weighted,
+                                pct:      scoreExp.totalScore !== 0
+                                    ? Math.round(Math.abs(c.weighted) / Math.max(1, scoreExp.components.reduce((s, x) => s + Math.abs(x.weighted), 0)) * 100)
+                                    : 0,
+                                detail:   c.detail,
+                            })),
+                            runnerUp: scoreExp.topRunnerUp ? {
+                                name:     scoreExp.topRunnerUp.name,
+                                score:    scoreExp.topRunnerUp.totalScore,
+                                mainLoss: scoreExp.topRunnerUp.mainLoss,
+                            } : undefined,
+                        },
+                        order: orderExp?.swapApplied ? {
+                            changed:   true,
+                            from:      orderExp.greedyOriginalPosition,
+                            to:        orderExp.finalPosition,
+                            reason:    orderExp.delta?.mainGain ?? '',
+                            tradeoff:  orderExp.delta?.mainTradeoff,
+                        } : { changed: false },
+                    } : undefined,
+                };
+            }),
         });
     } catch (error: any) {
         req.log.error({ err: error }, 'createTrip failed');

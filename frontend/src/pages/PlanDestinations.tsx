@@ -1,5 +1,6 @@
 import { useState, useRef, useMemo } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, useNavigationType } from 'react-router-dom'
+import { useSessionState } from '@/hooks/useSessionState'
 import { useQuery } from '@tanstack/react-query'
 import {
   MapPin, Send, X, ArrowRight, Route, Calendar, Wallet,
@@ -53,18 +54,32 @@ export default function PlanDestinations() {
   const { user, openLoginDrawer } = useAuthStore()
 
   const navState = location.state as { selectedPlaces?: Place[]; planRequest?: PlanRequest | null } | null
+  // PUSH = fresh navigation (from another page); POP = back/forward button (session should win)
+  const navType = useNavigationType()
+  const isFreshNav = navType === 'PUSH'
 
   const [input, setInput] = useState('')
   const [isParsing, setIsParsing] = useState(false)
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: 'ai',
-      text: 'Chào bạn! Tôi có thể giúp bạn tìm những địa điểm tuyệt vời. Bạn muốn bắt đầu từ đâu?',
-    },
-  ])
-  const [planRequest, setPlanRequest] = useState<PlanRequest | null>(navState?.planRequest ?? null)
-  const [selectedPlaces, setSelectedPlaces] = useState<Place[]>(navState?.selectedPlaces ?? [])
-  const [dismissedIds, setDismissedIds] = useState<number[]>([])
+
+  const DEFAULT_MESSAGES: ChatMessage[] = [
+    { role: 'ai', text: 'Chào bạn! Tôi có thể giúp bạn tìm những địa điểm tuyệt vời. Bạn muốn bắt đầu từ đâu?' },
+  ]
+  const [messages, setMessages] = useSessionState<ChatMessage[]>(
+    'plan-messages',
+    DEFAULT_MESSAGES,
+  )
+  const [planRequest, setPlanRequest] = useSessionState<PlanRequest | null>(
+    'plan-request',
+    null,
+    // Fresh navigation with navState overrides session; back/forward keeps session
+    isFreshNav && navState && 'planRequest' in navState ? navState.planRequest ?? null : undefined,
+  )
+  const [selectedPlaces, setSelectedPlaces] = useSessionState<Place[]>(
+    'plan-selected-places',
+    [],
+    isFreshNav && navState?.selectedPlaces !== undefined ? navState.selectedPlaces : undefined,
+  )
+  const [dismissedIds, setDismissedIds] = useSessionState<number[]>('plan-dismissed-ids', [])
   const [conflicts, setConflicts] = useState<ConflictWarning[]>([])
   const [showNearby, setShowNearby] = useState(false)
   const [selectedNearby, setSelectedNearby] = useState<Place | null>(null)

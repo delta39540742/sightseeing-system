@@ -4,6 +4,7 @@ import type { StateEvolver, ReplanContext } from './StateEvolver';
 import { dot, tagVectorOf } from './StateEvolver';
 import type { BeamSearchContext } from './BeamSearch';
 import { isSetFeasible } from './FeasibilityFilter';
+import type { ProposedMutation } from './CandidatePruner';
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -39,6 +40,21 @@ export interface MutationResult {
    */
   repairedFromIndex?: number;
   /**
+   * First index in newPlan where state MAY differ from the parent plan.
+   * Plan[0..resumeIndex-1] is identical to the parent, so the parent's
+   * cached trajectory states and per-slot scores are valid for that prefix.
+   * Absent or 0 means "recompute everything" (safe fallback).
+   *
+   * Mapping per operator:
+   *   TIME_SHIFT    → index of the shifted slot
+   *   SWAP_ORDER    → min(indexA, indexB)
+   *   REPLACE_PLACE → index of the replaced slot
+   *   DROP_SLOT     → index of the dropped slot (in new shorter plan)
+   *   INSERT_ALT    → insertion position
+   *   TSP_REORDER   → 0 (full reorder, no safe prefix)
+   */
+  resumeIndex?: number;
+  /**
    * Full state trajectory produced by computeTrajectory() during feasibility check.
    * Cached here so BeamSearch.search() can reuse it instead of re-simulating (Bug 1 fix).
    * states[i+1] = state after visiting newPlan[i]; length = newPlan.length + 1.
@@ -60,7 +76,7 @@ const MAX_REPLACE_CANDIDATES = 3;
 const MAX_INSERT_CANDIDATES = 5;
 
 /** Hard cap on total results returned by generateAll (latency control). */
-const GENERATE_ALL_CAP = 30;
+export const GENERATE_ALL_CAP = 30;
 
 /**
  * Vietnam standard offset in milliseconds (GMT+7).
@@ -148,6 +164,7 @@ export class MutationOperators {
             operator: 'TIME_SHIFT',
             affectedSlotIds: [anchor.slotId],
             repairedFromIndex: i,
+            resumeIndex: i,
             stateTrajectory: trajectory,
             description: `Dời slot cuối ${i} đi ${shiftMin > 0 ? '+' : ''}${shiftMin} phút`
           });
@@ -179,6 +196,7 @@ export class MutationOperators {
           operator: 'TIME_SHIFT',
           affectedSlotIds: [anchor.slotId],
           repairedFromIndex: i,
+          resumeIndex: i,
           stateTrajectory: trajectory,
           description: `Dời slot ${i} ${shiftMin > 0 ? '+' : ''}${shiftMin} phút và tái tối ưu suffix`,
         });
@@ -263,6 +281,7 @@ export class MutationOperators {
         operator: 'SWAP_ORDER',
         affectedSlotIds: affectedSlotIds,
         repairedFromIndex: i,
+        resumeIndex: i,
         stateTrajectory: trajectory,
         description: `Đổi chỗ hai slot kề nhau ở vị trí ${i} và ${i + 1}, rồi repair toàn suffix`,
       });
@@ -386,6 +405,7 @@ export class MutationOperators {
           operator: 'REPLACE_PLACE',
           affectedSlotIds: Array.from(affectedIds),
           repairedFromIndex: i,
+          resumeIndex: i,
           stateTrajectory: trajectory,
           description: `Thay ${currentPlaceName} bằng ${alt.name} và tái lập lịch phần còn lại`,
         });
@@ -452,6 +472,7 @@ export class MutationOperators {
         operator: 'DROP_SLOT',
         affectedSlotIds: [slot.slotId],
         ...(isSuffixRepaired && { repairedFromIndex: i }),
+        resumeIndex: i,
         stateTrajectory: trajectory,
         description: isSuffixRepaired
           ? `Bỏ slot ${i} (${slot.activityType}) rồi dồn lại toàn bộ suffix`
@@ -589,6 +610,7 @@ export class MutationOperators {
           operator: 'INSERT_ALT',
           affectedSlotIds: affectedIds,
           repairedFromIndex: pos,
+          resumeIndex: pos,
           stateTrajectory: trajectory,
           description: `Chèn ${place.name} ở vị trí ${pos} và tái tối ưu suffix`,
         });
@@ -750,6 +772,7 @@ export class MutationOperators {
       operator: 'TSP_REORDER',
       affectedSlotIds: affectedSlotIds.length > 0 ? affectedSlotIds : plan.map(s => s.slotId),
       repairedFromIndex: 0,
+      resumeIndex: 0,
       stateTrajectory: trajectory,
       description: 'Tối ưu thứ tự tham quan để giảm tổng quãng đường di chuyển trong ngày',
     }];
@@ -857,6 +880,48 @@ export class MutationOperators {
 
     // 4. Cắt mảng theo giới hạn hằng số (Đảm bảo GENERATE_ALL_CAP đã được khai báo)
     return deduped.slice(0, GENERATE_ALL_CAP);
+  }
+
+  /**
+   * UCB1-bandit variant of generateAll.
+   *
+   * Instead of round-robin interleaving, each operator receives an explicit
+   * slot budget from the caller (typically from UCB1Bandit.allocate()).
+   * Returns the actual count taken from each operator so the bandit can
+   * compute rewards after beam selection.
+   */
+  generateAllAdaptive(
+    plan: TripSlot[],
+    ctx: ReplanContext,
+    allocation: Map<OperatorName, number>,
+  ): { candidates: MutationResult[]; generatedCounts: Map<OperatorName, number> } {
+    const operatorFns: [OperatorName, () => MutationResult[]][] = [
+      ['TIME_SHIFT',    () => this.timeShift(plan, ctx)],
+      ['SWAP_ORDER',    () => this.swapOrder(plan, ctx)],
+      ['REPLACE_PLACE', () => this.replacePlace(plan, ctx)],
+      ['DROP_SLOT',     () => this.dropSlot(plan, ctx)],
+      ['INSERT_ALT',    () => this.insertAlt(plan, ctx)],
+      ['TSP_REORDER',   () => this.tspReorder(plan, ctx)],
+    ];
+
+    const allCandidates: MutationResult[] = [];
+    const generatedCounts = new Map<OperatorName, number>();
+
+    for (const [op, fn] of operatorFns) {
+      const budget = allocation.get(op) ?? 0;
+      if (budget <= 0) {
+        generatedCounts.set(op, 0);
+        continue;
+      }
+      const taken = fn().slice(0, budget);
+      allCandidates.push(...taken);
+      generatedCounts.set(op, taken.length);
+    }
+
+    return {
+      candidates: allCandidates.slice(0, GENERATE_ALL_CAP),
+      generatedCounts,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1342,7 +1407,7 @@ export class MutationOperators {
    * @param ctx Ngữ cảnh replan chứa các tham số giới hạn và dữ liệu ứng viên.
    * @returns Danh sách TripSlot đã được cập nhật mốc thời gian, hoặc `null` nếu không thể sửa lỗi.
    */
-  private repairSuffix(
+  public repairSuffix(
     plan: TripSlot[],
     fromIndex: number,
     ctx: ReplanContext,
@@ -1659,5 +1724,483 @@ export class MutationOperators {
 
   public rescheduleSlotTimes(plan: TripSlot[], ctx: ReplanContext): TripSlot[] | null {
     return this.repairSuffix(plan, 0, ctx);
+  }
+
+  // =========================================================================
+  // SPEC-02: Phase-1 proposal generators + Phase-2 materializer
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // Phase-1 helpers: one propose* method per operator
+  // These are CHEAP — no repairSuffix, no simulateIfFeasible, no plan cloning.
+  // -------------------------------------------------------------------------
+
+  private proposeTimeShifts(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    const proposals: ProposedMutation[] = [];
+    for (let i = 0; i < plan.length; i++) {
+      const anchor = plan[i]!;
+      if (anchor.isLocked) continue;
+      if (anchor.status !== 'planned') continue;
+      for (const deltaMin of TIME_SHIFT_DELTAS_MIN) {
+        const shifted = this.shiftSlot(anchor, deltaMin);
+        if (!this.withinOpeningHours(shifted, ctx)) continue;
+        if (this.exceedsNightConstraint(shifted.plannedEnd, ctx)) continue;
+        proposals.push({ operator: 'TIME_SHIFT', slotIndex: i, deltaMin });
+      }
+    }
+    return proposals;
+  }
+
+  private proposeSwaps(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    const proposals: ProposedMutation[] = [];
+    const sorted = [...plan].sort((a, b) =>
+      a.dayIndex !== b.dayIndex ? a.dayIndex - b.dayIndex : a.slotOrder - b.slotOrder,
+    );
+    let lastNonPlanned = -1;
+    for (let k = sorted.length - 1; k >= 0; k--) {
+      if (sorted[k]!.status !== 'planned') { lastNonPlanned = k; break; }
+    }
+    for (let i = 0; i < sorted.length - 1; i++) {
+      if (i <= lastNonPlanned) continue;
+      const a = sorted[i]!;
+      const b = sorted[i + 1]!;
+      if (a.isLocked || b.isLocked) continue;
+      if (a.dayIndex !== b.dayIndex) continue;
+      proposals.push({ operator: 'SWAP_ORDER', indexA: i, indexB: i + 1 });
+    }
+    return proposals;
+  }
+
+  private proposeReplaces(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    const proposals: ProposedMutation[] = [];
+    const occupied = new Set(plan.map((s) => s.placeId));
+    for (let i = 0; i < plan.length; i++) {
+      const slot = plan[i]!;
+      if (slot.isLocked) continue;
+      if (slot.status !== 'planned' && slot.status !== 'replaced') continue;
+      const currentPlace = ctx.placeMap?.get(slot.placeId) ??
+        ctx.candidatePool.find((p) => p.placeId === slot.placeId);
+      const isRaining = (ctx as BeamSearchContext).weatherForecast?.some(
+        (w) => (w?.rainMmPerH ?? 0) >= 5) ?? false;
+      const isOutdoor = currentPlace?.indoorOutdoor === 'outdoor';
+      const isReplaceable = slot.activityType === 'sightseeing' || slot.activityType === 'activity';
+      if (!isReplaceable && !(isRaining && isOutdoor)) continue;
+
+      const candidates = ctx.candidatePool
+        .filter((p) => !occupied.has(p.placeId))
+        .map((p) => ({ place: p, score: MutationOperators.candidatePriority(p, currentPlace, ctx) }))
+        .filter((c) => c.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_REPLACE_CANDIDATES);
+
+      for (const { place } of candidates) {
+        // LB feasibility — same cheap check as the materializer does.
+        const newPlaces = plan.map((s) => ctx.placeMap?.get(s.placeId) ??
+          ctx.candidatePool.find((p) => p.placeId === s.placeId))
+          .filter((p): p is Place => p !== undefined && p.placeId !== slot.placeId)
+          .concat(place);
+        if (!isSetFeasible(newPlaces, ctx)) continue;
+        proposals.push({
+          operator: 'REPLACE_PLACE',
+          slotIndex: i,
+          newPlaceId: place.placeId,
+          newSlotDuration: Math.max(MIN_SLOT_DURATION_MIN, place.avgVisitDurationMin),
+          newSlotCost: place.estimatedCost ?? place.minPrice ?? 0,
+        });
+      }
+    }
+    return proposals;
+  }
+
+  private proposeDrops(plan: TripSlot[]): ProposedMutation[] {
+    const proposals: ProposedMutation[] = [];
+    for (let i = 0; i < plan.length; i++) {
+      const slot = plan[i]!;
+      if (slot.isLocked) continue;
+      if (slot.activityType === 'meal') continue;
+      if (slot.status === 'completed' || slot.status === 'skipped') continue;
+      proposals.push({ operator: 'DROP_SLOT', slotIndex: i });
+    }
+    return proposals;
+  }
+
+  private proposeInserts(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    const proposals: ProposedMutation[] = [];
+    const occupied = new Set(
+      plan.filter(s => s.status === 'planned' || s.status === 'completed' ||
+        s.status === 'skipped' || s.status === 'replaced').map(s => s.placeId),
+    );
+
+    let insertable: Place[];
+    if (ctx.forceIncludePlaceId !== undefined) {
+      if (occupied.has(ctx.forceIncludePlaceId)) {
+        insertable = [];
+      } else {
+        const forced = ctx.candidatePool.find((p) => p.placeId === ctx.forceIncludePlaceId);
+        insertable = forced ? [forced] : [];
+      }
+    } else {
+      insertable = ctx.candidatePool
+        .filter((p) => !occupied.has(p.placeId))
+        .map((p) => ({ place: p, score: MutationOperators.candidatePriority(p, undefined, ctx) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_INSERT_CANDIDATES)
+        .map((x) => x.place);
+    }
+
+    let startPos = 0;
+    for (let i = plan.length - 1; i >= 0; i--) {
+      const slot = plan[i];
+      if (slot.status !== 'planned' || (slot.status === 'planned' && slot.actualStart !== null)) {
+        startPos = i + 1;
+        break;
+      }
+    }
+
+    for (const place of insertable) {
+      for (let pos = startPos; pos <= plan.length; pos++) {
+        if (proposals.length >= 20) return proposals;
+        // LB check — same as materializer.
+        const tentativePlaces = [
+          ...plan.slice(0, pos).map((s) => ctx.placeMap?.get(s.placeId) ??
+            ctx.candidatePool.find((p) => p.placeId === s.placeId)),
+          place,
+          ...plan.slice(pos).map((s) => ctx.placeMap?.get(s.placeId) ??
+            ctx.candidatePool.find((p) => p.placeId === s.placeId)),
+        ].filter((p): p is Place => p !== undefined);
+        if (!isSetFeasible(tentativePlaces, ctx)) continue;
+        proposals.push({
+          operator: 'INSERT_ALT',
+          insertIndex: pos,
+          newPlaceId: place.placeId,
+          newSlotDuration: Math.max(MIN_SLOT_DURATION_MIN, place.avgVisitDurationMin),
+          newSlotCost: place.estimatedCost ?? place.minPrice ?? 0,
+        });
+      }
+    }
+    return proposals;
+  }
+
+  private proposeTSP(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    // [Decision 4]: TSP_REORDER cannot be proposed cheaply — 2-opt IS the computation.
+    // Run it eagerly here and store the result as a pre-computed opaque proposal.
+    // canPrune() always returns false for TSP, so the cost is the same as before.
+    const results = this.tspReorder(plan, ctx);
+    return results.map((r) => ({ operator: 'TSP_REORDER' as const, _materialized: r }));
+  }
+
+  // -------------------------------------------------------------------------
+  // generateAllProposed — Phase 1 (lightweight, no repairSuffix/simulate)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Generates lightweight ProposedMutation[] using cheap per-operator logic.
+   * Applies the same round-robin merge and GENERATE_ALL_CAP=30 cap as generateAll().
+   *
+   * [Decision 11]: Cap of 30 applies BEFORE pruning. After canPrune() filters proposals,
+   * fewer than 30 may reach materializeMutation() — that is the desired behavior.
+   *
+   * [Decision 5]: generateAll() is kept unchanged for backward compatibility with tests.
+   */
+  public generateAllProposed(plan: TripSlot[], ctx: ReplanContext): ProposedMutation[] {
+    const timeShiftProps = this.proposeTimeShifts(plan, ctx);
+    const swapProps = this.proposeSwaps(plan, ctx);
+    const replaceProps = this.proposeReplaces(plan, ctx);
+    const dropProps = this.proposeDrops(plan);
+    const insertProps = this.proposeInserts(plan, ctx);
+    const tspProps = this.proposeTSP(plan, ctx);
+
+    // Round-robin merge (anti-starvation) — mirrors generateAll().
+    const operatorOutputs = [timeShiftProps, swapProps, replaceProps, dropProps, insertProps, tspProps];
+    const allMerged: ProposedMutation[] = [];
+    let hasMore = true;
+    let index = 0;
+    while (hasMore) {
+      hasMore = false;
+      for (const output of operatorOutputs) {
+        if (index < output.length) {
+          allMerged.push(output[index]!);
+          hasMore = true;
+        }
+      }
+      index++;
+    }
+
+    // [Decision 6]: Parameter-based dedup (coarser than plan-signature dedup in generateAll).
+    const seen = new Set<string>();
+    const deduped: ProposedMutation[] = [];
+    for (const p of allMerged) {
+      const key = [
+        p.operator,
+        p.slotIndex ?? '',
+        p.indexA ?? '',
+        p.indexB ?? '',
+        p.deltaMin ?? '',
+        p.newPlaceId ?? '',
+        p.insertIndex ?? '',
+      ].join('|');
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(p);
+      }
+    }
+
+    return deduped.slice(0, GENERATE_ALL_CAP);
+  }
+
+  // -------------------------------------------------------------------------
+  // materializeMutation — Phase 2 (expensive: clones plan, repairSuffix, simulate)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Materializes a ProposedMutation into a full MutationResult (with stateTrajectory),
+   * or returns null if the candidate is infeasible after repairSuffix + simulation.
+   *
+   * Called only for proposals that survived canPrune() — so most infeasible candidates
+   * are already excluded before reaching this path.
+   */
+  public materializeMutation(
+    proposed: ProposedMutation,
+    plan: TripSlot[],
+    ctx: ReplanContext,
+  ): MutationResult | null {
+    switch (proposed.operator) {
+      case 'TSP_REORDER':
+        // [Decision 4]: Pre-computed in proposeTSP().
+        return proposed._materialized ?? null;
+
+      case 'TIME_SHIFT': {
+        const { slotIndex, deltaMin } = proposed;
+        if (slotIndex == null || deltaMin == null) return null;
+        const anchor = plan[slotIndex];
+        if (!anchor) return null;
+
+        const mutated = plan.map((slot, idx) =>
+          idx === slotIndex ? this.shiftSlot(slot, deltaMin) : { ...slot },
+        );
+        const shiftedAnchor = mutated[slotIndex]!;
+
+        if (!this.withinOpeningHours(shiftedAnchor, ctx)) return null;
+        if (this.exceedsNightConstraint(shiftedAnchor.plannedEnd, ctx)) return null;
+
+        if (slotIndex + 1 >= plan.length) {
+          const trajectory = this.simulateIfFeasible(mutated, ctx);
+          if (!trajectory) return null;
+          return {
+            newPlan: mutated,
+            operator: 'TIME_SHIFT',
+            affectedSlotIds: [anchor.slotId],
+            repairedFromIndex: slotIndex,
+            resumeIndex: slotIndex,
+            stateTrajectory: trajectory,
+            description: `Dời slot cuối ${slotIndex} đi ${deltaMin > 0 ? '+' : ''}${deltaMin} phút`,
+          };
+        }
+
+        const repaired = this.repairSuffix(mutated, slotIndex + 1, ctx);
+        if (!repaired) return null;
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) return null;
+
+        const changedSlotIds: string[] = [];
+        for (let j = slotIndex; j < plan.length; j++) {
+          if (plan[j]!.plannedStart !== repaired[j]!.plannedStart ||
+            plan[j]!.plannedEnd !== repaired[j]!.plannedEnd) {
+            changedSlotIds.push(repaired[j]!.slotId);
+          }
+        }
+        return {
+          newPlan: repaired,
+          operator: 'TIME_SHIFT',
+          affectedSlotIds: [anchor.slotId],
+          repairedFromIndex: slotIndex,
+          resumeIndex: slotIndex,
+          stateTrajectory: trajectory,
+          description: `Dời slot ${slotIndex} ${deltaMin > 0 ? '+' : ''}${deltaMin} phút và tái tối ưu suffix`,
+        };
+      }
+
+      case 'SWAP_ORDER': {
+        const { indexA, indexB } = proposed;
+        if (indexA == null || indexB == null) return null;
+        const sorted = [...plan].sort((a, b) =>
+          a.dayIndex !== b.dayIndex ? a.dayIndex - b.dayIndex : a.slotOrder - b.slotOrder,
+        );
+        const a = sorted[indexA];
+        const b = sorted[indexB];
+        if (!a || !b) return null;
+
+        const mutated = sorted.map((slot) => ({ ...slot }));
+        mutated[indexA] = { ...b, slotOrder: a.slotOrder, version: b.version + 1 };
+        mutated[indexB] = { ...a, slotOrder: b.slotOrder, version: a.version + 1 };
+
+        const repaired = this.repairSuffix(mutated, indexA, ctx);
+        if (!repaired) return null;
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) return null;
+
+        const affectedSlotIds = Array.from(new Set([
+          ...sorted.slice(indexA).map(s => s.slotId),
+          ...repaired.slice(indexA).map(s => s.slotId),
+        ]));
+        return {
+          newPlan: repaired,
+          operator: 'SWAP_ORDER',
+          affectedSlotIds,
+          repairedFromIndex: indexA,
+          resumeIndex: indexA,
+          stateTrajectory: trajectory,
+          description: `Đổi chỗ hai slot kề nhau ở vị trí ${indexA} và ${indexB}, rồi repair toàn suffix`,
+        };
+      }
+
+      case 'REPLACE_PLACE': {
+        const { slotIndex, newPlaceId } = proposed;
+        if (slotIndex == null || newPlaceId == null) return null;
+        const currentSlot = plan[slotIndex];
+        if (!currentSlot) return null;
+        const alt = ctx.placeMap?.get(newPlaceId) ??
+          ctx.candidatePool.find((p) => p.placeId === newPlaceId);
+        if (!alt) return null;
+
+        const mutated = plan.map((slot) => ({ ...slot }));
+        try {
+          mutated[slotIndex] = this.replaceSlotPlace(mutated[slotIndex]!, alt);
+        } catch {
+          return null;
+        }
+
+        const newPlaces = mutated.map((s) => ctx.placeMap?.get(s.placeId))
+          .filter((p): p is Place => p !== undefined);
+        if (!isSetFeasible(newPlaces, ctx)) return null;
+
+        const repaired = this.repairSuffix(mutated, slotIndex, ctx);
+        if (!repaired) return null;
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) return null;
+
+        const affectedIds = new Set<string>([currentSlot.slotId]);
+        for (let j = slotIndex + 1; j < repaired.length; j++) {
+          const oldSlot = plan[j];
+          const newSlot = repaired[j];
+          if (oldSlot && newSlot &&
+            (oldSlot.plannedStart !== newSlot.plannedStart ||
+              oldSlot.plannedEnd !== newSlot.plannedEnd ||
+              oldSlot.dayIndex !== newSlot.dayIndex)) {
+            affectedIds.add(newSlot.slotId);
+          }
+        }
+        const currentPlaceName = (ctx.placeMap?.get(currentSlot.placeId) ??
+          ctx.candidatePool.find((p) => p.placeId === currentSlot.placeId))?.name ??
+          `Địa điểm cũ (ID: ${currentSlot.placeId})`;
+        return {
+          newPlan: repaired,
+          operator: 'REPLACE_PLACE',
+          affectedSlotIds: Array.from(affectedIds),
+          repairedFromIndex: slotIndex,
+          resumeIndex: slotIndex,
+          stateTrajectory: trajectory,
+          description: `Thay ${currentPlaceName} bằng ${alt.name} và tái lập lịch phần còn lại`,
+        };
+      }
+
+      case 'DROP_SLOT': {
+        const { slotIndex } = proposed;
+        if (slotIndex == null) return null;
+        const slot = plan[slotIndex];
+        if (!slot) return null;
+
+        const mutated = plan.filter((_, idx) => idx !== slotIndex).map((s) => ({ ...s }));
+        let repaired: TripSlot[] | null = mutated;
+        let isSuffixRepaired = false;
+        if (slotIndex < mutated.length) {
+          repaired = this.repairSuffix(mutated, slotIndex, ctx);
+          isSuffixRepaired = true;
+        }
+        if (!repaired) return null;
+
+        const dayCounters = new Map<number, number>();
+        for (const s of repaired) {
+          const cur = dayCounters.get(s.dayIndex) ?? 0;
+          s.slotOrder = cur;
+          dayCounters.set(s.dayIndex, cur + 1);
+        }
+
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) return null;
+        return {
+          newPlan: repaired,
+          operator: 'DROP_SLOT',
+          affectedSlotIds: [slot.slotId],
+          ...(isSuffixRepaired && { repairedFromIndex: slotIndex }),
+          resumeIndex: slotIndex,
+          stateTrajectory: trajectory,
+          description: isSuffixRepaired
+            ? `Bỏ slot ${slotIndex} (${slot.activityType}) rồi dồn lại toàn bộ suffix`
+            : `Bỏ slot ${slotIndex} (${slot.activityType}) ở cuối kế hoạch`,
+        };
+      }
+
+      case 'INSERT_ALT': {
+        const { insertIndex, newPlaceId } = proposed;
+        if (insertIndex == null || newPlaceId == null) return null;
+        const place = ctx.placeMap?.get(newPlaceId) ??
+          ctx.candidatePool.find((p) => p.placeId === newPlaceId);
+        if (!place) return null;
+
+        const capturedAtTime = new Date(ctx.initialState.capturedAt).getTime();
+        const newSlot = this.synthesizeSlot(place, plan, insertIndex, ctx);
+        const mutated = [
+          ...plan.slice(0, insertIndex).map((s) => ({ ...s })),
+          newSlot,
+          ...plan.slice(insertIndex).map((s) => ({ ...s })),
+        ];
+
+        const newPlaces = mutated.map((s) => ctx.placeMap?.get(s.placeId))
+          .filter((p): p is Place => p !== undefined);
+        if (!isSetFeasible(newPlaces, ctx)) return null;
+
+        const repaired = this.repairSuffix(mutated, insertIndex, ctx);
+        if (!repaired) return null;
+
+        let currentDay = insertIndex > 0 ? repaired[insertIndex - 1]!.dayIndex : (repaired[0]?.dayIndex ?? 0);
+        let currentOrder = insertIndex > 0 ? repaired[insertIndex - 1]!.slotOrder + 1 : 0;
+        for (let i = insertIndex; i < repaired.length; i++) {
+          if (repaired[i]!.dayIndex !== currentDay) {
+            currentDay = repaired[i]!.dayIndex;
+            currentOrder = 0;
+          }
+          repaired[i]!.slotOrder = currentOrder++;
+        }
+
+        const slotStartTime = new Date(repaired[insertIndex]!.plannedStart).getTime();
+        if (slotStartTime < capturedAtTime) return null;
+
+        const trajectory = this.simulateIfFeasible(repaired, ctx);
+        if (!trajectory) return null;
+
+        const affectedIds: string[] = [repaired[insertIndex]!.slotId];
+        for (let j = insertIndex; j < plan.length; j++) {
+          const origSlot = plan[j]!;
+          const repairedSlot = repaired[j + 1];
+          if (repairedSlot && (origSlot.plannedStart !== repairedSlot.plannedStart ||
+            origSlot.plannedEnd !== repairedSlot.plannedEnd)) {
+            affectedIds.push(repairedSlot.slotId);
+          }
+        }
+        return {
+          newPlan: repaired,
+          operator: 'INSERT_ALT',
+          affectedSlotIds: affectedIds,
+          repairedFromIndex: insertIndex,
+          resumeIndex: insertIndex,
+          stateTrajectory: trajectory,
+          description: `Chèn ${place.name} ở vị trí ${insertIndex} và tái tối ưu suffix`,
+        };
+      }
+
+      default:
+        return null;
+    }
   }
 }

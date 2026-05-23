@@ -20,6 +20,7 @@ import Events from './pages/Events'
 import Destinations from './pages/Destinations'
 import About from './pages/About'
 import DevSimulation from './pages/DevSimulation'
+import PreferenceProfile from './pages/PreferenceProfile'
 
 function AuthInit() {
   useAuthInit()
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="/preferences" element={<ErrorBoundary><ProtectedRoute><Preferences /></ProtectedRoute></ErrorBoundary>} />
         <Route path="/profile" element={<ErrorBoundary><ProtectedRoute><Profile /></ProtectedRoute></ErrorBoundary>} />
         <Route path="/places" element={<ErrorBoundary><ProtectedRoute><Places /></ProtectedRoute></ErrorBoundary>} />
+        <Route path="/preference-profile" element={<ErrorBoundary><ProtectedRoute><PreferenceProfile /></ProtectedRoute></ErrorBoundary>} />
 
         {/* Dev/PO demo tool — public, no auth */}
         <Route path="/dev/sim" element={<ErrorBoundary><DevSimulation /></ErrorBoundary>} />

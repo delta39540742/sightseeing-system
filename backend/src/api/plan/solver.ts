@@ -222,6 +222,47 @@ interface DayState {
   dayOfWeek: number;
 }
 
+// ─── Explanation types ────────────────────────────────────────────────────────
+
+export interface ScoreComponentRaw {
+  name: string;
+  raw: number;
+  weighted: number;
+}
+
+export interface ScoreExplanation {
+  components: Array<ScoreComponentRaw & { label: string; detail?: string }>;
+  totalScore: number;
+  rank: number;
+  poolSize: number;
+  topRunnerUp?: {
+    placeId: string;
+    name: string;
+    totalScore: number;
+    mainLoss: string;
+  };
+  summary: string;
+}
+
+export interface OrderExplanation {
+  swapApplied: boolean;
+  greedyOriginalPosition: number;
+  finalPosition: number;
+  trigger: '2opt' | null;
+  delta: {
+    scoreBefore: number;
+    scoreAfter: number;
+    mainGain: string;
+    mainTradeoff?: string;
+  } | null;
+  orderText: string | null;
+}
+
+export interface EnrichedSlot extends TripSlot {
+  scoreExplanation?: ScoreExplanation;
+  orderExplanation?: OrderExplanation;
+}
+
 interface ScoreResult {
   feasible: boolean;
   score: number;
@@ -230,10 +271,12 @@ interface ScoreResult {
   endMin: number;
   cost: number;
   duration: number;
+  breakdown: ScoreComponentRaw[];
 }
 
 const NOT_FEASIBLE: ScoreResult = {
   feasible: false, score: -Infinity, travelMin: 0, arrivalMin: 0, endMin: 0, cost: 0, duration: 0,
+  breakdown: [],
 };
 
 function scoreCandidate(
@@ -246,7 +289,6 @@ function scoreCandidate(
   if (place.lat == null || place.lng == null) return NOT_FEASIBLE;
   if (mode === 'meal' && !isFoodPlace(place)) return NOT_FEASIBLE;
   if (mode === 'sightseeing' && isFoodPlace(place) && getPlaceTagIds(place).length === 1) {
-    // pure food place outside meal window → skip
     return NOT_FEASIBLE;
   }
 
@@ -266,33 +308,52 @@ function scoreCandidate(
 
   const w = ctx.weights ?? DEFAULT_WEIGHTS;
   const interest = interestScore(place, ctx);
+  const expMatch = descriptionMatchScore(place, ctx.experienceKeywords);
   const popularity = place.popularityScore ?? 0;
   const terrain = place.terrainEasiness ?? 1;
+  const empt = avgEmptiness(place.peakTimes as PlacePeakTime[] | undefined, arrival, endMin);
+  const softAdj = softConstraintAdjust(place, ctx);
+  const divPen = diversityPenalty(place, st.lastTagIds);
 
-  let score = 0;
-  score += w.wInterest * interest * 10;
-  score += 8 * descriptionMatchScore(place, ctx.experienceKeywords);
-  score += 0.3 * popularity;
-  score -= w.wDistance * distKm * 0.5;
-  score -= w.wRisk * (1 - terrain) * 5;
-  score -= w.wBudget * (cost / Math.max(1, ctx.budgetTotal)) * 5;
-  score += softConstraintAdjust(place, ctx);
-  score -= diversityPenalty(place, st.lastTagIds);
-
-  // Collaborative filtering: similar users đã rate cao → boost
+  let cfRaw = 0;
   if (ctx.collaborativeBoosts) {
     const cf = ctx.collaborativeBoosts.get(Number(place.placeId));
-    if (cf && cf > 0) score += Math.min(cf, 5) * 1.5;
+    if (cf && cf > 0) cfRaw = Math.min(cf, 5) * 1.5;
   }
 
-  // Peak-time emptiness: vắng người được boost, đông bị penalty
-  const empt = avgEmptiness(place.peakTimes as PlacePeakTime[] | undefined, arrival, endMin);
-  score += (empt - 0.5) * 4;
+  const budgetRatio = cost / Math.max(1, ctx.budgetTotal);
+  const interestW      = w.wInterest * interest * 10;
+  const expMatchW      = 8 * expMatch;
+  const popularityW    = 0.3 * popularity;
+  const distanceW      = -(w.wDistance * distKm * 0.5);
+  const terrainW       = -(w.wRisk * (1 - terrain) * 5);
+  const budgetW        = -(w.wBudget * budgetRatio * 5);
+  const softW          = softAdj;
+  const diversityW     = -divPen;
+  const collaborativeW = cfRaw;
+  const peakTimeW      = (empt - 0.5) * 4;
+  const mealW          = mode === 'meal' ? 15 : 0;
+  const anchorW        = place.isAnchor ? 1000 : 0;
 
-  if (mode === 'meal') score += 15;
-  if (place.isAnchor) score += 1000;
+  const score = interestW + expMatchW + popularityW + distanceW + terrainW +
+    budgetW + softW + diversityW + collaborativeW + peakTimeW + mealW + anchorW;
 
-  return { feasible: true, score, travelMin, arrivalMin: arrival, endMin, cost, duration };
+  const breakdown: ScoreComponentRaw[] = [
+    { name: 'interest',       raw: interest,    weighted: interestW },
+    { name: 'experienceMatch', raw: expMatch,   weighted: expMatchW },
+    { name: 'popularity',     raw: popularity,  weighted: popularityW },
+    { name: 'distance',       raw: distKm,      weighted: distanceW },
+    { name: 'terrain',        raw: 1 - terrain, weighted: terrainW },
+    { name: 'budget',         raw: budgetRatio, weighted: budgetW },
+    { name: 'softConstraint', raw: 1,           weighted: softW },
+    { name: 'diversity',      raw: 1,           weighted: diversityW },
+    { name: 'collaborative',  raw: cfRaw,       weighted: collaborativeW },
+    { name: 'peakTime',       raw: empt - 0.5,  weighted: peakTimeW },
+    { name: 'meal',           raw: 1,           weighted: mealW },
+    { name: 'anchor',         raw: 1,           weighted: anchorW },
+  ];
+
+  return { feasible: true, score, travelMin, arrivalMin: arrival, endMin, cost, duration, breakdown };
 }
 
 function pickMode(st: DayState): 'meal' | 'sightseeing' {
@@ -308,14 +369,87 @@ function pickMode(st: DayState): 'meal' | 'sightseeing' {
   return 'sightseeing';
 }
 
+// ─── Explanation template engine ─────────────────────────────────────────────
+
+const COMPONENT_LABELS: Record<string, string> = {
+  interest:        'Phù hợp sở thích',
+  experienceMatch: 'Khớp trải nghiệm',
+  popularity:      'Được nhiều người thích',
+  distance:        'Khoảng cách',
+  terrain:         'Độ khó địa hình',
+  budget:          'Chi phí',
+  softConstraint:  'Phù hợp mong muốn',
+  diversity:       'Đa dạng thể loại',
+  collaborative:   'Người tương tự thích',
+  peakTime:        'Giờ vắng',
+  anchor:          'Địa điểm bạn ghim',
+  meal:            'Phù hợp giờ ăn',
+};
+
+function generateComponentDetail(c: ScoreComponentRaw, place: any): string | undefined {
+  if (c.weighted === 0) return undefined;
+  switch (c.name) {
+    case 'interest': {
+      const count = getPlaceTagIds(place).length;
+      return count > 0 ? `Khớp ${count} tag sở thích` : undefined;
+    }
+    case 'distance':
+      return c.raw > 0 ? `${c.raw.toFixed(1)} km từ điểm trước` : undefined;
+    case 'peakTime':
+      return c.raw > 0.1 ? 'Giờ vắng khách' : c.raw < -0.1 ? 'Giờ đông khách' : undefined;
+    case 'experienceMatch':
+      return c.raw > 0 ? `Khớp ${c.raw} từ khoá trải nghiệm` : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function describeMainDifference(
+  chosenBreakdown: ScoreComponentRaw[],
+  runnerUpBreakdown: ScoreComponentRaw[],
+): string {
+  const ruMap = new Map(runnerUpBreakdown.map(c => [c.name, c]));
+  let maxDiff = 0;
+  let result = 'Điểm tổng thể thấp hơn';
+  for (const c of chosenBreakdown) {
+    const ru = ruMap.get(c.name);
+    if (!ru) continue;
+    const diff = c.weighted - ru.weighted;
+    if (diff <= maxDiff) continue;
+    maxDiff = diff;
+    switch (c.name) {
+      case 'distance': {
+        const extraKm = ru.raw - c.raw;
+        result = extraKm > 0 ? `Xa hơn ${extraKm.toFixed(1)} km` : 'Điểm khoảng cách thấp hơn';
+        break;
+      }
+      case 'interest':   result = 'Kém phù hợp sở thích hơn'; break;
+      case 'popularity': result = 'Ít được đánh giá cao hơn'; break;
+      case 'peakTime':   result = 'Đông khách hơn'; break;
+      case 'budget':     result = 'Chi phí cao hơn'; break;
+      case 'terrain':    result = 'Địa hình khó hơn'; break;
+      default:           result = `Điểm ${COMPONENT_LABELS[c.name] ?? c.name} thấp hơn`;
+    }
+  }
+  return result;
+}
+
+function generateSummary(components: ScoreExplanation['components']): string {
+  const top = components
+    .filter(c => c.weighted > 0)
+    .sort((a, b) => b.weighted - a.weighted)
+    .slice(0, 3);
+  return top.map(c => c.label).join(' · ') || 'Phù hợp lịch trình';
+}
+
 // ─── Greedy planner ─────────────────────────────────────────────────────────
 
 export function generateGreedyPlan(
   days: number,
   candidates: Place[],
   ctx: SolverContext
-): TripSlot[] {
-  const plan: TripSlot[] = [];
+): EnrichedSlot[] {
+  const plan: EnrichedSlot[] = [];
   const visitedPlaceIds = new Set<string>();
   let budgetRemaining = ctx.budgetTotal;
 
@@ -342,22 +476,34 @@ export function generateGreedyPlan(
 
       let bestPlace: Place | null = null;
       let best: ScoreResult = NOT_FEASIBLE;
+      let runnerUpPlace: Place | null = null;
+      let runnerUp: ScoreResult = NOT_FEASIBLE;
+      let poolSize = 0;
 
       for (const place of candidates) {
         const r = scoreCandidate(place, ctx, st, mode);
-        if (r.feasible && r.score > best.score) {
-          best = r;
-          bestPlace = place;
+        if (!r.feasible) continue;
+        poolSize++;
+        if (r.score > best.score) {
+          runnerUp = best; runnerUpPlace = bestPlace;
+          best = r; bestPlace = place;
+        } else if (r.score > runnerUp.score) {
+          runnerUp = r; runnerUpPlace = place;
         }
       }
 
       // If meal mode found nothing, fall through to sightseeing instead of stalling
       if (!bestPlace && mode === 'meal') {
+        poolSize = 0;
         for (const place of candidates) {
           const r = scoreCandidate(place, ctx, st, 'sightseeing');
-          if (r.feasible && r.score > best.score) {
-            best = r;
-            bestPlace = place;
+          if (!r.feasible) continue;
+          poolSize++;
+          if (r.score > best.score) {
+            runnerUp = best; runnerUpPlace = bestPlace;
+            best = r; bestPlace = place;
+          } else if (r.score > runnerUp.score) {
+            runnerUp = r; runnerUpPlace = place;
           }
         }
       }
@@ -369,6 +515,26 @@ export function generateGreedyPlan(
       const slotEnd = new Date(slotStart.getTime() + best.duration * 60_000);
 
       const activityType = mode === 'meal' ? 'meal' : 'sightseeing';
+
+      const components = best.breakdown.map(c => ({
+        ...c,
+        label: COMPONENT_LABELS[c.name] ?? c.name,
+        detail: generateComponentDetail(c, bestPlace!),
+      }));
+
+      const scoreExplanation: ScoreExplanation = {
+        components,
+        totalScore: best.score,
+        rank: 1,
+        poolSize,
+        topRunnerUp: runnerUpPlace && runnerUp.feasible ? {
+          placeId: String(runnerUpPlace.placeId),
+          name: (runnerUpPlace as any).name ?? String(runnerUpPlace.placeId),
+          totalScore: runnerUp.score,
+          mainLoss: describeMainDifference(best.breakdown, runnerUp.breakdown),
+        } : undefined,
+        summary: generateSummary(components),
+      };
 
       plan.push({
         slotId: `slot_${dayIndex}_${slotOrder}`,
@@ -385,6 +551,15 @@ export function generateGreedyPlan(
         activityType,
         rationale: `score=${best.score.toFixed(2)} mode=${mode}`,
         status: 'planned',
+        scoreExplanation,
+        orderExplanation: {
+          swapApplied: false,
+          greedyOriginalPosition: plan.length,
+          finalPosition: plan.length,
+          trigger: null,
+          delta: null,
+          orderText: null,
+        },
       });
 
       visitedPlaceIds.add(String(bestPlace.placeId));
@@ -455,6 +630,21 @@ export function calculateItineraryScore(
     total += s;
   }
 
+  return total;
+}
+
+// ─── Route distance helper (used by 2-opt swap log) ─────────────────────────
+
+function routeDistanceForDay(slots: TripSlot[], dayIndex: number, candidates: Place[]): number {
+  const daySlots = slots.filter(s => s.dayIndex === dayIndex);
+  let total = 0;
+  for (let k = 1; k < daySlots.length; k++) {
+    const prev = findPlace(daySlots[k - 1]!.placeId, candidates);
+    const cur = findPlace(daySlots[k]!.placeId, candidates);
+    if (prev?.lat != null && cur?.lat != null) {
+      total += haversineKm(prev.lat, prev.lng!, cur.lat, cur.lng!);
+    }
+  }
   return total;
 }
 
@@ -530,11 +720,24 @@ function retimeAndValidate(
 }
 
 export function optimizeWith2Opt(
-  initialSlots: TripSlot[],
+  initialSlots: EnrichedSlot[],
   ctx: SolverContext,
   candidates: Place[]
-): TripSlot[] {
-  let bestSlots = [...initialSlots];
+): EnrichedSlot[] {
+  // Record greedy original placeId order before any swaps
+  const greedyOrder = initialSlots.map(s => s.placeId);
+
+  interface SwapRecord {
+    i: number;
+    j: number;
+    affectedPlaceIds: number[];
+    scoreBefore: number;
+    scoreAfter: number;
+    distanceDeltaKm: number;
+  }
+  const swapLog: SwapRecord[] = [];
+
+  let bestSlots = [...initialSlots] as EnrichedSlot[];
   let bestScore = calculateItineraryScore(bestSlots, ctx, candidates);
   let improved = true;
   let iterations = 0;
@@ -552,14 +755,24 @@ export function optimizeWith2Opt(
           ...bestSlots.slice(0, i),
           ...bestSlots.slice(i, j + 1).reverse(),
           ...bestSlots.slice(j + 1),
-        ];
+        ] as EnrichedSlot[];
 
-        // Re-time + validate hard constraints sau swap. Nếu vi phạm → bỏ qua.
-        const newSlots = retimeAndValidate(swapped, ctx, candidates);
+        // Re-time + validate hard constraints. Enrichment fields are preserved via spread.
+        const newSlots = retimeAndValidate(swapped, ctx, candidates) as EnrichedSlot[] | null;
         if (!newSlots) continue;
 
         const newScore = calculateItineraryScore(newSlots, ctx, candidates);
         if (newScore > bestScore) {
+          const dayIdx = bestSlots[i]!.dayIndex;
+          swapLog.push({
+            i, j,
+            affectedPlaceIds: bestSlots.slice(i, j + 1).map(s => s.placeId),
+            scoreBefore: bestScore,
+            scoreAfter: newScore,
+            distanceDeltaKm:
+              routeDistanceForDay(bestSlots, dayIdx, candidates) -
+              routeDistanceForDay(newSlots, dayIdx, candidates),
+          });
           bestSlots = newSlots;
           bestScore = newScore;
           improved = true;
@@ -575,6 +788,44 @@ export function optimizeWith2Opt(
     return { ...s, slotOrder: next };
   });
 
+  // Build OrderExplanation for each slot
+  bestSlots = bestSlots.map((slot, finalIdx) => {
+    const greedyIdx = greedyOrder.indexOf(slot.placeId);
+    const swapApplied = greedyIdx >= 0 && finalIdx !== greedyIdx;
+    const relevantSwaps = swapLog.filter(sw => sw.affectedPlaceIds.includes(slot.placeId));
+
+    let delta: OrderExplanation['delta'] = null;
+    if (swapApplied && relevantSwaps.length > 0) {
+      const totalDistSaved = relevantSwaps.reduce((sum, sw) => sum + sw.distanceDeltaKm, 0);
+      const lastSwap = relevantSwaps[relevantSwaps.length - 1]!;
+      const mainGain = totalDistSaved > 0.1
+        ? `Giảm ${totalDistSaved.toFixed(1)} km quãng đường`
+        : `Tăng ${(lastSwap.scoreAfter - lastSwap.scoreBefore).toFixed(1)} điểm`;
+      delta = {
+        scoreBefore: lastSwap.scoreBefore,
+        scoreAfter:  lastSwap.scoreAfter,
+        mainGain,
+      };
+    }
+
+    const from = greedyIdx >= 0 ? greedyIdx : finalIdx;
+    const orderText = swapApplied && delta
+      ? `Đổi từ #${from + 1} → #${finalIdx + 1}: ${delta.mainGain}`
+      : null;
+
+    return {
+      ...slot,
+      orderExplanation: {
+        swapApplied,
+        greedyOriginalPosition: from,
+        finalPosition: finalIdx,
+        trigger: swapApplied && relevantSwaps.length > 0 ? '2opt' as const : null,
+        delta,
+        orderText,
+      },
+    };
+  });
+
   return bestSlots;
 }
 
@@ -585,7 +836,7 @@ export function generateI3CHPlan(
   candidates: Place[],
   ctx: SolverContext,
   options?: { maxIterations?: number; perturbMoves?: number; timeBudgetMs?: number }
-): TripSlot[] {
+): EnrichedSlot[] {
   const maxIterations = options?.maxIterations ?? 15;
   const perturbMoves  = options?.perturbMoves  ?? 3;
   const timeBudgetMs  = options?.timeBudgetMs  ?? 4000;
@@ -622,7 +873,7 @@ export function generateI3CHPlan(
       a.dayIndex !== b.dayIndex ? a.dayIndex - b.dayIndex : a.slotOrder - b.slotOrder
     );
 
-    const retimed = retimeAndValidate(perturbed, ctx, candidates);
+    const retimed = retimeAndValidate(perturbed, ctx, candidates) as EnrichedSlot[] | null;
     if (!retimed) continue;
 
     // Component 2 lại: Re-improvement sau perturbation
