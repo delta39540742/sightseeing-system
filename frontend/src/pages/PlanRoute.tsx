@@ -7,7 +7,7 @@ import {
   Save, AlertCircle, PersonStanding, Route, Calendar, Wallet, Share2,
   Loader2, Plus, X, Sparkles, AlertTriangle, Coffee, Map, Trash2, Pin, Flag,
 } from 'lucide-react'
-import { format, addMinutes, addDays } from 'date-fns'
+import { format, addMinutes, addDays, differenceInDays, parseISO } from 'date-fns'
 import { TripMap } from '@/components/map/TripMap'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
 import { tripService } from '@/services/tripService'
@@ -203,10 +203,29 @@ export default function PlanRoute() {
     initialRequest?.startDate ?? format(new Date(), 'yyyy-MM-dd'),
     isFreshNav ? (initialRequest?.startDate ?? format(new Date(), 'yyyy-MM-dd')) : undefined,
   )
+  const initialTripDays = useMemo(() => {
+    if (!initialRequest?.startDate || !initialRequest?.endDate) return 1
+    try {
+      return Math.max(1, differenceInDays(parseISO(initialRequest.endDate), parseISO(initialRequest.startDate)) + 1)
+    } catch {
+      return 1
+    }
+  }, [initialRequest])
+
+  const initialNotes = useMemo(() => {
+    if (!initialRequest) return ''
+    if (initialRequest.additionalNotes) return initialRequest.additionalNotes
+    const parts = []
+    if (initialRequest.preferences?.length) parts.push(`Sở thích: ${initialRequest.preferences.join(', ')}`)
+    if (initialRequest.experienceKeywords?.length) parts.push(`Trải nghiệm: ${initialRequest.experienceKeywords.join(', ')}`)
+    if (initialRequest.numPeople) parts.push(`Số người: ${initialRequest.numPeople}`)
+    return parts.join(' | ')
+  }, [initialRequest])
+
   const [tripDays, setTripDays] = useSessionState(
     'plan-trip-days',
-    1,
-    isFreshNav ? 1 : undefined,
+    initialTripDays,
+    isFreshNav ? initialTripDays : undefined,
   )
   const [budget, setBudget] = useSessionState(
     'plan-budget',
@@ -220,8 +239,8 @@ export default function PlanRoute() {
   )
   const [additionalNotes, setAdditionalNotes] = useSessionState(
     'plan-additional-notes',
-    initialRequest?.additionalNotes ?? '',
-    isFreshNav ? (initialRequest?.additionalNotes ?? '') : undefined,
+    initialNotes,
+    isFreshNav ? initialNotes : undefined,
   )
   const [allowAiSuggestions, setAllowAiSuggestions] = useState(false)
   const [aiSuggestions, setAiSuggestions] = useState<Place[]>([])

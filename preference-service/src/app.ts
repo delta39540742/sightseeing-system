@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import cron from 'node-cron';
 
 import { surveyPlugin } from './routes/survey.routes';
@@ -17,6 +18,8 @@ const app = Fastify({
     ? { transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }
     : true,
 });
+
+app.register(cors);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', async () => ({ status: 'ok', service: 'preference' }));
