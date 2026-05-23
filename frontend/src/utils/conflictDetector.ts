@@ -49,8 +49,8 @@ export function repairTimestamps(slots: TripSlot[]): TripSlot[] {
       const distKm = haversineKm(prevLat!, prevLng!, slot.place.lat, slot.place.lng)
       const travelMs = Math.round((distKm / AVG_SPEED_KMH) * 60 * 60_000)
 
-      const newStartMs = prevEndMs + travelMs
-      const newEndMs = newStartMs + visitDurationMs
+      const newStartMs: number = (prevEndMs as number) + travelMs
+      const newEndMs: number = newStartMs + visitDurationMs
 
       result.push({
         ...slot,
