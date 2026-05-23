@@ -19,7 +19,10 @@ const app = Fastify({
     : true,
 });
 
-app.register(cors);
+app.register(cors, {
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+});
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', async () => ({ status: 'ok', service: 'preference' }));
