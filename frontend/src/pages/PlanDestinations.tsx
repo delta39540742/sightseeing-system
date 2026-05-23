@@ -42,8 +42,6 @@ type ChatMessage =
 const NAV_ITEMS = [
   { id: 'destinations', label: 'ĐỊA ĐIỂM',  Icon: PersonStanding },
   { id: 'route',        label: 'LỘ TRÌNH',   Icon: Route },
-  { id: 'timeline',     label: 'THỜI GIAN',  Icon: Calendar },
-  { id: 'budget',       label: 'NGÂN SÁCH',  Icon: Wallet },
 ]
 
 const DEFAULT_HASHTAGS = ['Đà Nẵng', 'Hội An', 'Phú Quốc']

@@ -406,6 +406,7 @@ export default function Preferences() {
               <div className="space-y-2.5">
                 {Object.entries(WEIGHT_LABELS).map(([key, label]) => {
                   const value = weights[key] ?? 0
+                  const maxWeight = Math.max(1, ...Object.values(weights))
                   const color = WEIGHT_COLORS[key] ?? 'bg-blue-500'
                   return (
                     <div key={key}>
@@ -416,7 +417,7 @@ export default function Preferences() {
                       <div className="w-full bg-gray-100 rounded-full h-1.5">
                         <div
                           className={`${color} h-1.5 rounded-full transition-all duration-700`}
-                          style={{ width: `${value * 100}%` }}
+                          style={{ width: `${(value / maxWeight) * 100}%` }}
                         />
                       </div>
                     </div>
@@ -565,9 +566,16 @@ export default function Preferences() {
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-gray-400 w-8">Min</span>
                     <input
-                      type="range" min={50_000} max={2_000_000} step={50_000}
+                      type="range" min={50_000} max={5_000_000} step={50_000}
                       value={prefs.budgetPerDayMin}
-                      onChange={(e) => set('budgetPerDayMin', +e.target.value)}
+                      onChange={(e) => {
+                        const newMin = +e.target.value
+                        setPrefs((p) => ({
+                          ...p,
+                          budgetPerDayMin: newMin,
+                          budgetPerDayMax: newMin > (p.budgetPerDayMax ?? 1_000_000) ? newMin : p.budgetPerDayMax,
+                        }))
+                      }}
                       className="flex-1 accent-blue-500 h-1.5"
                       aria-label="Ngân sách tối thiểu"
                     />
@@ -577,7 +585,14 @@ export default function Preferences() {
                     <input
                       type="range" min={50_000} max={5_000_000} step={50_000}
                       value={prefs.budgetPerDayMax}
-                      onChange={(e) => set('budgetPerDayMax', +e.target.value)}
+                      onChange={(e) => {
+                        const newMax = +e.target.value
+                        setPrefs((p) => ({
+                          ...p,
+                          budgetPerDayMax: newMax,
+                          budgetPerDayMin: newMax < (p.budgetPerDayMin ?? 200_000) ? newMax : p.budgetPerDayMin,
+                        }))
+                      }}
                       className="flex-1 accent-blue-500 h-1.5"
                       aria-label="Ngân sách tối đa"
                     />

@@ -248,6 +248,7 @@ export default function PlanRoute() {
   const [selectedSuggestion, setSelectedSuggestion] = useState<Place | null>(null)
   const [osrmRoute, setOsrmRoute] = useState<OsrmRoute | null>(null)
   const [expandedExplanationIdx, setExpandedExplanationIdx] = useState<number | null>(null)
+  const [isConstraintsExpanded, setIsConstraintsExpanded] = useState(false)
 
   useEffect(() => {
     const coords = routePlaces.map(rp => ({ lat: rp.place.lat!, lng: rp.place.lng! }))
@@ -581,8 +582,6 @@ export default function PlanRoute() {
           {[
             { id: 'destinations', label: 'ĐỊA ĐIỂM',  Icon: PersonStanding },
             { id: 'route',        label: 'LỘ TRÌNH',   Icon: Route },
-            { id: 'timeline',     label: 'THỜI GIAN',  Icon: Calendar },
-            { id: 'budget',       label: 'NGÂN SÁCH',  Icon: Wallet },
           ].map(({ id, label, Icon }) => {
             const active = id === 'route'
             return (
@@ -642,9 +641,18 @@ export default function PlanRoute() {
             </button>
           </div>
 
+          <button
+            onClick={() => setIsConstraintsExpanded(!isConstraintsExpanded)}
+            className="w-full flex items-center justify-between py-2 text-sm font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 mb-3 hover:bg-slate-100 transition-colors"
+          >
+            <span>Ràng buộc cứng</span>
+            {isConstraintsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+
           {/* Trip config */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="col-span-2">
+          {isConstraintsExpanded && (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
               <label className="text-xs text-slate-500 font-medium">Thành phố</label>
               <input
                 className="w-full mt-0.5 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
@@ -725,6 +733,7 @@ export default function PlanRoute() {
               </label>
             </div>
           </div>
+          )}
         </div>
 
         {/* Timeline */}
