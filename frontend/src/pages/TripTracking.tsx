@@ -5,7 +5,7 @@ import {
   AlertTriangle, Lightbulb, MapPin, Utensils, CheckCircle,
   Building2, Search, LocateFixed, Plus, Minus,
   Navigation, Bell, Settings, UserCircle, GitBranch, Zap,
-  ChevronDown, ChevronUp, Frown,
+  ChevronDown, ChevronUp, Frown, Clock,
 } from 'lucide-react'
 import { tripService } from '@/services/tripService'
 import { toast } from '@/store/toastStore'
@@ -108,16 +108,6 @@ export default function TripTracking() {
     }
   }, [trip?.tripId, trip?.status])
 
-  if (isLoading) return <PageSpinner />
-  if (error || !trip) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-3">
-        <p className="text-slate-500">Không tìm thấy chuyến đi</p>
-        <button onClick={() => navigate('/')} className="btn-secondary">Về trang chủ</button>
-      </div>
-    )
-  }
-
   const sortedSlots = useMemo(() => {
     if (!trip) return []
     return [...trip.slots].sort(
@@ -139,11 +129,15 @@ export default function TripTracking() {
     return groups
   }, [sortedSlots])
 
-  const { completedSlots, currentSlot } = useMemo(() => {
-    if (!sortedSlots.length) return { completedSlots: [], currentSlot: null as typeof sortedSlots[0] | null }
+  const { completedSlots, overdueSlots, currentSlot } = useMemo(() => {
+    if (!sortedSlots.length) return { completedSlots: [], overdueSlots: [], currentSlot: null as typeof sortedSlots[0] | null }
 
-    const completed = sortedSlots.filter((s) =>
-      s.status === 'completed' || isBefore(parseISO(s.plannedEnd), now)
+    const completed = sortedSlots.filter((s) => s.status === 'completed')
+
+    const overdue = sortedSlots.filter((s) =>
+      s.status !== 'completed' &&
+      s.status !== 'skipped' &&
+      isBefore(parseISO(s.plannedEnd), now)
     )
 
     const current = sortedSlots.find((s) =>
@@ -154,8 +148,18 @@ export default function TripTracking() {
       isSameDay(parseISO(s.plannedStart), now)
     )
 
-    return { completedSlots: completed, currentSlot: current ?? null }
+    return { completedSlots: completed, overdueSlots: overdue, currentSlot: current ?? null }
   }, [sortedSlots, now])
+
+  if (isLoading) return <PageSpinner />
+  if (error || !trip) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen gap-3">
+        <p className="text-slate-500">Không tìm thấy chuyến đi</p>
+        <button onClick={() => navigate('/')} className="btn-secondary">Về trang chủ</button>
+      </div>
+    )
+  }
 
   const hasIncident = !!(incidentData && 'type' in incidentData && incidentData.type)
   const incidentAlert = hasIncident ? (incidentData as MonitorAlert) : null
@@ -312,6 +316,7 @@ export default function TripTracking() {
                   <div className="relative space-y-4">
                     {group.slots.map((slot, slotIdx) => {
                       const isCompleted = completedSlots.includes(slot)
+                      const isOverdue = overdueSlots.includes(slot)
                       const isCurrent = slot === currentSlot
                       const isLastInGroup = slotIdx === group.slots.length - 1
                       const slotStart = parseISO(slot.plannedStart)
@@ -366,6 +371,53 @@ export default function TripTracking() {
                                 <Frown className="w-4 h-4" />
                                 {isTiredLoading ? 'Đang ghi nhận...' : 'Tôi đang mệt'}
                               </button>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      if (isOverdue) {
+                        return (
+                          <div key={slot.slotId} className="relative pl-12">
+                            <div className="absolute left-0 top-0 w-10 h-10 bg-orange-50 border-2 border-orange-400 rounded-full flex items-center justify-center z-10">
+                              <Clock className="w-5 h-5 text-orange-400" />
+                            </div>
+                            {!isLastInGroup && <div className="absolute left-5 top-10 bottom-0 w-0.5 bg-orange-100" />}
+                            <div className="bg-orange-50 border border-orange-200 p-4 rounded-xl">
+                              <div className="flex justify-between items-start mb-2">
+                                <span className="px-2 py-1 bg-orange-100 text-orange-700 text-[10px] font-bold rounded uppercase">Trễ giờ — chưa tham quan</span>
+                                <span className="text-orange-500 text-xs font-semibold">{format(slotStart, 'HH:mm')}</span>
+                              </div>
+                              <h4 className="font-bold text-slate-900 text-base">{slot.place?.name ?? 'Địa điểm'}</h4>
+                              <p className="text-orange-600 text-xs mt-1">Đã qua giờ dự kiến. Bạn có muốn bỏ qua hoặc đánh dấu hoàn thành?</p>
+                              <div className="flex gap-2 mt-3">
+                                <button
+                                  onClick={() => {
+                                    tripService.completeSlot(trip.tripId, slot.slotId)
+                                      .then(() => {
+                                        queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+                                        toast.success('Đã đánh dấu hoàn thành')
+                                      })
+                                      .catch(() => toast.error('Không thể cập nhật'))
+                                  }}
+                                  className="flex-1 py-1.5 bg-orange-500 text-white text-xs font-semibold rounded-lg hover:bg-orange-600 transition-colors"
+                                >
+                                  Đã đến
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    tripService.updateSlot(trip.tripId, slot.slotId, { status: 'skipped' })
+                                      .then(() => {
+                                        queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+                                        toast.success('Đã bỏ qua địa điểm')
+                                      })
+                                      .catch(() => toast.error('Không thể cập nhật'))
+                                  }}
+                                  className="flex-1 py-1.5 border border-orange-300 text-orange-600 text-xs font-semibold rounded-lg hover:bg-orange-100 transition-colors"
+                                >
+                                  Bỏ qua
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )

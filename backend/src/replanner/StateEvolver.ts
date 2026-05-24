@@ -246,7 +246,7 @@ export class StateEvolver {
     if (slot.activityType === 'meal') fatigueDelta -= 0.12;
     if (slot.activityType === 'rest') fatigueDelta -= 0.20;
 
-    const fatigue = Math.max(0, s.fatigue + fatigueDelta);
+    const fatigue = Math.min(1, Math.max(0, s.fatigue + fatigueDelta));
 
     const tagVector = tagVectorOf(ctx.place);
     const interestMatch = dot(ctx.user.preferenceVector, tagVector);
@@ -283,7 +283,7 @@ export class StateEvolver {
    * @param s State to check.
    */
   isFeasible(s: TripState): boolean {
-    return true;
+    return s.timeRemainingMin >= 0 && s.budgetRemaining >= 0 && s.fatigue <= FATIGUE_CAP;
   }
 
   /**

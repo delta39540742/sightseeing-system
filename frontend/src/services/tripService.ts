@@ -67,6 +67,9 @@ export const tripService = {
   completeSlot: (tripId: string, slotId: string) =>
     api.patch(`/trips/${tripId}/slots/${slotId}`, { status: 'completed' }).then((r) => r.data),
 
+  updateSlot: (tripId: string, slotId: string, data: { status?: string; isLocked?: boolean; plannedStart?: string; plannedEnd?: string }) =>
+    api.patch(`/trips/${tripId}/slots/${slotId}`, data).then((r) => r.data),
+
   lockSlot: (tripId: string, slotId: string, plannedStart: string, plannedEnd?: string) =>
     api.patch(`/trips/${tripId}/slots/${slotId}`, { isLocked: true, plannedStart, ...(plannedEnd ? { plannedEnd } : {}) }).then((r) => r.data),
 

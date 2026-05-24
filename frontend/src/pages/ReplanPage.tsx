@@ -20,8 +20,8 @@ import './ReplanRedesign.css'
 export default function ReplanPage() {
   const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null)
   const [showIncident, setShowIncident] = useState(true)
-  // Tập hợp các index (trong changeableItems) mà user đã chọn để áp dụng
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set())
+  const [replanTriggered, setReplanTriggered] = useState(false)
 
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
@@ -94,7 +94,7 @@ export default function ReplanPage() {
     )
   }, [])
 
-  const { mutate: triggerReplan } = useMutation({
+  const { mutate: triggerReplan, isPending: isTriggerPending } = useMutation({
     mutationFn: () =>
       tripService.replan(
         tripId!,
@@ -102,18 +102,26 @@ export default function ReplanPage() {
         triggeredByEventId,
         currentLocationRef.current ?? undefined,
       ),
+    onMutate: () => setReplanTriggered(true),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['replan-pending', tripId] })
     },
     onError: (err: unknown) => {
       const status = (err as { response?: { status?: number } })?.response?.status
-      if (status !== 409) toast.error('Không thể tạo đề xuất. Thử lại sau.')
+      if (status !== 409) {
+        setReplanTriggered(false)
+        toast.error('Không thể tạo đề xuất. Thử lại sau.')
+      }
     },
   })
 
   useEffect(() => {
     if (data) setTrip(data)
   }, [data, setTrip])
+
+  useEffect(() => {
+    if (proposal) setReplanTriggered(false)
+  }, [proposal?.proposalId])
 
   useEffect(() => {
     if (!tripId || proposalLoading || isIncidentLoading) return;
@@ -315,6 +323,51 @@ export default function ReplanPage() {
   const isAllSelected = totalChanges > 0 && selectedCount === totalChanges
 
   if (isLoading || proposalLoading) return <PageSpinner />
+
+  if (isTriggerPending || (replanTriggered && !proposal)) {
+    return (
+      <div className="replan-container font-sans text-slate-900">
+        <header className="replan-header sticky top-0 z-50">
+          <button onClick={() => navigate(-1)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+            <ArrowLeft className="w-5 h-5 text-slate-600" />
+          </button>
+          <div className="flex flex-col items-center">
+            <span className="replan-logo">HORIZON</span>
+          </div>
+          <div className="ai-optimized-tag">AI OPTIMIZED</div>
+        </header>
+
+        <div className="computing-screen">
+          <div className="computing-icon-wrapper">
+            <div className="computing-ring" />
+            <Sparkles className="computing-icon" />
+          </div>
+
+          <h2 className="computing-title">AI đang tính toán lịch trình tối ưu</h2>
+          <p className="computing-subtitle">
+            Hệ thống đang phân tích và tìm kiếm lộ trình tốt nhất cho bạn
+          </p>
+
+          <div className="computing-steps">
+            <div className="computing-step computing-step-1">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Phân tích lịch trình hiện tại</span>
+            </div>
+            <div className="computing-step computing-step-2">
+              <Navigation className="w-4 h-4" />
+              <span>Tìm kiếm lộ trình thay thế</span>
+            </div>
+            <div className="computing-step computing-step-3">
+              <Star className="w-4 h-4" />
+              <span>Tối ưu hóa và xếp lịch</span>
+            </div>
+          </div>
+
+          <p className="computing-algo-label">Beam Search đang chạy…</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="replan-container font-sans text-slate-900">

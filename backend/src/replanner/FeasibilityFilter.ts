@@ -115,7 +115,9 @@ export function isSetFeasible(places: Place[], ctx: ReplanContext): boolean {
   const lbTimeTravel = (mstKm / V_MAX_KMH) * 60;
   const lbTime = lbTimeVisits + lbTimeTravel;
 
-  const feasible = lbTime <= ctx.initialState.timeRemainingMin;
+  const feasible =
+    lbTime <= ctx.initialState.timeRemainingMin &&
+    lbCost <= ctx.initialState.budgetRemaining;
   setFeasibilityCache.set(key, feasible);
   return feasible;
 }

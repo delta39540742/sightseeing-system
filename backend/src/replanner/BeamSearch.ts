@@ -801,8 +801,15 @@ export class BeamSearch {
 
     const rootPlan = ctxWithMap.remainingSlots;
     const rootStates = this.evolver.computeTrajectory(rootPlan, ctxWithMap.initialState, ctxWithMap);
-    const { total: rootScore, cache: rootCache } =
+    const { total: rawRootScore, cache: rootCache } =
       this.scorer.scoreFullAndCache(rootPlan, rootStates, ctxWithMap.weights, ctxWithMap, []);
+
+    // Physical feasibility check: verify the root plan respects travel-time constraints to locked
+    // slots. repairSuffix returning null means the root is physically infeasible (e.g., a locked
+    // slot cannot be reached in time from the preceding slot). Penalise the root score so that any
+    // valid mutation (e.g., DROP_SLOT on the blocking slot) can beat it.
+    const rootPhysicallyFeasible = this.operators.repairSuffix(rootPlan, 0, ctxWithMap) !== null;
+    const rootScore = rootPhysicallyFeasible ? rawRootScore : rawRootScore - 1000;
 
     const rootNode: BeamNode = {
       plan: rootPlan,

@@ -152,11 +152,17 @@ function isOpenAt(place: any, dayOfWeek: number, startMin: number, endMin: numbe
   return startMin >= openMin && endMin <= closeMin;
 }
 
-// ─── Day-of-week (DB convention: 0=Mon..6=Sun) ──────────────────────────────
+// ─── Vietnam timezone helpers ────────────────────────────────────────────────
 
-function dayOfWeekVN(date: Date): number {
-  // js getDay(): 0=Sun..6=Sat → spec: 0=Mon..6=Sun
-  return (date.getDay() + 6) % 7;
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * Day-of-week in VN local time (UTC+7). DB convention: 0=Mon..6=Sun.
+ * date is a UTC midnight of the day — add 7h to get VN calendar day before reading getUTCDay().
+ */
+function dayOfWeekVN(utcMidnight: Date): number {
+  const vnDate = new Date(utcMidnight.getTime() + VN_OFFSET_MS);
+  return (vnDate.getUTCDay() + 6) % 7; // 0=Mon..6=Sun
 }
 
 // ─── Scoring components ─────────────────────────────────────────────────────
@@ -453,11 +459,14 @@ export function generateGreedyPlan(
   const visitedPlaceIds = new Set<string>();
   let budgetRemaining = ctx.budgetTotal;
 
-  const startMidnight = new Date(ctx.startDate);
-  startMidnight.setHours(0, 0, 0, 0);
+  // Build VN midnight in UTC: startDate is parsed as "YYYY-MM-DD" → UTC midnight.
+  // VN midnight (00:00 VN) = UTC midnight − 7 h.
+  const startDate = new Date(ctx.startDate);
+  startDate.setUTCHours(0, 0, 0, 0);
+  const startVNMidnightUTC = new Date(startDate.getTime() - VN_OFFSET_MS);
 
   for (let dayIndex = 0; dayIndex < days; dayIndex++) {
-    const dayDate = new Date(startMidnight.getTime() + dayIndex * 86_400_000);
+    const dayUTCMidnight = new Date(startDate.getTime() + dayIndex * 86_400_000);
     const st: DayState = {
       currentTimeMin: DAY_START_MIN,
       currentLat: ctx.hotelPlace?.lat ?? candidates[0]?.lat ?? 16.06,
@@ -467,7 +476,7 @@ export function generateGreedyPlan(
       lastTagIds: [],
       lunchDone: false,
       dinnerDone: false,
-      dayOfWeek: dayOfWeekVN(dayDate),
+      dayOfWeek: dayOfWeekVN(dayUTCMidnight),
     };
     let slotOrder = 1;
 
@@ -510,8 +519,10 @@ export function generateGreedyPlan(
 
       if (!bestPlace) break;
 
-      const slotStart = new Date(dayDate);
-      slotStart.setHours(Math.floor(best.arrivalMin / 60), best.arrivalMin % 60, 0, 0);
+      // arrivalMin is VN local minutes from midnight → convert to UTC
+      const slotStart = new Date(
+        startVNMidnightUTC.getTime() + dayIndex * 86_400_000 + best.arrivalMin * 60_000,
+      );
       const slotEnd = new Date(slotStart.getTime() + best.duration * 60_000);
 
       const activityType = mode === 'meal' ? 'meal' : 'sightseeing';
@@ -665,8 +676,9 @@ function retimeAndValidate(
 ): TripSlot[] | null {
   if (slots.length === 0) return slots;
 
-  const startMidnight = new Date(ctx.startDate);
-  startMidnight.setHours(0, 0, 0, 0);
+  const startDateUTC = new Date(ctx.startDate);
+  startDateUTC.setUTCHours(0, 0, 0, 0);
+  const startVNMidnight = new Date(startDateUTC.getTime() - VN_OFFSET_MS);
 
   const out: TripSlot[] = [];
   let prevPlace: Place | null = null;
@@ -680,9 +692,12 @@ function retimeAndValidate(
     }
 
     if (slot.dayIndex !== curDay) {
-      // Bắt đầu ngày mới: anchor theo giờ planned cũ của slot đầu tiên ngày này.
+      // Bắt đầu ngày mới: anchor theo giờ VN của slot đầu tiên ngày này.
+      // plannedStart là UTC → cộng VN_OFFSET để lấy giờ VN local.
       const orig = new Date(slot.plannedStart);
-      curMin = orig.getHours() * 60 + orig.getMinutes();
+      const vnMs = orig.getTime() + VN_OFFSET_MS;
+      const vnDate = new Date(vnMs);
+      curMin = vnDate.getUTCHours() * 60 + vnDate.getUTCMinutes();
       curDay = slot.dayIndex;
       prevPlace = ctx.hotelPlace ?? null;
     }
@@ -698,12 +713,12 @@ function retimeAndValidate(
 
     if (endMin > DAY_END_MIN) return null;
 
-    const dayDate = new Date(startMidnight.getTime() + slot.dayIndex * 86_400_000);
-    const dow = dayOfWeekVN(dayDate);
+    const dayUTCMidnight = new Date(startDateUTC.getTime() + slot.dayIndex * 86_400_000);
+    const dow = dayOfWeekVN(dayUTCMidnight);
     if (!isOpenAt(place, dow, arrivalMin, endMin)) return null;
 
-    const slotStart = new Date(dayDate);
-    slotStart.setHours(Math.floor(arrivalMin / 60), arrivalMin % 60, 0, 0);
+    // arrivalMin là giờ VN local → UTC = VN midnight + arrivalMin phút
+    const slotStart = new Date(startVNMidnight.getTime() + slot.dayIndex * 86_400_000 + arrivalMin * 60_000);
     const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
 
     out.push({

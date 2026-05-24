@@ -137,6 +137,7 @@ export class MutationOperators {
     for (let i = 0; i < plan.length; i++) {
       const anchor = plan[i]!;
       if (anchor.isLocked) continue;
+      if (anchor.status === 'completed' || anchor.status === 'skipped') continue;
 
       for (const shiftMin of TIME_SHIFT_DELTAS_MIN) {
         const mutated = plan.map((slot, idx) =>
@@ -148,14 +149,33 @@ export class MutationOperators {
         // 1. Kiểm tra Opening Hours cho slot i
         if (!this.withinOpeningHours(shiftedAnchor, ctx)) continue;
 
-        // 2. MỚI: Kiểm tra Night Constraint cho riêng slot i
-        // (để tính toán xem giờ kết thúc có vượt quá ngưỡng cho phép không)
+        // 2. Kiểm tra Night Constraint cho riêng slot i
         if (this.exceedsNightConstraint(shiftedAnchor.plannedEnd, ctx)) {
           continue;
         }
 
+        // 2b. Underflow guard: anchor không được bắt đầu trước DAY_START_HOUR (08:00 VN)
+        // repairSuffix chỉ áp dụng guard cho suffix (i+1 trở đi), không cho anchor (i).
+        const anchorStartLocal = new Date(new Date(shiftedAnchor.plannedStart).getTime() + VN_OFFSET_MS);
+        if (anchorStartLocal.getUTCHours() < DAY_START_HOUR) continue;
+
+        // 3. Kiểm tra overlap với slot TRƯỚC (i-1) khi shift về trước (shiftMin < 0).
+        // repairSuffix chỉ sửa từ i+1 trở đi; không kiểm tra ngược lên i-1 → phải check thủ công.
+        if (shiftMin < 0 && i > 0) {
+          const prevSlot = mutated[i - 1]!;
+          const prevEndMs     = new Date(prevSlot.plannedEnd).getTime();
+          const shiftedStartMs = new Date(shiftedAnchor.plannedStart).getTime();
+          if (shiftedStartMs < prevEndMs) continue; // reject: overlap với slot trước
+        }
+
         // Xử lý nếu i là slot cuối cùng
         if (i + 1 >= plan.length) {
+          if (shiftMin < 0 && i > 0) {
+            const prevSlot = mutated[i - 1]!;
+            const prevEndMs      = new Date(prevSlot.plannedEnd).getTime();
+            const shiftedStartMs = new Date(shiftedAnchor.plannedStart).getTime();
+            if (shiftedStartMs < prevEndMs) continue;
+          }
           const trajectory = this.simulateIfFeasible(mutated, ctx);
           if (!trajectory) continue;
 
@@ -355,7 +375,7 @@ export class MutationOperators {
           // Truyền currentPlace (có thể undefined), hàm candidatePriority đã hỗ trợ
           score: MutationOperators.candidatePriority(p, currentPlace, ctx),
         }))
-        .filter((c) => c.score > 0)
+        .filter((c) => c.score >= 2)
         .sort((a, b) => b.score - a.score)
         .slice(0, MAX_REPLACE_CANDIDATES);
 
@@ -537,6 +557,7 @@ export class MutationOperators {
           place: p,
           score: MutationOperators.candidatePriority(p, undefined, ctx),
         }))
+        .filter((c) => c.score >= 2)
         .sort((a, b) => b.score - a.score)
         .slice(0, MAX_INSERT_CANDIDATES)
         .map((x) => x.place);
@@ -1051,6 +1072,30 @@ export class MutationOperators {
    * so computeTrajectory() and the old isPlanFeasible() are equivalent here.
    */
   private simulateIfFeasible(plan: TripSlot[], ctx: ReplanContext): TripState[] | null {
+    // Guard: reject plans where a prefix slot can't reach a following LOCKED slot in time.
+    // repairSuffix enforces this via line 1491 (cursorMs + travelMs > lockedStartMs → null),
+    // but INSERT_ALT at pos > 0 calls repairSuffix only for the suffix (pos onwards), leaving
+    // the prefix gap to a locked slot unchecked.  Only locked slots matter here — non-locked
+    // suffix slots are always repacked by repairSuffix with the correct travel-time gap.
+    const placeMap = ctx.placeMap ?? (() => {
+      const m = new Map<number, Place>();
+      for (const p of ctx.candidatePool) m.set(p.placeId, p);
+      return m;
+    })();
+    for (let i = 0; i < plan.length - 1; i++) {
+      const b = plan[i + 1]!;
+      if (!b.isLocked) continue; // only care about gaps where the destination is immovable
+      const a = plan[i]!;
+      if (a.status === 'completed' || a.status === 'skipped') continue;
+      const pA = placeMap.get(a.placeId);
+      const pB = placeMap.get(b.placeId);
+      if (!pA || !pB) continue;
+      const travelMin = this.evolver.estimateTravelTime(pA.lat, pA.lng, pB.lat, pB.lng);
+      const gapMs = new Date(b.plannedStart).getTime() - new Date(a.plannedEnd).getTime();
+      // Allow 1 ms slack for floating-point truncation in toISOString() round-trips.
+      if (gapMs + 1 < travelMin * 60_000) return null;
+    }
+
     try {
       const states = this.evolver.computeTrajectory(plan, ctx.initialState, ctx);
       if (!states.slice(1).every((s) => this.evolver.isFeasible(s))) return null;
@@ -1425,12 +1470,13 @@ export class MutationOperators {
     })();
 
     // [Bug 5 fix] Counter per-day cho slotOrder.
-    // Khởi tạo từ các slot trước fromIndex để không reset về 0 giữa chừng.
-    // `dayOrderCounters.get(dayIndex)` = số slot đã có trong ngày đó trước khi suffix bắt đầu.
+    // Dùng MAX(slotOrder) + 1 của prefix để tránh collision với locked slot giữ nguyên slotOrder gốc.
+    // COUNT-based sẽ gây trùng khi prefix có slotOrder 1-based (e.g. 1,2) → count=2 trùng với slotOrder=2.
     const dayOrderCounters = new Map<number, number>();
     for (let j = 0; j < fromIndex; j++) {
       const s = repaired[j]!;
-      dayOrderCounters.set(s.dayIndex, (dayOrderCounters.get(s.dayIndex) ?? 0) + 1);
+      const current = dayOrderCounters.get(s.dayIndex) ?? -1;
+      dayOrderCounters.set(s.dayIndex, Math.max(current, s.slotOrder) + 1);
     }
 
     const capturedAtMs = new Date(ctx.initialState.capturedAt).getTime();
@@ -1446,15 +1492,32 @@ export class MutationOperators {
 
     for (let i = fromIndex; i < repaired.length; i++) {
       const slot = repaired[i]!;
+      const cursorVNDay = Math.floor((cursorMs + VN_OFFSET_MS) / 86_400_000);
 
-      // Locked slots are immovable anchors: cursor must not overflow into their window.
+      // Locked slots are immovable anchors: cursor must not overflow into their window,
+      // and travel time from the previous position to the locked venue must also fit.
       if (slot.isLocked) {
         const lockedStartMs = new Date(slot.plannedStart).getTime();
-        if (cursorMs > lockedStartMs) return null;  // infeasible: preceding slots overflow
+        const lockedPlace = placeMap.get(slot.placeId);
+        let travelToLockedMin = 0;
+        if (lockedPlace) {
+          let prevLat = ctx.initialState.currentLat;
+          let prevLng = ctx.initialState.currentLng;
+          if (i > 0) {
+            const prevPlace = placeMap.get(repaired[i - 1]!.placeId);
+            if (prevPlace) { prevLat = prevPlace.lat; prevLng = prevPlace.lng; }
+          }
+          travelToLockedMin = this.evolver.estimateTravelTime(
+            prevLat ?? lockedPlace.lat, prevLng ?? lockedPlace.lng,
+            lockedPlace.lat, lockedPlace.lng,
+          );
+        }
+        if (cursorMs + travelToLockedMin * 60_000 > lockedStartMs) return null;
         cursorMs = new Date(slot.plannedEnd).getTime();
         currentDayIndex = slot.dayIndex;
         repaired[i] = { ...slot };
-        dayOrderCounters.set(slot.dayIndex, (dayOrderCounters.get(slot.dayIndex) ?? 0) + 1);
+        const prevMax = dayOrderCounters.get(slot.dayIndex) ?? -1;
+        dayOrderCounters.set(slot.dayIndex, Math.max(prevMax, slot.slotOrder) + 1);
         continue;
       }
 
@@ -1495,7 +1558,7 @@ export class MutationOperators {
       let plannedEndMs = plannedStartMs + targetDurationMs;
 
       const shiftToNextDayMorning = () => {
-        currentDayIndex++;
+        // Note: currentDayIndex is derived from plannedStartMs after all shifts.
         const next = new Date(plannedStartMs + VN_OFFSET_MS);
         next.setUTCDate(next.getUTCDate() + 1);
         next.setUTCHours(DAY_START_HOUR, 0, 0, 0);
@@ -1545,6 +1608,13 @@ export class MutationOperators {
         }
         if (!this.checkOpeningHours(tempSlot, place)) return null;
       }
+
+      // Advance currentDayIndex by the total VN calendar days that plannedStartMs moved
+      // ahead of the cursor. This handles both overflow (shiftToNextDayMorning) and natural
+      // multi-day gaps where originalStart is already on a future calendar day.
+      const finalStartVNDay = Math.floor((plannedStartMs + VN_OFFSET_MS) / 86_400_000);
+      const dayJump = finalStartVNDay - cursorVNDay;
+      if (dayJump > 0) currentDayIndex += dayJump;
 
       const slotOrder = dayOrderCounters.get(currentDayIndex) ?? 0;
       dayOrderCounters.set(currentDayIndex, slotOrder + 1);
@@ -1789,7 +1859,7 @@ export class MutationOperators {
       const candidates = ctx.candidatePool
         .filter((p) => !occupied.has(p.placeId))
         .map((p) => ({ place: p, score: MutationOperators.candidatePriority(p, currentPlace, ctx) }))
-        .filter((c) => c.score > 0)
+        .filter((c) => c.score >= 2)
         .sort((a, b) => b.score - a.score)
         .slice(0, MAX_REPLACE_CANDIDATES);
 
@@ -1843,6 +1913,7 @@ export class MutationOperators {
       insertable = ctx.candidatePool
         .filter((p) => !occupied.has(p.placeId))
         .map((p) => ({ place: p, score: MutationOperators.candidatePriority(p, undefined, ctx) }))
+        .filter((c) => c.score >= 2)
         .sort((a, b) => b.score - a.score)
         .slice(0, MAX_INSERT_CANDIDATES)
         .map((x) => x.place);

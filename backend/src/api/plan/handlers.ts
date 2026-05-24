@@ -476,8 +476,11 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
         
             let curDayIndex = 0;
-            const DAY_START_MIN = 8 * 60;  // 08:00 sáng
-            const DAY_END_MIN = 22 * 60;   // 22:00 đêm (bạn có thể tùy chỉnh lại)
+            const DAY_START_MIN = 8 * 60;  // 08:00 sáng VN
+            const DAY_END_MIN = 22 * 60;   // 22:00 tối VN
+            // startDate được parse từ "YYYY-MM-DD" → UTC midnight. VN midnight = UTC midnight - 7h.
+            const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+            const startVNMidnightUTC = new Date(startDate.getTime() - VN_OFFSET_MS);
 
             let curMin = DAY_START_MIN;
 
@@ -495,10 +498,10 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                         curMin = DAY_START_MIN;
                     }
 
-                    const slotStart = new Date(startDate);
-                    // Cộng số ngày tương ứng với curDayIndex (Date API tự động xử lý qua tháng/năm)
-                    slotStart.setDate(slotStart.getDate() + curDayIndex);
-                    slotStart.setHours(Math.floor(curMin / 60), curMin % 60, 0, 0);
+                    // UTC arithmetic: VN midnight + dayIndex ngày + curMin phút = UTC đúng giờ VN
+                    const slotStart = new Date(
+                        startVNMidnightUTC.getTime() + curDayIndex * 86_400_000 + curMin * 60_000
+                    );
 
                     const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
 

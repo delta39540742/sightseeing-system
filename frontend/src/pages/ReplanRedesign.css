@@ -363,3 +363,116 @@
   font-weight: 700;
   color: #1e3a8a;
 }
+
+/* ── Computing / Loading Screen ──────────────────────────── */
+.computing-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 80px);
+  padding: 2rem 1.5rem;
+  text-align: center;
+}
+
+/* Icon with pulsing ring */
+.computing-icon-wrapper {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 2rem;
+}
+
+.computing-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: rgba(59, 130, 246, 0.12);
+  animation: ring-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ring-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.35); opacity: 0; }
+}
+
+.computing-icon {
+  width: 40px;
+  height: 40px;
+  color: #2563eb;
+  position: relative;
+  z-index: 1;
+  animation: icon-spin 3s linear infinite;
+}
+
+@keyframes icon-spin {
+  0%   { transform: rotate(0deg)   scale(1); }
+  25%  { transform: rotate(90deg)  scale(1.1); }
+  50%  { transform: rotate(180deg) scale(1); }
+  75%  { transform: rotate(270deg) scale(1.1); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+.computing-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #1e3a8a;
+  margin-bottom: 0.75rem;
+}
+
+.computing-subtitle {
+  font-size: 0.95rem;
+  color: #64748b;
+  max-width: 280px;
+  line-height: 1.5;
+  margin-bottom: 2.5rem;
+}
+
+/* Animated steps */
+.computing-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 280px;
+  margin-bottom: 2rem;
+}
+
+.computing-step {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #94a3b8;
+  opacity: 0.4;
+  animation: step-glow 3s ease-in-out infinite;
+}
+
+.computing-step-1 { animation-delay: 0s; }
+.computing-step-2 { animation-delay: 1s; }
+.computing-step-3 { animation-delay: 2s; }
+
+@keyframes step-glow {
+  0%, 100% { opacity: 0.4; background: #f1f5f9; color: #94a3b8; }
+  33% {
+    opacity: 1;
+    background: #dbeafe;
+    color: #1d4ed8;
+    transform: translateX(4px);
+  }
+}
+
+.computing-algo-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}

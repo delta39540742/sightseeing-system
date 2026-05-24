@@ -366,8 +366,8 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
             </div>
           </div>
 
-          {/* Map (right on desktop) */}
-          <div className={`flex-1 h-full md:flex ${mobileTab === 'map' ? 'flex' : 'hidden'}`}>
+          {/* Map (right on desktop) — isolate creates a stacking context so Leaflet's internal z-indexes don't bleed through to modals */}
+          <div className={`flex-1 h-full md:flex isolate ${mobileTab === 'map' ? 'flex' : 'hidden'}`}>
             <TripMap
               slots={trip.slots}
               pendingSlots={pendingSlots}

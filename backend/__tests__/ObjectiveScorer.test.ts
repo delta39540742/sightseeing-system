@@ -261,12 +261,13 @@ describe('ObjectiveScorer', () => {
       expect(scoreSurplus).toBe(0);
     });
 
-    it('penalizes budget deficit proportionally with float precision', () => {
+    it('penalizes budget deficit with hard cliff: -(10000 + |r|×0.1)', () => {
       const place = makePlace({ placeId: 10 });
       const ctx = makeCtx({ candidatePool: [place] });
       const weights = { ...ZERO_WEIGHTS, wBudget: 1 };
       const score = scorer.score([makeSlot({ placeId: 10 })], [makeState(), makeState({ budgetRemaining: -0.1 })], weights, ctx);
-      expect(score).toBeCloseTo(-0.0001, 8);
+      // formula: -(10000 + 0.1 * 0.1) = -10000.01
+      expect(score).toBeCloseTo(-10000.01, 5);
     });
   });
 
@@ -514,11 +515,13 @@ describe('ObjectiveScorer', () => {
       const complexStates = [makeState(), makeState({ fatigue: 1.0, budgetRemaining: -1000 })];
       const complexHistory = [{ operator: 'ADD_PLACE', affectedSlotIds: ['s1'], newPlan: [], description: '' }];
 
+      // fatigue=1.0 > 0.95 → hard penalty: -(1.0) - (10000 + 0.05*100000) = -15001
+      // budgetRemaining=-1000 → hard penalty: -(10000 + 1000*0.1) = -10100
       const terms = [
         { weight: 'wInterest', expected: 1.0 },
         { weight: 'wWeather', expected: 1.0 },
-        { weight: 'wRisk', expected: -1.0 },
-        { weight: 'wBudget', expected: -1.0 },
+        { weight: 'wRisk', expected: -15001.0 },
+        { weight: 'wBudget', expected: -10100.0 },
         { weight: 'wStability', expected: -1.0 },
         { weight: 'wPotentialBias', expected: 0.75 },
       ] as const;
@@ -713,8 +716,10 @@ describe('ObjectiveScorer', () => {
       }];
 
       const score = scorer.score(plan, states, weights, ctx, history);
-      // weather = +1 (indoor) - 60/30 (rain transit 60min) = -1, delta vs old = -2
-      expect(score).toBe(-3.75);
+      // interest=1, pace=0, distance=-1, budget=-(10000+200)=-10200,
+      // weather=+1-2=-1, risk=-0.5, stability=-1, potentialBias=+0.75
+      // total = 1+0-1-10200-1-0.5-1+0.75 = -10201.75
+      expect(score).toBe(-10201.75);
     });
   });
 });
