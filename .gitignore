@@ -78,6 +78,7 @@ t03_text_extract.txt
 # Data files
 # =============================================
 data/
+!frontend/src/data/
 danang_places.json
 .seed-progress
 
