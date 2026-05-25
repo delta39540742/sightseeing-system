@@ -10,6 +10,7 @@ import {
 import { format, addMinutes, addDays, differenceInDays, parseISO } from 'date-fns'
 import { TripMap } from '@/components/map/TripMap'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
+import { DayStartsPicker, type DayStartEntry } from '@/components/planning/DayStartsPicker'
 import { tripService } from '@/services/tripService'
 import { useAuthStore } from '@/store/authStore'
 import { toast } from '@/store/toastStore'
@@ -250,6 +251,11 @@ export default function PlanRoute() {
   const [expandedExplanationIdx, setExpandedExplanationIdx] = useState<number | null>(null)
   const [isConstraintsExpanded, setIsConstraintsExpanded] = useState(false)
 
+  // Điểm bắt đầu mỗi ngày. Khi user set ít nhất 1 entry → switch sang AI mode
+  // (strictMode=false) để planner tính khoảng cách từ dayStart tới slot đầu tiên.
+  const [dayStartPoints, setDayStartPoints] = useState<Record<number, DayStartEntry>>({})
+  const [pickingDayStart, setPickingDayStart] = useState<number | null>(null)
+
   useEffect(() => {
     const coords = routePlaces.map(rp => ({ lat: rp.place.lat!, lng: rp.place.lng! }))
     if (coords.length < 2 || coords.some(c => !c.lat || !c.lng)) {
@@ -427,9 +433,21 @@ export default function PlanRoute() {
   const totalActiveMin = totalVisitMin + actualTravelMin
   const dayOverrunMin = totalActiveMin - DAILY_TIME_BUDGET_MIN * tripDays  // > 0 = vượt budget
 
+  const dayStartsForRequest = useMemo(() => {
+    return Object.entries(dayStartPoints).map(([d, v]) => ({
+      dayIndex: Number(d),
+      lat: v.lat,
+      lng: v.lng,
+      name: v.name,
+    }))
+  }, [dayStartPoints])
+
   const { mutate: save, isPending } = useMutation({
     mutationFn: async () => {
       if (!user) throw new Error('Chưa đăng nhập')
+      // Nếu user đã set điểm bắt đầu ngày → tắt strictMode để greedy planner
+      // tính khoảng cách từ dayStart tới slot đầu mỗi ngày.
+      const useAiMode = dayStartsForRequest.length > 0
       const req: PlanRequest = {
         destinationCity: city,
         startDate,
@@ -439,7 +457,8 @@ export default function PlanRoute() {
         preferences: initialRequest?.preferences,
         experienceKeywords: initialRequest?.experienceKeywords,
         additionalNotes: additionalNotes || undefined,
-        strictMode: true,
+        strictMode: !useAiMode,
+        ...(useAiMode ? { dayStarts: dayStartsForRequest } : {}),
       }
       return tripService.generate(req)
     },
@@ -522,18 +541,31 @@ export default function PlanRoute() {
     const base = new Date(startDate)
     base.setHours(h, m, 0, 0)
     let cursor = base
-    return routePlaces.map((rp) => {
+    return routePlaces.map((rp, i) => {
       const start = new Date(cursor)
       const end = addMinutes(start, rp.visitMinutes)
-      cursor = addMinutes(end, 30)
+      if (i < routePlaces.length - 1) {
+        const leg = osrmRoute?.legs?.[i]
+        let travelMin = 0
+        if (leg) {
+          travelMin = Math.round(leg.duration / 60)
+        } else {
+          const a = rp.place
+          const b = routePlaces[i + 1].place
+          if (a.lat && a.lng && b.lat && b.lng) {
+            travelMin = Math.round(travelMinFromKm(haversineKm(a.lat, a.lng, b.lat, b.lng)))
+          }
+        }
+        cursor = addMinutes(end, travelMin)
+      } else {
+        cursor = end
+      }
       return { start, end }
     })
   }
 
   const schedule = computeSchedule()
-  const totalMin =
-    routePlaces.reduce((s, rp) => s + rp.visitMinutes, 0) +
-    Math.max(0, routePlaces.length - 1) * 30
+  const totalMin = totalVisitMin + actualTravelMin
   const totalCost = routePlaces.reduce((s, rp) => s + (rp.place.minPrice || 0), 0)
 
   const mapSlots: TripSlot[] = routePlaces.map((rp, i) => ({
@@ -768,6 +800,45 @@ export default function PlanRoute() {
               </div>
             </div>
           )}
+
+          {/* Per-day start point picker. Khi có ít nhất 1 entry → backend switch AI mode. */}
+          <div className="mb-4">
+            <DayStartsPicker
+              tripDays={tripDays}
+              values={dayStartPoints}
+              anchorPlaces={routePlaces.map((rp) => rp.place)}
+              pickingDay={pickingDayStart}
+              onStartPickingDay={(d) => {
+                setPickingDayStart(d)
+                toast.info(`Nhấn vào bản đồ để chọn điểm bắt đầu ngày ${d + 1}`)
+              }}
+              onClearDay={(d) => {
+                setDayStartPoints((prev) => {
+                  const next = { ...prev }
+                  delete next[d]
+                  return next
+                })
+                if (pickingDayStart === d) setPickingDayStart(null)
+              }}
+              onSelectPlace={(d, p) => {
+                if (p.lat == null || p.lng == null) {
+                  toast.error('Địa điểm này không có toạ độ')
+                  return
+                }
+                setDayStartPoints((prev) => ({
+                  ...prev,
+                  [d]: { lat: p.lat!, lng: p.lng!, name: p.name },
+                }))
+                if (pickingDayStart === d) setPickingDayStart(null)
+              }}
+            />
+            {dayStartsForRequest.length > 0 && (
+              <p className="mt-1.5 text-[10px] text-blue-600">
+                Đã set {dayStartsForRequest.length} điểm bắt đầu → planner sẽ tự xếp lại thứ tự để tối ưu khoảng cách.
+              </p>
+            )}
+          </div>
+
           {/* Warning: lộ trình quá dài cho X ngày */}
           {dayOverrunMin > 0 && (
             <div className="mb-3 flex gap-2.5 bg-amber-50 border border-amber-200 rounded-xl p-3">
@@ -1195,7 +1266,22 @@ export default function PlanRoute() {
 
       {/* Right panel — Map */}
       <div className="hidden md:flex flex-1 relative">
-        <TripMap slots={mapSlots} className="w-full h-full rounded-none" />
+        <TripMap
+          slots={mapSlots}
+          className="w-full h-full rounded-none"
+          onMapClick={(lat, lng) => {
+            if (pickingDayStart === null) return
+            const day = pickingDayStart
+            setDayStartPoints((prev) => ({ ...prev, [day]: { lat, lng } }))
+            setPickingDayStart(null)
+            toast.info(`Đã chọn điểm bắt đầu ngày ${day + 1}`)
+          }}
+        />
+        {pickingDayStart !== null && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-sm rounded-xl px-4 py-2 shadow-lg text-sm font-medium text-blue-700 pointer-events-none z-10">
+            📍 Nhấn vào bản đồ để chọn điểm bắt đầu ngày {pickingDayStart + 1}
+          </div>
+        )}
         <DestinationDetailPanel
           place={selectedSuggestion}
           onClose={() => setSelectedSuggestion(null)}

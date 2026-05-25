@@ -32,6 +32,21 @@ const generateBodySchema = {
     mobilityRestrictions: { type: 'array', items: { type: 'string' }, maxItems: 10 },
     additionalNotes:      { type: 'string', maxLength: 1000 },
     planningAlgorithm:    { type: 'string', enum: ['greedy_2opt', 'i3ch'], default: 'greedy_2opt' },
+    dayStarts: {
+      type: 'array',
+      maxItems: 30,
+      items: {
+        type: 'object',
+        required: ['dayIndex', 'lat', 'lng'],
+        properties: {
+          dayIndex: { type: 'integer', minimum: 0, maximum: 29 },
+          lat:      { type: 'number' },
+          lng:      { type: 'number' },
+          name:     { type: 'string', maxLength: 200 },
+        },
+        additionalProperties: false,
+      },
+    },
   },
   additionalProperties: false,
 } as const;

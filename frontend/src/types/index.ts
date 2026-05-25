@@ -114,6 +114,14 @@ export interface PlanRequest {
   strictMode?: boolean
   planningAlgorithm?: 'greedy_2opt' | 'i3ch'
   lockedSlots?: Array<{ placeId: number; dayIndex: number; fixedStart: string; durationMin?: number }>
+  dayStarts?: DayStart[]
+}
+
+export interface DayStart {
+  dayIndex: number
+  lat: number
+  lng: number
+  name?: string
 }
 
 export interface PlaceOrderItem {

@@ -8,6 +8,13 @@ export interface SoftConstraint {
   strength: number;
 }
 
+export interface DayStart {
+  dayIndex: number;
+  lat: number;
+  lng: number;
+  name?: string;
+}
+
 export interface SolverContext {
   weights: ObjectiveWeights;
   preferenceVector: number[];
@@ -16,10 +23,36 @@ export interface SolverContext {
   startDate: Date;
   budgetTotal: number;
   hotelPlace?: Place;
+  /**
+   * Điểm xuất phát mỗi ngày (sân bay/bến xe ngày đầu, khách sạn các ngày sau, hoặc
+   * homestay khác mà user đặt). Khi không khai báo cho dayIndex nào → fallback về
+   * hotelPlace, rồi mới đến candidates[0] / default.
+   */
+  dayStarts?: DayStart[];
   /** placeId → boost score từ collaborative filtering (similar users đã rate cao) */
   collaborativeBoosts?: Map<number, number>;
   /** Cum tu free-text mo ta trai nghiem do NLU trich (vd "muc nuong", "hoang hon") */
   experienceKeywords?: string[];
+}
+
+/** Lookup point xuất phát của một ngày. dayStarts > hotelPlace > null. */
+export function resolveDayStart(
+  ctx: SolverContext,
+  dayIndex: number,
+): { lat: number; lng: number } | null {
+  if (ctx.dayStarts) {
+    const ds = ctx.dayStarts.find((d) => d.dayIndex === dayIndex);
+    if (ds && Number.isFinite(ds.lat) && Number.isFinite(ds.lng)) {
+      return { lat: ds.lat, lng: ds.lng };
+    }
+  }
+  if (
+    ctx.hotelPlace?.lat != null &&
+    ctx.hotelPlace?.lng != null
+  ) {
+    return { lat: ctx.hotelPlace.lat, lng: ctx.hotelPlace.lng };
+  }
+  return null;
 }
 
 export interface PlacePeakTime {
@@ -467,10 +500,11 @@ export function generateGreedyPlan(
 
   for (let dayIndex = 0; dayIndex < days; dayIndex++) {
     const dayUTCMidnight = new Date(startDate.getTime() + dayIndex * 86_400_000);
+    const dayStart = resolveDayStart(ctx, dayIndex);
     const st: DayState = {
       currentTimeMin: DAY_START_MIN,
-      currentLat: ctx.hotelPlace?.lat ?? candidates[0]?.lat ?? 16.06,
-      currentLng: ctx.hotelPlace?.lng ?? candidates[0]?.lng ?? 108.22,
+      currentLat: dayStart?.lat ?? candidates[0]?.lat ?? 16.06,
+      currentLng: dayStart?.lng ?? candidates[0]?.lng ?? 108.22,
       budgetRemaining,
       visitedPlaceIds,
       lastTagIds: [],
@@ -699,7 +733,10 @@ function retimeAndValidate(
       const vnDate = new Date(vnMs);
       curMin = vnDate.getUTCHours() * 60 + vnDate.getUTCMinutes();
       curDay = slot.dayIndex;
-      prevPlace = ctx.hotelPlace ?? null;
+      const ds = resolveDayStart(ctx, slot.dayIndex);
+      prevPlace = ds
+        ? ({ lat: ds.lat, lng: ds.lng } as Place)
+        : (ctx.hotelPlace ?? null);
     }
 
     let arrivalMin = curMin;

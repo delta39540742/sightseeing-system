@@ -159,6 +159,12 @@ export class MutationOperators {
         const anchorStartLocal = new Date(new Date(shiftedAnchor.plannedStart).getTime() + VN_OFFSET_MS);
         if (anchorStartLocal.getUTCHours() < DAY_START_HOUR) continue;
 
+        // 2c. Past guard: anchor không được dịch chuyển về trước capturedAt.
+        // Shift âm có thể đẩy plannedStart về quá khứ mà 08:00 VN guard không bắt được
+        // (ví dụ: capturedAt = 13:00 VN, slot gốc = 13:30 VN, shift -60 → 12:30 VN).
+        const capturedAtMs = new Date(ctx.initialState.capturedAt).getTime();
+        if (new Date(shiftedAnchor.plannedStart).getTime() < capturedAtMs) continue;
+
         // 3. Kiểm tra overlap với slot TRƯỚC (i-1) khi shift về trước (shiftMin < 0).
         // repairSuffix chỉ sửa từ i+1 trở đi; không kiểm tra ngược lên i-1 → phải check thủ công.
         if (shiftMin < 0 && i > 0) {
@@ -680,7 +686,8 @@ export class MutationOperators {
 
     for (const [dayIdx, daySlots] of [...dayGroups.entries()].sort(([a], [b]) => a - b)) {
       // Skip reorder if any slot in the day is locked (locked slots must stay at their fixed time)
-      if (daySlots.some(s => s.isLocked)) {
+      // or if any slot is completed/skipped (must preserve historical timestamps).
+      if (daySlots.some(s => s.isLocked) || daySlots.some(s => s.status === 'completed' || s.status === 'skipped')) {
         newByDay.set(dayIdx, daySlots.map((s, i) => ({ ...s, slotOrder: i })));
         const lp = daySlots[daySlots.length - 1] ? placeMap.get(daySlots[daySlots.length - 1]!.placeId) : null;
         if (lp) { startLat = lp.lat; startLng = lp.lng; }
@@ -870,6 +877,9 @@ export class MutationOperators {
    * @returns Danh sách tối đa các {@link MutationResult} đại diện cho các hướng đi mới của lộ trình.
    */
   generateAll(plan: TripSlot[], ctx: ReplanContext): MutationResult[] {
+    // Empty plan: no slots to mutate or anchor insertions off.
+    if (plan.length === 0) return [];
+
     // 1. Thực thi độc lập và thu thập kết quả từ tất cả các toán tử
     const timeShifts = this.timeShift(plan, ctx);
     const swaps = this.swapOrder(plan, ctx);
@@ -1463,6 +1473,9 @@ export class MutationOperators {
     const repaired = plan.map((slot) => ({ ...slot }));
     const maxOverflow = ctx.maxOverflowMinutes ?? 30;
 
+    // Trip boundary: no slot may be scheduled beyond the last day present in the input plan.
+    const maxAllowedDayIndex = Math.max(...plan.map((s) => s.dayIndex));
+
     const placeMap = ctx.placeMap ?? (() => {
       const m = new Map<number, Place>();
       for (const p of ctx.candidatePool) m.set(p.placeId, p);
@@ -1490,9 +1503,37 @@ export class MutationOperators {
         ? repaired[fromIndex - 1]!.dayIndex
         : (repaired[fromIndex]?.dayIndex ?? ctx.initialState.dayIndex);
 
+    // When capturedAt is before the first slot's scheduled day (pre-trip cursor) AND there
+    // is no prefix to anchor the calendar day, clamp the cursor's VN calendar day to the
+    // first processed slot's day so the pre-trip gap does not inflate dayJump.
+    // Only apply when fromIndex === 0: with a prefix, the prefix already establishes the
+    // correct calendar day, and clamping would suppress legitimate cross-day jumps (e.g.,
+    // a suffix slot originally scheduled on day N+1 while the prefix is on day N).
+    const tripStartVNDay =
+      fromIndex === 0
+        ? Math.floor(
+            (new Date(repaired[0]?.plannedStart ?? ctx.initialState.capturedAt).getTime() +
+              VN_OFFSET_MS) /
+              86_400_000,
+          )
+        : -Infinity;
+
     for (let i = fromIndex; i < repaired.length; i++) {
       const slot = repaired[i]!;
-      const cursorVNDay = Math.floor((cursorMs + VN_OFFSET_MS) / 86_400_000);
+      const rawCursorVNDay = Math.floor((cursorMs + VN_OFFSET_MS) / 86_400_000);
+      const cursorVNDay = Math.max(rawCursorVNDay, tripStartVNDay);
+
+      // Historical slots (completed / skipped) are immutable: their plannedStart/End reflect
+      // what actually happened (or was acknowledged as skipped) and must never be re-timed
+      // by repair. Treat them like locked anchors that advance the cursor only.
+      if (slot.status === 'completed' || slot.status === 'skipped') {
+        cursorMs = Math.max(cursorMs, new Date(slot.plannedEnd).getTime());
+        currentDayIndex = slot.dayIndex;
+        repaired[i] = { ...slot };
+        const prevMax = dayOrderCounters.get(slot.dayIndex) ?? -1;
+        dayOrderCounters.set(slot.dayIndex, Math.max(prevMax, slot.slotOrder) + 1);
+        continue;
+      }
 
       // Locked slots are immovable anchors: cursor must not overflow into their window,
       // and travel time from the previous position to the locked venue must also fit.
@@ -1614,7 +1655,11 @@ export class MutationOperators {
       // multi-day gaps where originalStart is already on a future calendar day.
       const finalStartVNDay = Math.floor((plannedStartMs + VN_OFFSET_MS) / 86_400_000);
       const dayJump = finalStartVNDay - cursorVNDay;
-      if (dayJump > 0) currentDayIndex += dayJump;
+      if (dayJump > 0) {
+        currentDayIndex += dayJump;
+        // Trip boundary: reject any plan where a slot must spill beyond the last trip day.
+        if (currentDayIndex > maxAllowedDayIndex) return null;
+      }
 
       const slotOrder = dayOrderCounters.get(currentDayIndex) ?? 0;
       dayOrderCounters.set(currentDayIndex, slotOrder + 1);

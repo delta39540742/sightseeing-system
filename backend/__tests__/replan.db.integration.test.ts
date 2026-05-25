@@ -484,8 +484,8 @@ describe('GROUP 1 — PlanLoader output validation', () => {
       expect(ctx.initialState.budgetRemaining).toBe(BUDGET_TOTAL);
     });
 
-    it('timeRemainingMin = 720 (12h / ngày)', () => {
-      expect(ctx.initialState.timeRemainingMin).toBe(720);
+    it('timeRemainingMin >= 720 (ít nhất 1 ngày còn lại)', () => {
+      expect(ctx.initialState.timeRemainingMin).toBeGreaterThanOrEqual(720);
     });
 
     it('fatigue = 0 (trip mới)', () => {

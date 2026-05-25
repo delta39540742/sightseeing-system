@@ -1,7 +1,7 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma, pool } from '../../lib/prisma';
-import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore, EnrichedSlot } from './solver';
+import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore, EnrichedSlot, DayStart } from './solver';
 import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
 import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
@@ -380,6 +380,28 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             preferredTagIds = matchedTags.map((t) => t.tag_id);
         }
 
+        // Per-day start locations (sân bay, khách sạn riêng từng ngày, etc.)
+        // Mỗi entry: { dayIndex, lat, lng, name? }. dayIndex bắt đầu từ 0.
+        const dayStarts: DayStart[] = Array.isArray(payload.dayStarts)
+            ? payload.dayStarts
+                .filter(
+                    (d: any) =>
+                        d != null &&
+                        Number.isInteger(d.dayIndex) &&
+                        d.dayIndex >= 0 &&
+                        typeof d.lat === 'number' &&
+                        Number.isFinite(d.lat) &&
+                        typeof d.lng === 'number' &&
+                        Number.isFinite(d.lng),
+                )
+                .map((d: any) => ({
+                    dayIndex: d.dayIndex,
+                    lat: d.lat,
+                    lng: d.lng,
+                    name: typeof d.name === 'string' ? d.name : undefined,
+                }))
+            : [];
+
         // Lấy candidates từ DB
         const anchorPlaceIds: number[] = payload.anchorPlaceIds || [];
         const strictMode: boolean = payload.strictMode === true;
@@ -542,6 +564,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 budgetTotal: payload.budgetTotal ?? 5_000_000,
                 collaborativeBoosts: bundle.collaborativeBoosts,
                 experienceKeywords: expKws,
+                dayStarts: dayStarts.length > 0 ? dayStarts : undefined,
             };
 
             if (planningAlgorithm === 'i3ch') {

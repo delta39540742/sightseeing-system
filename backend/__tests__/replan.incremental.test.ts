@@ -1453,11 +1453,13 @@ describe('Batch 14 — StateEvolver: travel time & fatigue model', () => {
   });
 
   it('B14.7 — [INVARIANT] TSP_REORDER đặt slot gần start trước slot xa', () => {
-    // Start ở (16, 108). Slot A ở (17, 108) = 111 km xa, Slot B ở (16.01, 108) = 1.11 km gần.
+    // Start ở (16, 108). Slot A ở (16.5, 108) = ~55 km xa, Slot B ở (16.01, 108) = 1.11 km gần.
     // Thứ tự ban đầu [A, B] — không tối ưu. TSP_REORDER phải đề xuất [B, A].
+    // NOTE: A phải đủ gần để sau khi reorder [B,A] + travel ~183 min từ B→A,
+    // slot A vẫn kết thúc trước 22:30 VN (trip chỉ có day 0).
     const evolver2 = new StateEvolver();
     const ops = new MutationOperators(evolver2);
-    const placeA = makePlace({ placeId: 1, lat: 17.0, lng: 108.0, avgVisitDurationMin: 60, minPrice: 0 });
+    const placeA = makePlace({ placeId: 1, lat: 16.5, lng: 108.0, avgVisitDurationMin: 60, minPrice: 0 });
     const placeB = makePlace({ placeId: 2, lat: 16.01, lng: 108.0, avgVisitDurationMin: 60, minPrice: 0 });
     const plan: TripSlot[] = [
       makeSlot({ slotId: 'sA', placeId: 1, dayIndex: 0, slotOrder: 0,

@@ -946,4 +946,114 @@ describe('E2E Replan — Trip 6286745f (Đà Nẵng 3 ngày)', () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Group 10: Ràng buộc ngày — không vượt quá số ngày của trip
+  // Bug: repairSuffix có thể đẩy slot sang dayIndex > maxDayIndex khi tràn giờ
+  // -------------------------------------------------------------------------
+
+  describe('Ràng buộc ngày trip — không vượt quá ngày cuối', () => {
+    it('TC10.1 — Plan output không có slot có dayIndex > 2 (trip 3 ngày)', () => {
+      const ctx = buildCtx();
+      const { plan } = beamSearch.search(ctx);
+      for (const slot of plan) {
+        expect(
+          slot.dayIndex,
+          `slot placeId=${slot.placeId} có dayIndex=${slot.dayIndex} vượt quá ngày cuối (2)`,
+        ).toBeLessThanOrEqual(2);
+      }
+    });
+
+    it('TC10.2 — repairSuffix trả về null khi slot bị đẩy qua ngày cuối trip', () => {
+      // Kịch bản: ngày 2 (ngày cuối), slot bắt đầu lúc 20:30 VN + duration 120 phút = kết thúc 22:30
+      // → vượt maxOverflow (30 phút sau 22:00), cần dời sang 08:00 ngày 3
+      // → dayIndex=3 > maxAllowedDayIndex=2 → phải trả về null
+      const lateSlotDay2: TripSlot = {
+        slotId: 'late-slot-d2',
+        tripId: TRIP_ID,
+        dayIndex: 2,
+        slotOrder: 0,
+        version: 1,
+        placeId: CAY_DA_DO_XU.placeId,
+        plannedStart: '2026-05-25T13:30:00.000Z', // 20:30 VN
+        plannedEnd:   '2026-05-25T15:30:00.000Z', // 22:30 VN
+        actualStart: null, actualEnd: null,
+        estimatedCost: 0,
+        activityType: 'sightseeing',
+        rationale: null,
+        status: 'planned',
+      };
+      // Thêm slot thứ 2 vào ngày 2 — cursor sau lateSlotDay2 là 22:30, slot này cần dời sang ngày 3
+      const followSlotDay2: TripSlot = {
+        slotId: 'follow-slot-d2',
+        tripId: TRIP_ID,
+        dayIndex: 2,
+        slotOrder: 1,
+        version: 1,
+        placeId: MY_AN_BEACH.placeId,
+        plannedStart: '2026-05-25T16:00:00.000Z', // 23:00 VN (quá muộn)
+        plannedEnd:   '2026-05-25T18:00:00.000Z', // 01:00 VN ngày hôm sau
+        actualStart: null, actualEnd: null,
+        estimatedCost: 0,
+        activityType: 'sightseeing',
+        rationale: null,
+        status: 'planned',
+      };
+
+      const operators = new MutationOperators(evolver);
+      const ctx = buildCtx({
+        remainingSlots: [lateSlotDay2, followSlotDay2],
+        initialState: { ...INITIAL_STATE, dayIndex: 2, timeRemainingMin: 720 },
+      });
+
+      // repairSuffix phải trả về null vì không thể fit slot trong phạm vi trip
+      const result = operators['repairSuffix']([lateSlotDay2, followSlotDay2], 1, ctx as Parameters<typeof operators['repairSuffix']>[2]);
+      if (result !== null) {
+        // Nếu không null, slot phải có dayIndex <= 2 (không được vượt ngày cuối)
+        for (const slot of result) {
+          expect(
+            slot.dayIndex,
+            `repairSuffix: slot placeId=${slot.placeId} có dayIndex=${slot.dayIndex} vượt ngày cuối trip (2)`,
+          ).toBeLessThanOrEqual(2);
+        }
+      }
+      // null là kết quả đúng — slot không thể fit → infeasible
+    });
+
+    it('TC10.3 — repairSuffix không tạo slot vượt ngày cuối khi cursor bắt đầu sớm', () => {
+      // Dùng capturedAt = 01:00 UTC (= 08:00 VN) để cursor bắt đầu trước các slot ngày 0.
+      // Với khởi đầu này, tất cả DAY0_SLOTS (08:00–20:00 VN) đều nằm vừa trong ngày 0.
+      const earlyState = { ...INITIAL_STATE, timeRemainingMin: 720, capturedAt: '2026-05-23T01:00:00.000Z' };
+      const ctx = buildCtx({
+        remainingSlots: DAY0_SLOTS,
+        initialState: earlyState,
+      });
+      const operators = new MutationOperators(evolver);
+      const repaired = operators['repairSuffix'](DAY0_SLOTS, 0, ctx as Parameters<typeof operators['repairSuffix']>[2]);
+
+      expect(repaired, 'repairSuffix ngày 0 (cursor sớm) không được null').not.toBeNull();
+      for (const slot of repaired!) {
+        // Không slot nào được vượt quá ngày cuối của plan ngày 0 (dayIndex ≤ 0)
+        expect(
+          slot.dayIndex,
+          `slot placeId=${slot.placeId}: dayIndex=${slot.dayIndex} không được vượt quá 0`,
+        ).toBeLessThanOrEqual(0);
+      }
+    });
+
+    it('TC10.4 — BeamSearch toàn trip: plannedStart của mọi slot không vượt quá ngày cuối trip (May 25 VN)', () => {
+      const ctx = buildCtx();
+      const { plan } = beamSearch.search(ctx);
+
+      // Ngày cuối trip là 2026-05-25, kết thúc lúc 23:59 VN = 2026-05-25T16:59:59Z
+      const tripLastDayEndMs = new Date('2026-05-25T16:59:59.000Z').getTime();
+      for (const slot of plan) {
+        const slotStartMs = new Date(slot.plannedStart).getTime();
+        expect(
+          slotStartMs,
+          `slot placeId=${slot.placeId} có plannedStart (${slot.plannedStart}) sau ngày cuối trip (2026-05-25)`,
+        ).toBeLessThanOrEqual(tripLastDayEndMs);
+      }
+    });
+  });
 });

@@ -76,10 +76,11 @@ export class PlanLoader {
       user_id: string;
       destination_city: string;
       start_date: string;
+      end_date: string;
       budget_total: number;
       hotel_place_id: string | null;
     }>(
-      `SELECT trip_id, user_id, destination_city, start_date, budget_total, hotel_place_id
+      `SELECT trip_id, user_id, destination_city, start_date, end_date, budget_total, hotel_place_id
          FROM trip WHERE trip_id = $1`,
       [tripId],
     );
@@ -179,7 +180,7 @@ export class PlanLoader {
         capturedAt: snap.captured_at,
         source: snap.source === 'actual' ? 'actual' : 'simulated',
       }
-      : await this.buildDefaultState(tripId, trip.budget_total, trip.start_date, trip.hotel_place_id);
+      : await this.buildDefaultState(tripId, trip.budget_total, trip.start_date, trip.end_date, trip.hotel_place_id);
 
     // 4.1. Sanity-check snapshot position: if the stored coordinates are > 150 km from the
     // trip city, the snapshot was captured from a remote location (e.g. user was home in HCMC
@@ -343,6 +344,7 @@ export class PlanLoader {
     tripId: string,
     budgetTotal: number,
     startDate: string,
+    endDate: string,
     hotelPlaceId: string | null,
   ): Promise<TripState> {
     let lat = DA_NANG_CENTER.lat;
@@ -360,17 +362,25 @@ export class PlanLoader {
     }
 
     const start = new Date(startDate);
+    const end = new Date(endDate);
     const now = new Date();
     const dayIndex = Math.max(
       0,
       Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)),
     );
 
+    // Total trip duration in days (inclusive: start=day0, end=lastDay).
+    const totalDays = Math.max(
+      1,
+      Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1,
+    );
+    const daysRemaining = Math.max(1, totalDays - dayIndex);
+
     return {
       tripId,
       dayIndex,
       slotOrder: 0,
-      timeRemainingMin: DEFAULT_DAY_MINUTES,
+      timeRemainingMin: daysRemaining * DEFAULT_DAY_MINUTES,
       budgetRemaining: budgetTotal,
       fatigue: 0,
       currentLat: lat,

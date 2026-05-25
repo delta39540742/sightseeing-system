@@ -256,12 +256,16 @@ describe('MutationOperators.repairSuffix', () => {
 
     it('Test 5.2 (Vượt giới hạn mềm/Ngắt ngày): endHour lớn hơn DAY_END_HOUR + maxOverflow -> Tăng dayIndex lên 1, dời lịch sang DAY_START_HOUR (8:00 AM) của ngày tiếp theo', () => {
       // Place has avgVisitDurationMin=120 so slot starting 21:00 VN ends at 23:00 VN (overflow 60 min > maxOverflow 30 min)
+      // Plan has a day-1 slot so maxAllowedDayIndex=1, allowing the overflow.
       const ctx = makeCtx([makePlace({ placeId: 1, avgVisitDurationMin: 120 })], { maxOverflowMinutes: 30 } as any);
-      const plan = [makeSlot({
-        placeId: 1,
-        plannedStart: '2026-04-21T14:00:00.000Z', // 21:00 VN
-        plannedEnd: '2026-04-21T16:00:00.000Z',   // original window irrelevant; avgVisitDuration drives end
-      })];
+      const plan = [
+        makeSlot({
+          placeId: 1,
+          plannedStart: '2026-04-21T14:00:00.000Z', // 21:00 VN
+          plannedEnd: '2026-04-21T16:00:00.000Z',
+        }),
+        makeSlot({ placeId: 1, dayIndex: 1, plannedStart: '2026-04-22T05:00:00.000Z', plannedEnd: '2026-04-22T06:00:00.000Z' }),
+      ];
       const result = repairSuffix(plan, 0, ctx);
 
       expect(result[0].dayIndex).toBe(1);
@@ -356,9 +360,10 @@ describe('MutationOperators.repairSuffix', () => {
 
     it('Test 8.2 (Domino Day-Break): Một slot bị tràn qua giới hạn ngày, kiểm tra slot tiếp theo nối tiếp ở ngày mới', () => {
       // P1 has avgVisitDurationMin=120 so slot starting 21:00 VN ends at 23:00 VN → overflows past 22:00 VN (DAY_END_HOUR)
+      // s1 is explicitly on day 1 so maxAllowedDayIndex=1 allows the overflow.
       const bigP1 = makePlace({ placeId: 1, avgVisitDurationMin: 120 });
       const s0 = makeSlot({ slotId: 's0', placeId: 1, plannedStart: '2026-04-21T14:00:00.000Z', plannedEnd: '2026-04-21T16:00:00.000Z' });
-      const s1 = makeSlot({ slotId: 's1', placeId: 2, plannedStart: '2026-04-21T16:00:00.000Z' });
+      const s1 = makeSlot({ slotId: 's1', placeId: 2, dayIndex: 1, plannedStart: '2026-04-22T01:00:00.000Z', plannedEnd: '2026-04-22T02:30:00.000Z' });
 
       const result = repairSuffix([s0, s1], 0, makeCtx([bigP1, P2]));
 
@@ -394,21 +399,27 @@ describe('MutationOperators.repairSuffix', () => {
     });
 
     it('Test 9.2 (Vượt maxOverflow đúng 1 mili-giây): Bắt buộc ngắt ngày', () => {
-      // plannedStart is 1ms past 21:30 VN so end = 22:30:00.001 VN, which is 1ms past the soft boundary
+      // plannedStart is 1ms past 21:30 VN so end = 22:30:00.001 VN, which is 1ms past the soft boundary.
+      // A day-1 dummy slot ensures maxAllowedDayIndex=1 so the overflow is accepted.
       const ctx = makeCtx(ALL_PLACES, { maxOverflowMinutes: 30 } as any);
-      const plan = [makeSlot({
-        placeId: 1,
-        plannedStart: '2026-04-21T14:30:00.001Z', // 21:30:00.001 VN
-        plannedEnd: '2026-04-21T15:30:00.001Z',
-      })];
+      const plan = [
+        makeSlot({ placeId: 1, plannedStart: '2026-04-21T14:30:00.001Z', plannedEnd: '2026-04-21T15:30:00.001Z' }),
+        makeSlot({ placeId: 1, dayIndex: 1, plannedStart: '2026-04-22T05:00:00.000Z', plannedEnd: '2026-04-22T06:00:00.000Z' }),
+      ];
       const result = repairSuffix(plan, 0, ctx);
       expect(result[0].dayIndex).toBe(1);
     });
 
     it('Test 9.3 (Xử lý Slot quá dài - Mega Slot)', () => {
+      // A day-1 dummy slot (short place 2) ensures maxAllowedDayIndex=1 so the 24h slot can land on day 1.
+      // The dummy uses a different short-duration place so it doesn't itself overflow.
       const megaPlace = makePlace({ placeId: 1, avgVisitDurationMin: 24 * 60 });
-      const plan = [makeSlot({ placeId: 1 })];
-      const result = repairSuffix(plan, 0, makeCtx([megaPlace]));
+      const shortPlace = makePlace({ placeId: 2, avgVisitDurationMin: 60 });
+      const plan = [
+        makeSlot({ placeId: 1 }),
+        makeSlot({ placeId: 2, dayIndex: 1, plannedStart: '2026-04-22T05:00:00.000Z', plannedEnd: '2026-04-22T06:00:00.000Z' }),
+      ];
+      const result = repairSuffix(plan, 0, makeCtx([megaPlace, shortPlace]));
       expect(result[0].dayIndex).toBe(1);
     });
 
@@ -440,12 +451,12 @@ describe('MutationOperators.repairSuffix', () => {
   // 11. Các tham số Context cực đoan
   describe('11. Các tham số Context cực đoan', () => {
     it('Test 11.1 (maxOverflowMinutes = 0)', () => {
+      // A day-1 dummy slot ensures maxAllowedDayIndex=1 so the strict-limit overflow is accepted.
       const ctx = makeCtx(ALL_PLACES, { maxOverflowMinutes: 0 } as any);
-      const plan = [makeSlot({ 
-        placeId: 1, 
-        plannedStart: '2026-04-21T14:59:00.000Z', 
-        plannedEnd: '2026-04-21T15:01:00.000Z' 
-      })];
+      const plan = [
+        makeSlot({ placeId: 1, plannedStart: '2026-04-21T14:59:00.000Z', plannedEnd: '2026-04-21T15:01:00.000Z' }),
+        makeSlot({ placeId: 1, dayIndex: 1, plannedStart: '2026-04-22T05:00:00.000Z', plannedEnd: '2026-04-22T06:00:00.000Z' }),
+      ];
       const result = repairSuffix(plan, 0, ctx);
       expect(result[0].dayIndex).toBe(1);
     });
@@ -523,10 +534,12 @@ describe('MutationOperators.repairSuffix', () => {
     });
 
     it('Test 13.3 (Lỗi dời ngày liên tục)', () => {
-       const megaPlace = makePlace({ placeId: 1, avgVisitDurationMin: 10000 }); 
-       const plan = [makeSlot({ placeId: 1 })];
-       const result = repairSuffix(plan, 0, makeCtx([megaPlace]));
-       expect(result).not.toBeNull();
+      // A 10000-min slot cannot fit in a single-day plan — repairSuffix should return null
+      // (no infinite loop; terminates cleanly after one shiftToNextDayMorning).
+      const megaPlace = makePlace({ placeId: 1, avgVisitDurationMin: 10000 });
+      const plan = [makeSlot({ placeId: 1 })];
+      const result = repairSuffix(plan, 0, makeCtx([megaPlace]));
+      expect(result).toBeNull();
     });
   });
 
@@ -569,25 +582,29 @@ describe('MutationOperators.repairSuffix', () => {
          placeId: 1,
          openingHours: [{ dayOfWeek: 0, openTime: '08:00', closeTime: '20:00' }]
        });
-       // Slot is on Sunday 22:00–00:00 VN (April 19–20, 2026).
-       // capturedAt must be on Sunday so cursor does not jump past Monday Apr 20.
+       // Slot is on Sunday 22:00 VN (April 19 2026). Night overflow shifts it to Monday (dayOfWeek=0).
+       // A day-1 dummy slot ensures maxAllowedDayIndex=1 so the overflow lands on day 1.
        const s0 = makeSlot({ placeId: 1, plannedStart: '2026-04-19T15:00:00.000Z' });
        s0.plannedEnd = '2026-04-19T17:00:00.000Z';
+       const s1 = makeSlot({ placeId: 1, dayIndex: 1, plannedStart: '2026-04-20T05:00:00.000Z', plannedEnd: '2026-04-20T06:00:00.000Z' });
        const ctx = makeCtx([placeMonOnly], {
          initialState: makeState({ capturedAt: '2026-04-19T15:00:00.000Z' }),
        });
-       const result = repairSuffix([s0], 0, ctx);
+       const result = repairSuffix([s0, s1], 0, ctx);
        expect(result).not.toBeNull();
        expect(result[0].dayIndex).toBe(1);
     });
 
     it('Test 16.2 (Dời lịch vào cuối tháng/Năm nhuận)', () => {
-      const s0 = makeSlot({ 
-        placeId: 1, 
-        plannedStart: '2028-02-28T15:00:00.000Z', 
-        plannedEnd: '2028-02-28T17:00:00.000Z'   
+      // Slot starts at 22:00 VN Feb 28 2028 (leap year). Night overflow moves it to Feb 29.
+      // A day-1 dummy slot ensures maxAllowedDayIndex=1 so the overflow lands on day 1.
+      const s0 = makeSlot({
+        placeId: 1,
+        plannedStart: '2028-02-28T15:00:00.000Z',
+        plannedEnd: '2028-02-28T17:00:00.000Z',
       });
-      const result = repairSuffix([s0], 0, makeCtx(ALL_PLACES));
+      const s1 = makeSlot({ placeId: 1, dayIndex: 1, plannedStart: '2028-02-29T05:00:00.000Z', plannedEnd: '2028-02-29T06:00:00.000Z' });
+      const result = repairSuffix([s0, s1], 0, makeCtx(ALL_PLACES));
       expect(result[0].plannedStart).toContain('2028-02-29');
     });
   });
