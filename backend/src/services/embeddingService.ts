@@ -7,9 +7,10 @@ export const EMBEDDING_DIM = 384;
 // Disable embedding entirely if needed (e.g. for testing)
 const EMBEDDING_ENABLED = process.env.EMBEDDING_ENABLED !== 'false';
 
-// Sử dụng model gốc trên Hugging Face
+// Endpoint cũ `api-inference.huggingface.co` đã bị HF gỡ vào cuối 2024 (DNS không resolve).
+// Phải dùng router endpoint mới — token cần quyền "Make calls to Inference Providers".
 const HF_MODEL = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2';
-const HF_API_URL = `https://api-inference.huggingface.co/pipeline/feature-extraction/${HF_MODEL}`;
+const HF_API_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}/pipeline/feature-extraction`;
 const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY || '';
 
 async function callHuggingFace(texts: string | string[]): Promise<number[][]> {

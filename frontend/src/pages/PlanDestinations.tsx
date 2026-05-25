@@ -174,6 +174,8 @@ export default function PlanDestinations() {
       const fallbackResponse: NluParseResponse = {
         slots: {
           destinationCity: parsed.destinationCity,
+          destinationKind: null,
+          destinationProvince: null,
           durationDays: parsed.days,
           startDate: parsed.startDate,
           preferredTagNames: parsed.styles,

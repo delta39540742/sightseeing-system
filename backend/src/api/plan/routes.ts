@@ -7,6 +7,10 @@ const candidatesBodySchema = {
   type: 'object',
   properties: {
     destinationCity:      { type: 'string', minLength: 1, maxLength: 100 },
+    destinationProvince:  { type: 'string', minLength: 1, maxLength: 100 },
+    destinationLat:       { type: 'number', minimum: -90,  maximum: 90 },
+    destinationLng:       { type: 'number', minimum: -180, maximum: 180 },
+    destinationRadiusKm:  { type: 'number', minimum: 0,    maximum: 500 },
     startDate:            { type: 'string', format: 'date-time' },
     endDate:              { type: 'string', format: 'date-time' },
     budgetTotal:          { type: 'number', minimum: 0 },
@@ -22,6 +26,10 @@ const generateBodySchema = {
   required: ['startDate', 'endDate'],
   properties: {
     destinationCity:      { type: 'string', minLength: 1, maxLength: 100 },
+    destinationProvince:  { type: 'string', minLength: 1, maxLength: 100 },
+    destinationLat:       { type: 'number', minimum: -90,  maximum: 90 },
+    destinationLng:       { type: 'number', minimum: -180, maximum: 180 },
+    destinationRadiusKm:  { type: 'number', minimum: 0,    maximum: 500 },
     startDate:            { type: 'string', format: 'date-time' },
     endDate:              { type: 'string', format: 'date-time' },
     budgetTotal:          { type: 'number', minimum: 0 },

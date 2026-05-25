@@ -14,6 +14,7 @@ import { toast } from '@/store/toastStore'
 import { format, parseISO, differenceInMinutes } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Place } from '@/types'
+import { destinationFieldsFor } from '@/data/destinations'
 import './ReplanRedesign.css'
 
 
@@ -52,7 +53,7 @@ export default function ReplanPage() {
   const { data: cityPlaces } = useQuery({
     queryKey: ['city-places', trip?.destinationCity],
     queryFn: () => tripService.candidates({
-      destinationCity: trip!.destinationCity,
+      ...destinationFieldsFor(trip!.destinationCity),
       startDate: trip!.startDate,
       endDate: trip!.endDate,
       budgetTotal: trip!.budgetTotal

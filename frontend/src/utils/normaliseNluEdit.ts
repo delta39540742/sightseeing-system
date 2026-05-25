@@ -1,13 +1,12 @@
 import { format, addDays, parseISO, isValid } from 'date-fns'
-import type { NluSlots, ParsedNLPResult } from '@/types'
+import type { NluSlots, ParsedNLPResult, DestinationKind } from '@/types'
+import { DESTINATION_NAMES, findDestination } from '@/data/destinations'
 
 export type GroupType = 'solo' | 'couple' | 'family' | 'friends' | 'business'
 
-export const KNOWN_CITIES = [
-  'Đà Lạt', 'Đà Nẵng', 'Hội An', 'Hà Nội', 'Hồ Chí Minh',
-  'Nha Trang', 'Phú Quốc', 'Huế', 'Vũng Tàu', 'Cần Thơ',
-  'Quảng Ninh', 'Ninh Bình', 'Sa Pa', 'Mộc Châu',
-]
+// Single source of truth: derives from DESTINATIONS so the autocomplete list
+// matches what the backend can actually filter (34 provinces + famous sub-areas).
+export const KNOWN_CITIES = DESTINATION_NAMES
 
 // Khớp với 10 tag duy nhất tồn tại trong DB (xem backend/src/scripts/seed-places.ts).
 export const TAG_OPTIONS: { value: string; label: string }[] = [
@@ -73,10 +72,34 @@ const VALID_TAGS   = new Set(TAG_OPTIONS.map((t) => t.value))
 export function normaliseSlots(raw: Partial<NluSlots> | null | undefined): NluSlots {
   const r: Partial<NluSlots> = raw ?? {}
 
-  const destinationCity =
+  const rawDestinationCity =
     typeof r.destinationCity === 'string' && r.destinationCity.trim()
       ? r.destinationCity.trim()
       : null
+
+  // Re-derive kind/province from the allowlist whenever destinationCity is set.
+  // This covers (a) backend NLU output, (b) user edits in NluSlotEditor (which only
+  // touch destinationCity), and (c) local fallback parser which doesn't fill kind/province.
+  let destinationCity: string | null = rawDestinationCity
+  let destinationKind: DestinationKind | null = null
+  let destinationProvince: string | null = null
+  if (rawDestinationCity) {
+    const hit = findDestination(rawDestinationCity)
+    if (hit) {
+      destinationCity = hit.name
+      destinationKind = hit.radiusKm != null ? 'subArea' : 'province'
+      destinationProvince = hit.province
+    } else if (
+      r.destinationKind === 'province' || r.destinationKind === 'subArea'
+    ) {
+      // Trust backend's kind/province only when frontend can't resolve the name.
+      destinationKind = r.destinationKind
+      destinationProvince =
+        typeof r.destinationProvince === 'string' && r.destinationProvince.trim()
+          ? r.destinationProvince.trim()
+          : null
+    }
+  }
 
   const durationDays =
     typeof r.durationDays === 'number' && Number.isFinite(r.durationDays) && r.durationDays >= 1
@@ -140,7 +163,8 @@ export function normaliseSlots(raw: Partial<NluSlots> | null | undefined): NluSl
   const originalPrompt = typeof r.originalPrompt === 'string' ? r.originalPrompt : ''
 
   return {
-    destinationCity, durationDays, startDate,
+    destinationCity, destinationKind, destinationProvince,
+    durationDays, startDate,
     preferredTagNames, experienceKeywords,
     budgetTotal, groupType,
     mobilityRestrictions, dietaryPreferences, pace,
@@ -156,6 +180,8 @@ export function slotsToParsedResult(slots: NluSlots): ParsedNLPResult {
 
   return {
     destinationCity: slots.destinationCity ?? 'Đà Nẵng',
+    destinationKind: slots.destinationKind,
+    destinationProvince: slots.destinationProvince,
     days,
     budget:    slots.budgetTotal ?? 3_000_000,
     styles:    slots.preferredTagNames,

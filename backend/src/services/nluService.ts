@@ -4,8 +4,16 @@ import axios, { AxiosError } from "axios";
 
 export type GroupType = "solo" | "couple" | "family" | "friends" | "business";
 
+export type DestinationKind = "province" | "subArea";
+
 export interface NluSlots {
   destinationCity: string | null;
+  // Cấu trúc 2 cấp (Option B):
+  //   - "province": destinationCity là 1 trong 34 tỉnh/thành (post 1/7/2025); destinationProvince === destinationCity.
+  //   - "subArea":  destinationCity là cụm du lịch con (Mộc Châu, Sa Pa, Hội An…); destinationProvince là tỉnh cha.
+  // null nếu LLM không xác định / không khớp allowlist.
+  destinationKind: DestinationKind | null;
+  destinationProvince: string | null;
   durationDays: number | null;
   startDate: string | null;
   preferredTagNames: string[];
@@ -19,6 +27,57 @@ export interface NluSlots {
   amenities: string[];
   originalPrompt: string;
 }
+
+// Allowlist — phải khớp 1-1 với frontend/src/data/destinations.ts.
+// Đây là source-of-truth phía backend cho NLU validation.
+const PROVINCE_NAMES: readonly string[] = [
+  "An Giang", "Bắc Ninh", "Cà Mau", "Cần Thơ", "Cao Bằng", "Đà Nẵng",
+  "Đắk Lắk", "Điện Biên", "Đồng Nai", "Đồng Tháp", "Gia Lai", "Hà Nội",
+  "Hà Tĩnh", "Hải Phòng", "Hồ Chí Minh", "Huế", "Hưng Yên", "Khánh Hòa",
+  "Lai Châu", "Lâm Đồng", "Lạng Sơn", "Lào Cai", "Nghệ An", "Ninh Bình",
+  "Phú Thọ", "Quảng Ngãi", "Quảng Ninh", "Quảng Trị", "Sơn La", "Tây Ninh",
+  "Thái Nguyên", "Thanh Hóa", "Tuyên Quang", "Vĩnh Long",
+] as const;
+
+// Map cụm sub-area → tỉnh cha. Mọi key/value phải có dấu khớp DB.
+const SUB_AREA_TO_PROVINCE: Readonly<Record<string, string>> = {
+  "Mộc Châu":  "Sơn La",
+  "Sa Pa":     "Lào Cai",
+  "Hội An":    "Đà Nẵng",
+  "Vũng Tàu":  "Hồ Chí Minh",
+  "Phú Quốc":  "An Giang",
+  "Đà Lạt":    "Lâm Đồng",
+  "Nha Trang": "Khánh Hòa",
+  "Hạ Long":   "Quảng Ninh",
+  "Cát Bà":    "Hải Phòng",
+  "Tam Đảo":   "Phú Thọ",
+  "Mai Châu":  "Phú Thọ",
+  "Hà Giang":  "Tuyên Quang",
+  "Đồng Văn":  "Tuyên Quang",
+  "Côn Đảo":   "Hồ Chí Minh",
+  "Mũi Né":    "Lâm Đồng",
+  "Phong Nha": "Quảng Trị",
+};
+
+const PROVINCE_SET = new Set<string>(PROVINCE_NAMES);
+const SUB_AREA_SET = new Set<string>(Object.keys(SUB_AREA_TO_PROVINCE));
+
+function normaliseDestKey(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+// Map dạng không dấu → canonical (giữ dấu) để chống typo từ LLM.
+const PROVINCE_LOOKUP: ReadonlyMap<string, string> = new Map(
+  PROVINCE_NAMES.map((n) => [normaliseDestKey(n), n]),
+);
+const SUB_AREA_LOOKUP: ReadonlyMap<string, string> = new Map(
+  Object.keys(SUB_AREA_TO_PROVINCE).map((n) => [normaliseDestKey(n), n]),
+);
 
 export interface NluParseRequest {
   prompt: string;
@@ -41,14 +100,32 @@ const DEEPSEEK_TIMEOUT_MS = 20_000;
 // --- SYSTEM PROMPT ---
 
 function buildSystemPrompt(today: string): string {
-  return `You are a travel intent parser. Extract travel planning information from the user's message and return a JSON object.
+  const provincesList = PROVINCE_NAMES.join(", ");
+  const subAreasList = Object.entries(SUB_AREA_TO_PROVINCE)
+    .map(([area, prov]) => `"${area}" (in ${prov})`)
+    .join(", ");
+
+  return `You are a Vietnamese travel intent parser. Extract trip-planning information from the user's message and return a JSON object.
 
 Today's date is ${today}.
+
+IMPORTANT — Vietnam destinations are TWO-TIER after the 1/7/2025 administrative restructure:
+  • province: one of the 34 official provinces/centrally-governed cities.
+  • subArea:  a famous tourism cluster INSIDE a province (e.g. Mộc Châu is a plateau inside Sơn La).
+A subArea is NOT a city by itself — never invent a province from a subArea name.
+
+Valid province names (use these exact strings, with Vietnamese diacritics):
+${provincesList}
+
+Valid subArea → parent province (use these exact strings):
+${subAreasList}
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
   "slots": {
     "destinationCity": string or null,
+    "destinationKind": "province" or "subArea" or null,
+    "destinationProvince": string or null,
     "durationDays": number or null,
     "startDate": "YYYY-MM-DD" or null,
     "preferredTagNames": string[],
@@ -66,22 +143,28 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
   "confidence": number
 }
 
-Rules:
-- destinationCity: city name in English or Vietnamese (e.g. "Da Nang", "Hội An", "Hà Nội")
-- durationDays: number of days ("3 ngày" → 3)
-- startDate: absolute YYYY-MM-DD; resolve relative dates ("thứ 6 tuần sau") using today's date
-- preferredTagNames: activity/place categories (e.g. ["beach", "food", "cultural", "nightlife"])
-- experienceKeywords: descriptive keywords from the prompt (e.g. ["romantic", "relaxing"])
-- budgetTotal: total budget in VND ("5 triệu" → 5000000), null if not mentioned
-- groupType: one of "solo" | "couple" | "family" | "friends" | "business"
-- mobilityRestrictions: physical constraints (e.g. ["wheelchair"])
-- dietaryPreferences: food restrictions (e.g. ["vegetarian", "halal"])
-- pace: 1=very relaxed, 3=normal, 5=packed schedule; infer from tone
-- vibe: emotional/aesthetic vibes (e.g. ["romantic", "chill", "adventurous"])
-- amenities: desired amenities (e.g. ["pool", "wifi", "parking"])
-- missingSlots: slot names that are absent but needed (e.g. ["destinationCity", "durationDays"])
-- confidence: extraction confidence 0.0–1.0
-- originalPrompt: copy the user's message verbatim`;
+Destination rules:
+- If user mentions a province (e.g. "đi Đà Nẵng", "Sơn La"): destinationCity = the province name, destinationKind = "province", destinationProvince = the same province name.
+- If user mentions a subArea (e.g. "đi Mộc Châu", "Sa Pa 3 ngày", "Hội An"): destinationCity = the subArea name, destinationKind = "subArea", destinationProvince = the parent province from the list above.
+- Always use the exact canonical Vietnamese spelling with diacritics from the lists above.
+- If the input doesn't match any name in the allowlists, set destinationCity to your best guess but leave destinationKind and destinationProvince as null.
+- Never label a subArea as "province" or invent a destinationProvince that isn't in the province list.
+
+Other rules:
+- durationDays: number of days ("3 ngày" → 3).
+- startDate: absolute YYYY-MM-DD; resolve relative dates ("thứ 6 tuần sau") using today's date.
+- preferredTagNames: activity/place categories (e.g. ["beach", "food", "cultural", "nightlife"]).
+- experienceKeywords: descriptive keywords from the prompt (e.g. ["romantic", "relaxing"]).
+- budgetTotal: total budget in VND ("5 triệu" → 5000000), null if not mentioned.
+- groupType: one of "solo" | "couple" | "family" | "friends" | "business".
+- mobilityRestrictions: physical constraints (e.g. ["wheelchair"]).
+- dietaryPreferences: food restrictions (e.g. ["vegetarian", "halal"]).
+- pace: 1=very relaxed, 3=normal, 5=packed schedule; infer from tone.
+- vibe: emotional/aesthetic vibes (e.g. ["romantic", "chill", "adventurous"]).
+- amenities: desired amenities (e.g. ["pool", "wifi", "parking"]).
+- missingSlots: slot names that are absent but needed (e.g. ["destinationCity", "durationDays"]).
+- confidence: extraction confidence 0.0–1.0.
+- originalPrompt: copy the user's message verbatim.`;
 }
 
 // --- MAIN FUNCTION ---
@@ -149,8 +232,19 @@ export async function parseNlu(prompt: string, today?: string): Promise<NluParse
 function normalise(raw: Record<string, unknown>): NluParseResponse {
   const rawSlots = isObject(raw.slots) ? (raw.slots as Record<string, unknown>) : {};
 
+  const rawCity = stringOrNull(rawSlots.destinationCity);
+  const rawKind = stringOrNull(rawSlots.destinationKind);
+  const rawProvince = stringOrNull(rawSlots.destinationProvince);
+  const {
+    destinationCity,
+    destinationKind,
+    destinationProvince,
+  } = resolveDestination(rawCity, rawKind, rawProvince);
+
   const slots: NluSlots = {
-    destinationCity: stringOrNull(rawSlots.destinationCity),
+    destinationCity,
+    destinationKind,
+    destinationProvince,
     durationDays: numberOrNull(rawSlots.durationDays),
     startDate: stringOrNull(rawSlots.startDate),
     preferredTagNames: stringArray(rawSlots.preferredTagNames),
@@ -173,6 +267,53 @@ function normalise(raw: Record<string, unknown>): NluParseResponse {
     confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
   };
 }
+
+// Validate + auto-correct LLM output. Even if the LLM mislabels (e.g. labels
+// "Mộc Châu" as province), we re-derive the canonical structure from the allowlist.
+function resolveDestination(
+  rawCity: string | null,
+  rawKind: string | null,
+  rawProvince: string | null,
+): { destinationCity: string | null; destinationKind: DestinationKind | null; destinationProvince: string | null } {
+  if (!rawCity) {
+    return { destinationCity: null, destinationKind: null, destinationProvince: null };
+  }
+
+  const cityKey = normaliseDestKey(rawCity);
+
+  // 1. Sub-area takes priority — handles the "Mộc Châu" misclassification case.
+  const subAreaCanonical = SUB_AREA_LOOKUP.get(cityKey);
+  if (subAreaCanonical) {
+    return {
+      destinationCity: subAreaCanonical,
+      destinationKind: "subArea",
+      destinationProvince: SUB_AREA_TO_PROVINCE[subAreaCanonical],
+    };
+  }
+
+  // 2. Exact province match.
+  const provinceCanonical = PROVINCE_LOOKUP.get(cityKey);
+  if (provinceCanonical) {
+    return {
+      destinationCity: provinceCanonical,
+      destinationKind: "province",
+      destinationProvince: provinceCanonical,
+    };
+  }
+
+  // 3. Unknown — keep the LLM's raw city but trust its kind/province only if they pass allowlist.
+  const trustedKind = rawKind === "province" || rawKind === "subArea" ? rawKind : null;
+  const trustedProvince =
+    rawProvince && PROVINCE_SET.has(rawProvince) ? rawProvince : null;
+  return {
+    destinationCity: rawCity,
+    destinationKind: trustedKind,
+    destinationProvince: trustedProvince,
+  };
+}
+
+// Suppress unused warning — PROVINCE_SET / SUB_AREA_SET kept for future validation paths.
+void SUB_AREA_SET;
 
 // --- CUSTOM ERROR ---
 

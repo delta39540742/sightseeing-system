@@ -16,6 +16,7 @@ import { FilterBar } from '@/components/planning/FilterBar'
 import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
 import type { FilterCategory, Place } from '@/types'
 import { differenceInDays, parseISO } from 'date-fns'
+import { destinationFieldsFromParsed } from '@/data/destinations'
 
 type MobileTab = 'form' | 'map'
 
@@ -62,7 +63,7 @@ export default function PlanTrip() {
   const [planningAlgorithm, setPlanningAlgorithm] = useState<'greedy_2opt' | 'i3ch'>('greedy_2opt')
 
   const candidatesReq: PlanRequest | null = parsed
-    ? { destinationCity: parsed.destinationCity, startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles, experienceKeywords: parsed.experienceKeywords }
+    ? { ...destinationFieldsFromParsed(parsed), startDate: parsed.startDate, endDate: parsed.endDate, budgetTotal: parsed.budget, preferences: parsed.styles, experienceKeywords: parsed.experienceKeywords }
     : null
 
   const [noCityPlaces, setNoCityPlaces] = useState<string | null>(null)
@@ -162,7 +163,7 @@ export default function PlanTrip() {
   const handleNLPConfirmed = (result: ParsedNLPResult) => {
     setParsed(result)
     const req: PlanRequest = {
-      destinationCity: result.destinationCity,
+      ...destinationFieldsFromParsed(result),
       startDate: result.startDate,
       endDate: result.endDate,
       budgetTotal: result.budget,

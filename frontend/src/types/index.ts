@@ -99,6 +99,13 @@ export interface Trip {
 
 export interface PlanRequest {
   destinationCity: string
+  // Structured destination resolved from DESTINATIONS table (frontend/src/data/destinations.ts).
+  // When present, backend filters by province (and optional ST_DWithin radius) instead of
+  // doing fuzzy text matching on address/description. Optional for backward compatibility.
+  destinationProvince?: string
+  destinationLat?: number
+  destinationLng?: number
+  destinationRadiusKm?: number
   startDate: string
   endDate: string
   budgetTotal: number
@@ -184,8 +191,15 @@ export interface TripVersion {
 export type FilterCategory = 'all' | 'sightseeing' | 'meal' | 'activity' | 'rest' | 'transport'
 export type SortMode = 'fastest' | 'cheapest' | 'scenic'
 
+export type DestinationKind = 'province' | 'subArea'
+
 export interface ParsedNLPResult {
   destinationCity: string
+  // 2-tier destination from NLU (Option B). Optional for backward compatibility with
+  // local nlpParser fallback. When present, page components should use these directly
+  // instead of fuzzy-matching destinationCity via findDestination().
+  destinationKind?: DestinationKind | null
+  destinationProvince?: string | null
   days: number
   budget: number
   styles: string[]
@@ -201,6 +215,9 @@ export interface ParsedNLPResult {
 
 export interface NluSlots {
   destinationCity: string | null
+  // 2-tier destination — see backend/src/services/nluService.ts.
+  destinationKind: DestinationKind | null
+  destinationProvince: string | null
   durationDays: number | null
   startDate: string | null
   preferredTagNames: string[]

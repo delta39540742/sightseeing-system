@@ -22,6 +22,47 @@ function expandCityTerms(city: string): string[] {
   return CITY_ALIASES[key] ?? [city];
 }
 
+// Build a province-scoped Prisma where clause when the client provided a structured
+// destination (resolved via frontend/src/data/destinations.ts). Returns null if the
+// client only sent the legacy `destinationCity` string — caller falls back to text match.
+function buildProvinceFilter(destinationProvince?: string): Record<string, unknown> | null {
+  if (typeof destinationProvince !== 'string' || !destinationProvince.trim()) return null;
+  return { province: destinationProvince };
+}
+
+// Haversine distance in km.
+function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Apply optional sub-area radius filter (in-memory). Places with no coords pass through.
+function filterByRadius<T extends { lat?: number | null; lng?: number | null }>(
+  places: T[],
+  centerLat?: number,
+  centerLng?: number,
+  radiusKm?: number,
+): T[] {
+  if (
+    typeof centerLat !== 'number' ||
+    typeof centerLng !== 'number' ||
+    typeof radiusKm !== 'number' ||
+    radiusKm <= 0
+  ) {
+    return places;
+  }
+  return places.filter((p) => {
+    if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return true;
+    return distanceKm(centerLat, centerLng, p.lat, p.lng) <= radiusKm;
+  });
+}
+
 const DEFAULT_WEIGHTS = {
   wInterest: 1, wPace: 1, wDistance: 1.5, wBudget: 1, wWeather: 1, wRisk: 1,
   wStability: 0.05, wPotentialBias: 0.10, wProximity: 0,
@@ -94,6 +135,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
       destinationCity, startDate, endDate,
       budgetTotal, preferences, mobilityRestrictions,
       experienceKeywords, vibe, amenities, originalPrompt,
+      destinationProvince, destinationLat, destinationLng, destinationRadiusKm,
     } = req.body as any;
     const expKws: string[] = Array.isArray(experienceKeywords)
       ? experienceKeywords.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
@@ -133,10 +175,14 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
 
     // Build AND array to avoid OR key collision when spreading multiple OR filters
     const andConditions: any[] = [budgetCondition];
-    if (destinationCity) {
-      // Lọc theo address/description — KHÔNG lọc theo name vì nhà hàng ở Hà Nội
-      // có thể đặt tên "Đà Nẵng Quán Bánh Tráng" nhưng tọa độ thực vẫn là Hà Nội.
-      // DB lưu địa chỉ bằng tiếng Anh (Da Nang, Phu Quoc...) nên expand alias để khớp cả hai dạng.
+    const provinceFilter = buildProvinceFilter(destinationProvince);
+    if (provinceFilter) {
+      // Structured destination — filter by place.province exactly (matches DB column).
+      andConditions.push(provinceFilter);
+    } else if (destinationCity) {
+      // Legacy path: client did not resolve a structured destination. Fall back to
+      // text matching on address/description. Kept for backward compatibility with
+      // older trips and the NLU pipeline when it returns a free-text city.
       const cityTerms = expandCityTerms(destinationCity);
       andConditions.push({
         OR: cityTerms.flatMap((term) => [
@@ -153,6 +199,7 @@ export async function getTripCandidates(req: FastifyRequest, reply: FastifyReply
       where: { AND: andConditions },
       include: includeRelations,
     });
+    places = filterByRadius(places, destinationLat, destinationLng, destinationRadiusKm);
 
     // Nếu city filter không tìm thấy kết quả → báo lỗi rõ ràng, KHÔNG fallback sang thành phố khác
     if (places.length === 0 && destinationCity) {
@@ -409,6 +456,10 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         const rawLockedSlots: Array<{ placeId: number; dayIndex: number; fixedStart: string; durationMin?: number }> =
             Array.isArray(payload.lockedSlots) ? payload.lockedSlots : [];
         const destinationCity: string | undefined = payload.destinationCity;
+        const destinationProvince: string | undefined = payload.destinationProvince;
+        const destinationLat: number | undefined = typeof payload.destinationLat === 'number' ? payload.destinationLat : undefined;
+        const destinationLng: number | undefined = typeof payload.destinationLng === 'number' ? payload.destinationLng : undefined;
+        const destinationRadiusKm: number | undefined = typeof payload.destinationRadiusKm === 'number' ? payload.destinationRadiusKm : undefined;
         const mobilityRestrictions: string[] | undefined = payload.mobilityRestrictions;
 
         const placeInclude = { place_tag_map: true, place_opening_hour: true, place_peak_time: true } as const;
@@ -420,9 +471,11 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 return { place_id: { in: anchorPlaceIds.map(BigInt) } };
             }
             const ands: any[] = [];
-            if (destinationCity) {
-                // Lọc theo address/description — KHÔNG lọc theo name (xem getTripCandidates).
-                // Expand alias để khớp cả tiếng Việt lẫn tiếng Anh (Da Nang / Đà Nẵng).
+            const provinceFilter = buildProvinceFilter(destinationProvince);
+            if (provinceFilter) {
+                ands.push(provinceFilter);
+            } else if (destinationCity) {
+                // Legacy fallback when client did not send a structured destination.
                 const cityTerms = expandCityTerms(destinationCity);
                 ands.push({
                     OR: cityTerms.flatMap((term) => [
@@ -447,9 +500,10 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
             orderBy: { popularity_score: 'desc' },
             take: strictMode ? undefined : CANDIDATE_DB_LIMIT,
         });
+        places = filterByRadius(places, destinationLat, destinationLng, destinationRadiusKm);
 
         // Fallback: city filter quá hẹp → bỏ filter, giữ mobility
-        if (places.length === 0 && !strictMode && destinationCity) {
+        if (places.length === 0 && !strictMode && (destinationCity || destinationProvince)) {
             places = await prisma.place.findMany({
                 where: mobilityRestrictions?.includes('xe_lan') ? { wheelchair_access: true } : {},
                 include: placeInclude,

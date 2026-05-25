@@ -16,6 +16,7 @@ import { useAuthStore } from '@/store/authStore'
 import { toast } from '@/store/toastStore'
 import type { Place, PlanRequest, TripSlot, ScoreBreakdown, SlotExplanation } from '@/types'
 import { routingService, type OsrmRoute } from '@/services/routingService'
+import { destinationFieldsFor } from '@/data/destinations'
 
 type PlaceWithBreakdown = Place & { scoreBreakdown?: ScoreBreakdown }
 
@@ -275,7 +276,7 @@ export default function PlanRoute() {
     setLoadingAi(true)
     try {
       const req: PlanRequest = {
-        destinationCity: city,
+        ...destinationFieldsFor(city),
         startDate,
         endDate: startDate,
         budgetTotal: budget,
@@ -449,7 +450,7 @@ export default function PlanRoute() {
       // tính khoảng cách từ dayStart tới slot đầu mỗi ngày.
       const useAiMode = dayStartsForRequest.length > 0
       const req: PlanRequest = {
-        destinationCity: city,
+        ...destinationFieldsFor(city),
         startDate,
         endDate: format(addDays(new Date(startDate), tripDays - 1), 'yyyy-MM-dd'),
         budgetTotal: budget,

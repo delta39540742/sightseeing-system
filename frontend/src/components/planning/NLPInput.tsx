@@ -49,6 +49,8 @@ export function NLPInput({ onParsed, isLoading: externalLoading }: NLPInputProps
         setNluResponse({
           slots: {
             destinationCity: null, // parseNLP luôn default 'Đà Nẵng' kể cả khi user không đề cập — để trống để user tự điền
+            destinationKind: null,
+            destinationProvince: null,
             durationDays: fallback.days,
             startDate: fallback.startDate,
             preferredTagNames: [],
