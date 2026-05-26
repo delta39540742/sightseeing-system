@@ -1,7 +1,7 @@
 // src/api/trips/handlers.ts
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma, pool } from '../../lib/prisma';
-import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore, EnrichedSlot, DayStart } from './solver';
+import { generateGreedyPlan, optimizeWith2Opt, generateI3CHPlan, SolverContext, SoftConstraint, descriptionMatchScore, EnrichedSlot, DayStart, buildStrictModeSlots } from './solver';
 import { getCurrentArmId, sendPoiAcceptedBatch } from '../../lib/preferenceClient';
 import { embedText, vectorToSqlLiteral } from '../../services/embeddingService';
 
@@ -549,56 +549,17 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // bỏ qua greedy planner để tránh mất slot do thiếu lat/lng hoặc lọc sai
         let optimizedPlan: any[];
         if (strictMode && anchorPlaceIds.length > 0) {
-            const placeMap = new Map(candidates.map((c: any) => [c.placeId, c]));
-        
-            let curDayIndex = 0;
-            const DAY_START_MIN = 8 * 60;  // 08:00 sáng VN
-            const DAY_END_MIN = 22 * 60;   // 22:00 tối VN
-            // startDate được parse từ "YYYY-MM-DD" → UTC midnight. VN midnight = UTC midnight - 7h.
-            const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
-            const startVNMidnightUTC = new Date(startDate.getTime() - VN_OFFSET_MS);
-
-            let curMin = DAY_START_MIN;
-
-            optimizedPlan = anchorPlaceIds
-                .map((id, i) => {
-                    const place = placeMap.get(id);
-                    if (!place) return null;
-
-                    const duration = place.avgVisitDurationMin || 60;
-
-                    // Kiểm tra nếu tham quan điểm này làm lố giờ kết thúc ngày
-                    // thì chuyển sang 08:00 sáng của ngày hôm sau
-                    if (curMin + duration > DAY_END_MIN) {
-                        curDayIndex++;
-                        curMin = DAY_START_MIN;
-                    }
-
-                    // UTC arithmetic: VN midnight + dayIndex ngày + curMin phút = UTC đúng giờ VN
-                    const slotStart = new Date(
-                        startVNMidnightUTC.getTime() + curDayIndex * 86_400_000 + curMin * 60_000
-                    );
-
-                    const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
-
-                    // Cập nhật thời gian cho điểm tiếp theo (cộng thêm 30 phút di chuyển)
-                    curMin += duration + 30;
-
-                    return {
-                        slotId:       `slot_${curDayIndex}_${i + 1}`,
-                        tripId:       'temp_trip',
-                        dayIndex:     curDayIndex,
-                        slotOrder:    i + 1,
-                        placeId:      place.placeId,
-                        plannedStart: slotStart.toISOString(),
-                        plannedEnd:   slotEnd.toISOString(),
-                        estimatedCost: place.minPrice || 0,
-                        activityType: 'sightseeing',
-                        rationale:    'Điểm do người dùng chọn',
-                        status:       'planned',
-                    };
-                })
-                .filter(Boolean); // Loại bỏ các item null nếu không tìm thấy place trong map
+            // Cluster các điểm user chọn theo địa lý (split tại leg dài nhất) rồi pack
+            // với travel-time thực — tránh case nhồi 2 cụm cách 80 km vào cùng ngày.
+            optimizedPlan = buildStrictModeSlots(
+                anchorPlaceIds,
+                candidates as any,
+                days,
+                {
+                    startDate,
+                    dayStarts: dayStarts.length > 0 ? dayStarts : undefined,
+                },
+            );
         } else {
             // Chế độ AI: dùng greedy + 2-opt với scoring đầy đủ
             const bundle = await fetchPreferenceBundle(dbUser.user_id);

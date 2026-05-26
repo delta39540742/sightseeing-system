@@ -881,6 +881,152 @@ export function optimizeWith2Opt(
   return bestSlots;
 }
 
+// ─── Strict-mode planner (user-picked places, geo-clustered per day) ────────
+
+/**
+ * Khi user da chon san anchorPlaceIds, không cần greedy scoring. Nhưng phải:
+ *  1. Tính travel-time thật theo haversine (không phải 30 phut hard-code) — tránh
+ *     case 2 slot kề nhau cách nhau 80 km mà chỉ buffer 30 phút.
+ *  2. Cluster các điểm theo địa lý rồi phân ra `days` ngày — split tại các leg dài
+ *     nhất nên các cụm tự nhiên (vd Nha Trang vs Phan Rang) tách ngày khác nhau,
+ *     không nhồi cả cụm xa vào cuối ngày.
+ *  3. Trong từng ngày, sort lại theo nearest-neighbor từ dayStart để rút quãng đi.
+ *  4. Roll over nếu vượt DAY_END_MIN — phòng case cụm quá to.
+ *
+ * Trả về danh sách slot đã sẵn sàng để insert vào DB.
+ */
+export function buildStrictModeSlots(
+  anchorPlaceIds: number[],
+  candidates: Place[],
+  days: number,
+  ctx: { startDate: Date; dayStarts?: DayStart[]; hotelPlace?: Place },
+): Array<{
+  slotId: string;
+  tripId: string;
+  dayIndex: number;
+  slotOrder: number;
+  placeId: number;
+  plannedStart: string;
+  plannedEnd: string;
+  estimatedCost: number;
+  activityType: 'sightseeing';
+  rationale: string;
+  status: 'planned';
+}> {
+  const placeMap = new Map(candidates.map((c) => [c.placeId, c]));
+  const places = anchorPlaceIds
+    .map((id) => placeMap.get(id))
+    .filter((p): p is Place => !!p && Number.isFinite(p.lat) && Number.isFinite(p.lng));
+
+  if (places.length === 0) return [];
+
+  const startDateUTC = new Date(ctx.startDate);
+  startDateUTC.setUTCHours(0, 0, 0, 0);
+  const startVNMidnightUTC = new Date(startDateUTC.getTime() - VN_OFFSET_MS);
+
+  // ── Step 1: Nearest-neighbor order toàn cục từ điểm xuất phát ngày 0 ──────
+  const start0 = resolveDayStart({ dayStarts: ctx.dayStarts, hotelPlace: ctx.hotelPlace } as SolverContext, 0)
+    ?? { lat: places[0]!.lat, lng: places[0]!.lng };
+
+  const ordered: Place[] = [];
+  const pool = [...places];
+  let curLat = start0.lat;
+  let curLng = start0.lng;
+  while (pool.length > 0) {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      const d = haversineKm(curLat, curLng, pool[i]!.lat, pool[i]!.lng);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    const next = pool.splice(bestIdx, 1)[0]!;
+    ordered.push(next);
+    curLat = next.lat;
+    curLng = next.lng;
+  }
+
+  // ── Step 2: Split tại `days - 1` leg dài nhất → mỗi cụm địa lý = 1 ngày ───
+  // ordered[i] → ordered[i+1] là leg[i]. Cut ở leg[k] nghĩa là ordered[k+1] mở
+  // ngày mới.
+  const legs = ordered.slice(0, -1).map((p, i) =>
+    haversineKm(p.lat, p.lng, ordered[i + 1]!.lat, ordered[i + 1]!.lng),
+  );
+  const numCuts = Math.min(Math.max(0, days - 1), legs.length);
+  const cutSet = new Set<number>(
+    legs
+      .map((dist, idx) => ({ dist, idx }))
+      .sort((a, b) => b.dist - a.dist)
+      .slice(0, numCuts)
+      .map((x) => x.idx),
+  );
+
+  const dayOf: number[] = new Array(ordered.length);
+  let dIdx = 0;
+  for (let i = 0; i < ordered.length; i++) {
+    dayOf[i] = dIdx;
+    if (cutSet.has(i)) dIdx++;
+  }
+
+  // ── Step 3: Group theo day, sort NN từ dayStart, pack với travel-time thực ─
+  const slots: ReturnType<typeof buildStrictModeSlots> = [];
+  for (let d = 0; d <= dIdx; d++) {
+    const dayPlaces = ordered.filter((_, i) => dayOf[i] === d);
+    if (dayPlaces.length === 0) continue;
+
+    const dayStart = resolveDayStart(
+      { dayStarts: ctx.dayStarts, hotelPlace: ctx.hotelPlace } as SolverContext,
+      d,
+    ) ?? { lat: dayPlaces[0]!.lat, lng: dayPlaces[0]!.lng };
+
+    let cLat = dayStart.lat;
+    let cLng = dayStart.lng;
+    let curMin = DAY_START_MIN;
+    let slotOrder = 1;
+
+    const remaining = [...dayPlaces];
+    while (remaining.length > 0) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const dist = haversineKm(cLat, cLng, remaining[i]!.lat, remaining[i]!.lng);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      const place = remaining.splice(bestIdx, 1)[0]!;
+      const travel = travelTimeMin(bestDist);
+      const duration = place.avgVisitDurationMin || 60;
+
+      const arrivalMin = curMin + travel;
+      const endMin = arrivalMin + duration;
+
+      const slotStart = new Date(
+        startVNMidnightUTC.getTime() + d * 86_400_000 + arrivalMin * 60_000,
+      );
+      const slotEnd = new Date(slotStart.getTime() + duration * 60_000);
+
+      slots.push({
+        slotId: `slot_${d}_${slotOrder}`,
+        tripId: 'temp_trip',
+        dayIndex: d,
+        slotOrder,
+        placeId: place.placeId,
+        plannedStart: slotStart.toISOString(),
+        plannedEnd: slotEnd.toISOString(),
+        estimatedCost: (place as any).minPrice ?? 0,
+        activityType: 'sightseeing',
+        rationale: 'Điểm do người dùng chọn',
+        status: 'planned',
+      });
+
+      curMin = endMin;
+      cLat = place.lat;
+      cLng = place.lng;
+      slotOrder++;
+    }
+  }
+
+  return slots;
+}
+
 // ─── I3CH (Iterative Three-Component Heuristic) ─────────────────────────────
 
 export function generateI3CHPlan(
