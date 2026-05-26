@@ -93,24 +93,66 @@ function estimateVisitMinutes(p: Place): number {
 // Khoảng cách giữa 2 điểm vượt ngưỡng này = "xa" → cần cảnh báo / gợi ý điểm dừng.
 const FAR_GAP_KM = 15
 const TRAVEL_SPEED_KMH = 30
-const REST_STOP_RADIUS_KM = 5  // candidate trong bán kính 5km của midpoint = ứng viên dừng chân
-const DAILY_TIME_BUDGET_MIN = 12 * 60  // 12 giờ hoạt động/ngày
+// Ứng viên rest-stop phải nằm "giữa hành trình": projection t ∈ [TMIN, TMAX] và
+// lệch trục AB không quá MAX_PERP_KM. Chấm điểm = perpKm + |t - target|*D (cùng đơn vị km).
+const REST_STOP_MAX_PERP_KM = 4
+const REST_STOP_T_MIN = 0.15
+const REST_STOP_T_MAX = 0.85
+const REST_STOP_MIN_SPACING_KM = 3  // 2 stop trong cùng 1 gap phải cách nhau ít nhất
+const DAILY_TIME_BUDGET_MIN = 9 * 60   // 9h hoạt động/ngày (thực tế hơn — du khách hiếm khi active >9-10h)
+const DAY_BUDGET_WARN_RATIO = 0.8       // ≥80% qũy ngày → cảnh báo sớm "sắp đầy"
 
 const travelMinFromKm = (km: number): number => (km / TRAVEL_SPEED_KMH) * 60
+
+// Số stop muốn chèn vào 1 gap dài D km, kèm vị trí mục tiêu (tỉ lệ trên đoạn AB).
+function slotTargetsForGap(distKm: number): number[] {
+  if (distKm > 40) return [0.25, 0.5, 0.75]
+  if (distKm > 25) return [1 / 3, 2 / 3]
+  return [0.5]
+}
+
+// Chiếu điểm C lên đoạn AB bằng equirectangular projection (vùng nhỏ → đủ chính xác).
+// Trả về t (vị trí dọc trục, 0=A, 1=B), perpKm (lệch trục), alongKm (khoảng cách từ A dọc trục).
+function projectOntoSegment(
+  cLat: number, cLng: number,
+  aLat: number, aLng: number,
+  bLat: number, bLng: number,
+): { t: number; perpKm: number; alongKm: number } {
+  const refLat = (aLat + bLat) / 2
+  const kmPerLat = 111
+  const kmPerLng = 111 * Math.cos((refLat * Math.PI) / 180)
+  const ax = aLat * kmPerLat, ay = aLng * kmPerLng
+  const bx = bLat * kmPerLat, by = bLng * kmPerLng
+  const cx = cLat * kmPerLat, cy = cLng * kmPerLng
+  const abx = bx - ax, aby = by - ay
+  const acx = cx - ax, acy = cy - ay
+  const abLenSq = abx * abx + aby * aby
+  if (abLenSq < 1e-9) return { t: 0, perpKm: 0, alongKm: 0 }
+  const t = (acx * abx + acy * aby) / abLenSq
+  const projx = ax + t * abx, projy = ay + t * aby
+  const perpKm = Math.hypot(cx - projx, cy - projy)
+  const alongKm = t * Math.sqrt(abLenSq)
+  return { t, perpKm, alongKm }
+}
 
 interface FarGap {
   afterIdx: number
   distKm: number
-  midLat: number
-  midLng: number
   fromName: string
   toName: string
+  aLat: number
+  aLng: number
+  bLat: number
+  bLng: number
 }
 
 interface RestStopSuggestion {
   place: Place
   gap: FarGap
-  distFromMidKm: number
+  perpKm: number       // lệch trục AB
+  alongKm: number      // khoảng cách dọc trục từ A
+  slotIdx: number      // 0-indexed slot trong gap (sau khi sort theo t)
+  slotCount: number    // tổng số slot của gap này
 }
 
 interface DetourSuggestion {
@@ -340,34 +382,78 @@ export default function PlanRoute() {
         gaps.push({
           afterIdx: i - 1,
           distKm: distKm,
-          midLat: (a.lat + b.lat) / 2,
-          midLng: (a.lng + b.lng) / 2,
           fromName: routePlaces[i - 1].nickname,
           toName: routePlaces[i].nickname,
+          aLat: a.lat,
+          aLng: a.lng,
+          bLat: b.lat,
+          bLng: b.lng,
         })
       }
     }
     return gaps
   }, [routePlaces, osrmRoute])
 
-  // Với mỗi gap xa, tìm candidate AI gần midpoint nhất trong bán kính REST_STOP_RADIUS_KM.
+  // Với mỗi gap xa, chiếu các candidate AI lên đoạn AB, lọc theo t∈[TMIN,TMAX] + perp ≤ MAX,
+  // rồi pick cho từng slot mục tiêu (0.5 / 1/3-2/3 / 1/4-1/2-3/4 tuỳ độ dài), đảm bảo các stop
+  // chèn vào cùng 1 gap cách nhau ≥ REST_STOP_MIN_SPACING_KM dọc trục.
   const restStopSuggestions: RestStopSuggestion[] = useMemo(() => {
     if (!allowAiSuggestions || farGaps.length === 0 || aiSuggestions.length === 0) return []
     const result: RestStopSuggestion[] = []
-    const used = new Set<number>()
+    const usedGlobal = new Set<number>()  // 1 candidate chỉ pick cho tối đa 1 gap
+
     for (const gap of farGaps) {
-      let best: { place: Place; dist: number } | null = null
+      // Pre-compute projection cho từng candidate hợp lệ trong gap này
+      const projected: { place: Place; t: number; perpKm: number; alongKm: number }[] = []
       for (const cand of aiSuggestions) {
-        if (used.has(cand.placeId)) continue
+        if (usedGlobal.has(cand.placeId)) continue
         if (!cand.lat || !cand.lng) continue
-        const d = haversineKm(cand.lat, cand.lng, gap.midLat, gap.midLng)
-        if (d > REST_STOP_RADIUS_KM) continue
-        if (!best || d < best.dist) best = { place: cand, dist: d }
+        const { t, perpKm, alongKm } = projectOntoSegment(
+          cand.lat, cand.lng,
+          gap.aLat, gap.aLng,
+          gap.bLat, gap.bLng,
+        )
+        if (t < REST_STOP_T_MIN || t > REST_STOP_T_MAX) continue
+        if (perpKm > REST_STOP_MAX_PERP_KM) continue
+        projected.push({ place: cand, t, perpKm, alongKm })
       }
-      if (best) {
-        result.push({ place: best.place, gap, distFromMidKm: best.dist })
-        used.add(best.place.placeId)
+      if (projected.length === 0) continue
+
+      const targets = slotTargetsForGap(gap.distKm)
+      const pickedForGap: { place: Place; t: number; perpKm: number; alongKm: number }[] = []
+
+      for (const targetT of targets) {
+        let best: { place: Place; t: number; perpKm: number; alongKm: number; score: number } | null = null
+        for (const c of projected) {
+          if (usedGlobal.has(c.place.placeId)) continue
+          // Loại candidate quá gần stop đã pick cho gap này (đảm bảo spread)
+          const tooClose = pickedForGap.some(
+            (p) => Math.abs(p.alongKm - c.alongKm) < REST_STOP_MIN_SPACING_KM,
+          )
+          if (tooClose) continue
+          // Score = perpendicular deviation (km) + along-axis offset từ slot mục tiêu (km)
+          const score = c.perpKm + Math.abs(c.t - targetT) * gap.distKm
+          if (!best || score < best.score) best = { ...c, score }
+        }
+        if (best) {
+          pickedForGap.push(best)
+          usedGlobal.add(best.place.placeId)
+        }
       }
+
+      // Sắp xếp theo vị trí trên đoạn (gần A → gần B) để hiển thị thứ tự trực quan
+      pickedForGap.sort((x, y) => x.alongKm - y.alongKm)
+      const slotCount = pickedForGap.length
+      pickedForGap.forEach((p, idx) => {
+        result.push({
+          place: p.place,
+          gap,
+          perpKm: p.perpKm,
+          alongKm: p.alongKm,
+          slotIdx: idx,
+          slotCount,
+        })
+      })
     }
     return result
   }, [aiSuggestions, farGaps, allowAiSuggestions])
@@ -432,7 +518,11 @@ export default function PlanRoute() {
 
   const totalVisitMin = routePlaces.reduce((s, rp) => s + rp.visitMinutes, 0)
   const totalActiveMin = totalVisitMin + actualTravelMin
-  const dayOverrunMin = totalActiveMin - DAILY_TIME_BUDGET_MIN * tripDays  // > 0 = vượt budget
+  const dayBudgetMin = DAILY_TIME_BUDGET_MIN * tripDays
+  const dayOverrunMin = totalActiveMin - dayBudgetMin  // > 0 = vượt budget
+  const dayUsageRatio = dayBudgetMin > 0 ? totalActiveMin / dayBudgetMin : 0
+  // "Sắp đầy" = đã dùng ≥80% nhưng chưa vượt → gợi ý cân nhắc tăng ngày sớm
+  const isNearlyFull = dayOverrunMin <= 0 && dayUsageRatio >= DAY_BUDGET_WARN_RATIO && routePlaces.length > 0
 
   const dayStartsForRequest = useMemo(() => {
     return Object.entries(dayStartPoints).map(([d, v]) => ({
@@ -840,6 +930,31 @@ export default function PlanRoute() {
             )}
           </div>
 
+          {/* Early warning: sắp đầy (≥80% qũy ngày, chưa vượt) */}
+          {isNearlyFull && (
+            <div className="mb-3 flex gap-2.5 bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+              <AlertCircle className="w-4 h-4 text-yellow-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-yellow-800">
+                  Lịch trình {tripDays} ngày đã gần kín ({Math.round(dayUsageRatio * 100)}% qũy thời gian)
+                </p>
+                <p className="text-[11px] text-yellow-700 mt-0.5 leading-relaxed">
+                  Đã dùng {Math.floor(totalActiveMin / 60)}h{totalActiveMin % 60 ? String(totalActiveMin % 60).padStart(2, '0') : ''}
+                  {' '}/ {Math.floor(dayBudgetMin / 60)}h (thăm {Math.round(totalVisitMin / 60 * 10) / 10}h + di chuyển {Math.round(actualTravelMin / 60 * 10) / 10}h).
+                  {' '}Nếu định thêm điểm, cân nhắc tăng thêm 1 ngày để không bị gấp.
+                </p>
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={() => setTripDays(tripDays + 1)}
+                    className="px-2.5 py-1.5 bg-yellow-600 text-white text-xs font-semibold rounded-lg hover:bg-yellow-700 transition-colors"
+                  >
+                    Tăng thành {tripDays + 1} ngày
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Warning: lộ trình quá dài cho X ngày */}
           {dayOverrunMin > 0 && (
             <div className="mb-3 flex gap-2.5 bg-amber-50 border border-amber-200 rounded-xl p-3">
@@ -1153,7 +1268,7 @@ export default function PlanRoute() {
                         <Coffee className="w-3 h-3" /> Điểm dừng chân giữa đường
                       </p>
                       <div className="space-y-2">
-                        {restStopSuggestions.map(({ place, gap, distFromMidKm }) => (
+                        {restStopSuggestions.map(({ place, gap, perpKm, alongKm, slotIdx, slotCount }) => (
                           <div
                             key={place.placeId}
                             className="flex items-center gap-2.5 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2.5 hover:bg-orange-100 transition-colors"
@@ -1172,8 +1287,11 @@ export default function PlanRoute() {
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-semibold text-slate-900 truncate">{place.name}</p>
                                 <p className="text-[10px] text-orange-700 truncate">
+                                  {slotCount > 1 && (
+                                    <span className="font-bold">Chặng {slotIdx + 1}/{slotCount} · </span>
+                                  )}
                                   Giữa <span className="font-medium">{gap.fromName}</span> → <span className="font-medium">{gap.toName}</span>
-                                  {' '}({gap.distKm.toFixed(0)}km, lệch {distFromMidKm.toFixed(1)}km)
+                                  {' '}(~{alongKm.toFixed(0)}/{gap.distKm.toFixed(0)}km, lệch trục {perpKm.toFixed(1)}km)
                                 </p>
                               </div>
                             </button>
