@@ -331,14 +331,16 @@ export const TripMap = React.memo(function TripMap({
                       {' → '}
                       {new Date(slot.plannedEnd).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                     </p>
-                    <div className="flex gap-2 mt-2">
-                      <button 
-                        onClick={() => onRemoveSlot?.(slot.slotId)}
-                        className="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-bold border border-red-100 hover:bg-red-100 transition-colors"
-                      >
-                        BỎ QUA
-                      </button>
-                    </div>
+                    {onRemoveSlot && (
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => onRemoveSlot(slot.slotId)}
+                          className="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-bold border border-red-100 hover:bg-red-100 transition-colors"
+                        >
+                          BỎ QUA
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </Popup>
               </Marker>

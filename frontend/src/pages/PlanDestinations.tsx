@@ -4,7 +4,7 @@ import { useSessionState } from '@/hooks/useSessionState'
 import { useQuery } from '@tanstack/react-query'
 import {
   MapPin, Send, X, ArrowRight, Route, Calendar, Wallet,
-  Share2, Trash2, Check, Loader2, Bell, User,
+  Trash2, Check, Loader2, Bell, User,
   PersonStanding,
 } from 'lucide-react'
 import { TripMap } from '@/components/map/TripMap'
@@ -305,12 +305,6 @@ export default function PlanDestinations() {
             })}
           </nav>
 
-          <div className="px-2 py-3 border-t border-slate-700">
-            <button className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
-              <Share2 className="w-3.5 h-3.5" />
-              <span className="text-[11px] font-bold tracking-widest">Chia sẻ</span>
-            </button>
-          </div>
         </aside>
 
         {/* Center panel */}

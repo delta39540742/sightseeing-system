@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity, Lock, LockOpen } from 'lucide-react'
+import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity, Lock, LockOpen, Loader2, Copy } from 'lucide-react'
 import type { TripSlot, Place } from '@/types'
 import { tripService } from '@/services/tripService'
 import { monitorService } from '@/services/monitorService'
@@ -31,9 +31,11 @@ export default function TripDetail() {
   const queryClient = useQueryClient()
   const { setTrip, trip, pendingSlots, focusedSlotId, setFocus } = useTripStore()
   const [mobileTab, setMobileTab] = useState<MobileTab>('list')
+  const [qrModal, setQrModal] = useState(false)
   const [shareModal, setShareModal] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
-  const [qrModal, setQrModal] = useState(false)
+  const [shareExpiresAt, setShareExpiresAt] = useState<string | null>(null)
+  const [shareLoading, setShareLoading] = useState(false)
   const [landmarkSheet, setLandmarkSheet] = useState(false)
   const [replanModal, setReplanModal] = useState(false)
   const [replanScopeSheet, setReplanScopeSheet] = useState(false)
@@ -293,7 +295,13 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     })
   })()
 
+  // Chỉ cho phép mở Google Maps khi đã tới ngày khởi hành (so theo ngày, không theo giờ)
+  const tripStartDay = parseISO(trip.startDate); tripStartDay.setHours(0, 0, 0, 0)
+  const todayDay = new Date(); todayDay.setHours(0, 0, 0, 0)
+  const canStartTrip = todayDay.getTime() >= tripStartDay.getTime()
+
   const handleGoogleMaps = () => {
+    if (!canStartTrip) return
     const waypoints = slots
       .filter((s) => s.place)
       .map((s) => `${s.place!.lat},${s.place!.lng}`)
@@ -302,24 +310,57 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     window.open(url, '_blank', 'noopener')
   }
 
-  const handleShare = async () => {
-    try {
-      const res = await tripService.share(trip.tripId, 7)
-      setShareUrl(res.shareUrl)
-      setShareModal(true)
-    } catch {
-      const localUrl = `${window.location.origin}/trip/${trip.tripId}`
-      setShareUrl(localUrl)
-      setShareModal(true)
-    }
-  }
+  const tripUrl = `${window.location.origin}/trip/${trip.tripId}`
 
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(shareUrl)
+  const copyToClipboard = (url: string) => {
+    navigator.clipboard.writeText(url)
     toast.success('Đã sao chép link')
   }
 
-  const tripUrl = `${window.location.origin}/trip/${trip.tripId}`
+  const handleOpenShare = async () => {
+    setShareModal(true)
+    if (shareUrl) return // đã có link active, không cần tạo lại
+    setShareLoading(true)
+    try {
+      const res = await tripService.share(trip.tripId, 7)
+      setShareUrl(res.shareUrl)
+      setShareExpiresAt(res.expiresAt)
+    } catch {
+      toast.error('Không tạo được link chia sẻ')
+      setShareModal(false)
+    } finally {
+      setShareLoading(false)
+    }
+  }
+
+  const handleRefreshShare = async () => {
+    setShareLoading(true)
+    try {
+      const res = await tripService.share(trip.tripId, 7)
+      setShareUrl(res.shareUrl)
+      setShareExpiresAt(res.expiresAt)
+      toast.success('Đã tạo link mới')
+    } catch {
+      toast.error('Không tạo được link mới')
+    } finally {
+      setShareLoading(false)
+    }
+  }
+
+  const handleRevokeShare = async () => {
+    setShareLoading(true)
+    try {
+      await tripService.revokeShare(trip.tripId)
+      setShareUrl('')
+      setShareExpiresAt(null)
+      setShareModal(false)
+      toast.success('Đã thu hồi link chia sẻ')
+    } catch {
+      toast.error('Không thu hồi được link')
+    } finally {
+      setShareLoading(false)
+    }
+  }
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
@@ -348,7 +389,7 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
           <button onClick={() => setQrModal(true)} aria-label="QR Sync" className="p-2 hover:bg-gray-100 rounded-lg" title="QR Sync">
             <QrCode className="w-5 h-5 text-gray-500" />
           </button>
-          <button onClick={handleShare} aria-label="Chia sẻ" className="p-2 hover:bg-gray-100 rounded-lg">
+          <button onClick={handleOpenShare} aria-label="Chia sẻ" className="p-2 hover:bg-gray-100 rounded-lg" title="Chia sẻ kế hoạch">
             <Share2 className="w-5 h-5 text-gray-500" />
           </button>
         </div>
@@ -425,10 +466,14 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
               </button>
               <button
                 onClick={handleGoogleMaps}
-                className="btn-primary w-full py-2.5 text-sm"
+                disabled={!canStartTrip}
+                title={canStartTrip ? undefined : `Sẽ mở vào ngày ${format(tripStartDay, 'dd/MM/yyyy')}`}
+                className="btn-primary w-full py-2.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Play className="w-4 h-4" />
-                Bắt đầu chuyến đi trên Google Maps
+                {canStartTrip
+                  ? 'Bắt đầu chuyến đi trên Google Maps'
+                  : `Mở Google Maps vào ${format(tripStartDay, 'dd/MM')}`}
               </button>
             </div>
           </div>
@@ -460,25 +505,68 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
           <p className="text-sm text-gray-500 text-center">
             Quét mã QR bằng điện thoại để mở kế hoạch này ngay lập tức
           </p>
-          <button onClick={handleCopyLink} className="btn-secondary w-full">
+          <button onClick={() => copyToClipboard(tripUrl)} className="btn-secondary w-full">
             Sao chép link
           </button>
         </div>
       </Modal>
 
-      {/* Share Modal */}
+      {/* Share Modal — link public read-only cho người khác xem */}
       <Modal open={shareModal} onClose={() => setShareModal(false)} title="Chia sẻ kế hoạch">
         <div className="space-y-4">
-          <div className="flex gap-2">
-            <input value={shareUrl} readOnly className="input flex-1 text-xs" />
-            <button onClick={handleCopyLink} className="btn-primary shrink-0">Sao chép</button>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-2">QR Code chia sẻ:</p>
-            <div className="flex justify-center p-4 bg-gray-50 rounded-xl">
-              <QRCodeSVG value={shareUrl} size={150} />
+          {shareLoading && !shareUrl ? (
+            <div className="flex items-center justify-center py-8 gap-2 text-sm text-gray-500">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Đang tạo link…
             </div>
-          </div>
+          ) : shareUrl ? (
+            <>
+              <p className="text-xs text-gray-500">
+                Ai có link này đều xem được kế hoạch của bạn ở chế độ chỉ đọc.
+              </p>
+              <div className="flex gap-2">
+                <input value={shareUrl} readOnly className="input flex-1 text-xs" />
+                <button
+                  onClick={() => copyToClipboard(shareUrl)}
+                  className="btn-primary shrink-0 flex items-center gap-1.5"
+                  title="Sao chép link"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Sao chép
+                </button>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 mb-2">QR Code:</p>
+                <div className="flex justify-center p-4 bg-gray-50 rounded-xl">
+                  <QRCodeSVG value={shareUrl} size={150} />
+                </div>
+              </div>
+
+              {shareExpiresAt && (
+                <p className="text-[11px] text-gray-400 text-center">
+                  Hết hạn: {format(parseISO(shareExpiresAt), 'dd/MM/yyyy HH:mm')}
+                </p>
+              )}
+
+              <div className="flex gap-2 pt-2 border-t border-gray-100">
+                <button
+                  onClick={handleRefreshShare}
+                  disabled={shareLoading}
+                  className="btn-secondary flex-1 text-xs py-2 disabled:opacity-50"
+                >
+                  {shareLoading ? 'Đang xử lý…' : 'Tạo link mới (7 ngày)'}
+                </button>
+                <button
+                  onClick={handleRevokeShare}
+                  disabled={shareLoading}
+                  className="flex-1 text-xs py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  Thu hồi link
+                </button>
+              </div>
+            </>
+          ) : null}
         </div>
       </Modal>
 

@@ -138,7 +138,25 @@ export const tripService = {
   rejectReplan: (tripId: string, pid: string, reason?: string) =>
     api.post(`/trips/${tripId}/replan/${pid}/reject`, { reason }).then((r) => r.data),
 
-  // Backend không có endpoint share — trả URL local, không gọi network
-  share: (tripId: string, _ttlDays: number): Promise<{ shareUrl: string; expiresAt: string }> =>
-    Promise.resolve({ shareUrl: `${window.location.origin}/trip/${tripId}`, expiresAt: '' }),
+  // Share — owner tạo link public read-only, mặc định hết hạn sau 7 ngày.
+  share: (tripId: string, ttlDays: number = 7) =>
+    api
+      .post<{ token: string; expiresAt: string; sharePath: string }>(
+        `/trips/${tripId}/share`,
+        { ttlDays },
+      )
+      .then((r) => ({
+        token:     r.data.token,
+        expiresAt: r.data.expiresAt,
+        shareUrl:  `${window.location.origin}${r.data.sharePath}`,
+      })),
+
+  revokeShare: (tripId: string) =>
+    api.delete(`/trips/${tripId}/share`).then((r) => r.data),
+
+  // Fetch public read-only payload — không cần auth.
+  getShared: (token: string) =>
+    api
+      .get<Trip & { shareExpiresAt?: string | null }>(`/trips/shared/${token}`)
+      .then((r) => r.data),
 }

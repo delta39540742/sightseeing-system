@@ -21,6 +21,7 @@ import Destinations from './pages/Destinations'
 import About from './pages/About'
 import DevSimulation from './pages/DevSimulation'
 import PreferenceProfile from './pages/PreferenceProfile'
+import SharedTripView from './pages/SharedTripView'
 
 function AuthInit() {
   useAuthInit()
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="/events" element={<ErrorBoundary><Events /></ErrorBoundary>} />
         <Route path="/destinations" element={<ErrorBoundary><Destinations /></ErrorBoundary>} />
         <Route path="/about" element={<ErrorBoundary><About /></ErrorBoundary>} />
+        <Route path="/share/:token" element={<ErrorBoundary><SharedTripView /></ErrorBoundary>} />
 
         {/* Protected */}
         <Route path="/trips" element={<ErrorBoundary><ProtectedRoute><Dashboard /></ProtectedRoute></ErrorBoundary>} />

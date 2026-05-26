@@ -4,7 +4,7 @@ import { useSessionState, clearPlanningSession } from '@/hooks/useSessionState'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   MapPin, Clock, ChevronUp, ChevronDown, ArrowLeft,
-  Save, AlertCircle, PersonStanding, Route, Calendar, Wallet, Share2,
+  Save, AlertCircle, PersonStanding, Route, Calendar, Wallet,
   Loader2, Plus, X, Sparkles, AlertTriangle, Coffee, Map, Trash2, Pin, Flag,
 } from 'lucide-react'
 import { format, addMinutes, addDays, differenceInDays, parseISO } from 'date-fns'
@@ -736,12 +736,6 @@ export default function PlanRoute() {
           })}
         </nav>
 
-        <div className="px-2 py-3 border-t border-slate-700">
-          <button className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
-            <Share2 className="w-3.5 h-3.5" />
-            <span className="text-[11px] font-bold tracking-widest">Chia sẻ</span>
-          </button>
-        </div>
       </aside>
 
       {/* Left panel — Timeline */}
