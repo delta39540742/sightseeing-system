@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { randomBytes } from 'crypto';
 import { prisma } from '../lib/prisma';
 import { InternalEventBus } from '../events/eventBus';
 import { verifyToken } from '../middlewares/authMiddleware';
@@ -114,6 +115,119 @@ const tripInclude = {
 // ─── Plugin ─────────────────────────────────────────────────────────────────
 
 export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
+
+  // ─── Share (public read-only) ─────────────────────────────────────────────
+  // Route static `/shared/:token` đặt TRƯỚC mọi `/:tripId/...` để radix-tree
+  // của Fastify không match nhầm (dù static luôn thắng dynamic, để đây cho rõ).
+
+  // GET /api/trips/shared/:token — KHÔNG cần auth. Trả về trip read-only nếu
+  // token còn hạn. Hết hạn hoặc không tồn tại → 404.
+  fastify.get<{ Params: { token: string } }>(
+    '/shared/:token',
+    async (request, reply) => {
+      try {
+        const token = request.params.token;
+        if (!token || token.length < 16) {
+          return reply.status(404).send({ error: 'Share link not found' });
+        }
+
+        const trip = await prisma.trip.findFirst({
+          where: { share_token: token, deleted_at: null },
+          include: tripInclude,
+        });
+        if (!trip) return reply.status(404).send({ error: 'Share link not found' });
+
+        if (trip.share_expires_at && trip.share_expires_at.getTime() < Date.now()) {
+          return reply.status(410).send({ error: 'Share link expired' });
+        }
+
+        const data = serializeTrip(trip);
+        // Read-only payload — không lộ userId, deletedAt
+        return reply.send({
+          ...data,
+          userId: undefined,
+          deletedAt: undefined,
+          shareExpiresAt: trip.share_expires_at ?? null,
+        });
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // POST /api/trips/:tripId/share — owner tạo/refresh share link.
+  // Body: { ttlDays?: number = 7 }. Trả về { shareUrl, token, expiresAt }.
+  fastify.post<{ Params: { tripId: string }; Body: { ttlDays?: number } }>(
+    '/:tripId/share',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const trip = await prisma.trip.findFirst({
+          where: { trip_id: request.params.tripId, user_id: appUser.user_id, deleted_at: null },
+        });
+        if (!trip) return reply.status(404).send({ error: 'Trip not found' });
+
+        const ttlDaysRaw = request.body?.ttlDays;
+        const ttlDays = typeof ttlDaysRaw === 'number' && ttlDaysRaw > 0 && ttlDaysRaw <= 365
+          ? Math.floor(ttlDaysRaw)
+          : 7;
+
+        // Token URL-safe, 24 bytes ≈ 32 ký tự base64url. Tránh xung đột thực tế.
+        const token = randomBytes(24).toString('base64url');
+        const expiresAt = new Date(Date.now() + ttlDays * 86_400_000);
+
+        await prisma.trip.update({
+          where: { trip_id: trip.trip_id },
+          data: { share_token: token, share_expires_at: expiresAt, updated_at: new Date() },
+        });
+
+        // Backend không biết FE origin — chỉ trả token + expiresAt, FE tự dựng URL.
+        return reply.send({
+          token,
+          expiresAt: expiresAt.toISOString(),
+          sharePath: `/share/${token}`,
+        });
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // DELETE /api/trips/:tripId/share — owner thu hồi link.
+  fastify.delete<{ Params: { tripId: string } }>(
+    '/:tripId/share',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const trip = await prisma.trip.findFirst({
+          where: { trip_id: request.params.tripId, user_id: appUser.user_id },
+        });
+        if (!trip) return reply.status(404).send({ error: 'Trip not found' });
+
+        await prisma.trip.update({
+          where: { trip_id: trip.trip_id },
+          data: { share_token: null, share_expires_at: null, updated_at: new Date() },
+        });
+
+        return reply.status(204).send();
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
 
   // GET /api/trips — danh sách trips của user (loại trừ đã xóa mềm)
   fastify.get('/', { preHandler: verifyToken }, async (request, reply) => {
