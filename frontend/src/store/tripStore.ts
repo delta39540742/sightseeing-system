@@ -9,6 +9,8 @@ interface TripStore {
   trip: Trip | null
   pendingSlots: TripSlot[] | null   // slots waiting for "Cập nhật"
   hasPending: boolean
+  /** slotId của các slot user đánh dấu xóa, chờ "Lưu thay đổi" để PATCH skipped lên backend. */
+  pendingRemovedSlotIds: string[]
   focusedSlotId: string | null
   sortMode: SortMode
   versions: TripVersion[]
@@ -27,6 +29,9 @@ interface TripStore {
   movePendingToDay: (slotId: string, targetDay: number) => void
   commitPending: () => void
   discardPending: () => void
+  markSlotForRemoval: (slotId: string) => void
+  unmarkSlotForRemoval: (slotId: string) => void
+  clearPendingRemovals: () => void
   undo: () => void
   redo: () => void
   setFocus: (id: string | null) => void
@@ -43,6 +48,7 @@ export const useTripStore = create<TripStore>((set, get) => ({
   trip: null,
   pendingSlots: null,
   hasPending: false,
+  pendingRemovedSlotIds: [],
   focusedSlotId: null,
   sortMode: 'fastest',
   versions: [],
@@ -51,7 +57,7 @@ export const useTripStore = create<TripStore>((set, get) => ({
   planRequest: null,
   step: 1,
 
-  setTrip: (trip) => set({ trip, pendingSlots: null, hasPending: false, past: [], future: [] }),
+  setTrip: (trip) => set({ trip, pendingSlots: null, hasPending: false, pendingRemovedSlotIds: [], past: [], future: [] }),
 
   setSlots: (slots) => {
     const { trip, past } = get()
@@ -102,6 +108,19 @@ export const useTripStore = create<TripStore>((set, get) => ({
 
   discardPending: () => set({ pendingSlots: null, hasPending: false }),
 
+  markSlotForRemoval: (slotId) => {
+    const { pendingRemovedSlotIds } = get()
+    if (pendingRemovedSlotIds.includes(slotId)) return
+    set({ pendingRemovedSlotIds: [...pendingRemovedSlotIds, slotId] })
+  },
+
+  unmarkSlotForRemoval: (slotId) => {
+    const { pendingRemovedSlotIds } = get()
+    set({ pendingRemovedSlotIds: pendingRemovedSlotIds.filter((id) => id !== slotId) })
+  },
+
+  clearPendingRemovals: () => set({ pendingRemovedSlotIds: [] }),
+
   undo: () => {
     const { trip, past, future } = get()
     if (!trip || past.length === 0) return
@@ -144,7 +163,7 @@ export const useTripStore = create<TripStore>((set, get) => ({
     set({ trip: { ...trip, slots: withConflicts }, pendingSlots: null, hasPending: false })
   },
 
-  clear: () => set({ trip: null, pendingSlots: null, hasPending: false, past: [], future: [], versions: [], planRequest: null, step: 1 }),
+  clear: () => set({ trip: null, pendingSlots: null, hasPending: false, pendingRemovedSlotIds: [], past: [], future: [], versions: [], planRequest: null, step: 1 }),
 
   setPlanRequest: (planRequest) => set({ planRequest }),
   setStep: (step) => set({ step }),

@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity, Lock, LockOpen, Loader2, Copy } from 'lucide-react'
+import { ArrowLeft, Map as MapIcon, List, Share2, Play, QrCode, Camera, RefreshCw, Plus, Activity, Lock, LockOpen, Loader2, Copy, Trash2 } from 'lucide-react'
 import type { TripSlot, Place } from '@/types'
 import { tripService } from '@/services/tripService'
 import { monitorService } from '@/services/monitorService'
@@ -29,7 +29,10 @@ export default function TripDetail() {
   const { tripId } = useParams<{ tripId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { setTrip, trip, pendingSlots, focusedSlotId, setFocus } = useTripStore()
+  const {
+    setTrip, trip, pendingSlots, focusedSlotId, setFocus,
+    pendingRemovedSlotIds, markSlotForRemoval, unmarkSlotForRemoval, clearPendingRemovals,
+  } = useTripStore()
   const [mobileTab, setMobileTab] = useState<MobileTab>('list')
   const [qrModal, setQrModal] = useState(false)
   const [shareModal, setShareModal] = useState(false)
@@ -61,6 +64,27 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     queryFn: () => monitorService.checkIncident(tripId),
     refetchInterval: 30_000,
     enabled: !!tripId,
+  })
+
+  const handleToggleRemove = (slotId: string) => {
+    if (pendingRemovedSlotIds.includes(slotId)) unmarkSlotForRemoval(slotId)
+    else markSlotForRemoval(slotId)
+  }
+
+  const { mutate: saveRemovals, isPending: isSavingRemovals } = useMutation({
+    mutationFn: async (slotIds: string[]) => {
+      // PATCH tuần tự để dễ debug; thất bại ở slot nào sẽ throw lên onError.
+      for (const slotId of slotIds) {
+        await tripService.updateSlot(tripId!, slotId, { status: 'skipped' })
+      }
+    },
+    onSuccess: () => {
+      const count = pendingRemovedSlotIds.length
+      clearPendingRemovals()
+      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+      toast.success(`Đã lưu ${count} thay đổi`)
+    },
+    onError: () => toast.error('Không lưu được tất cả thay đổi, thử lại sau'),
   })
 
   const { mutate: addSlot, isPending: isAddingSlot } = useMutation({
@@ -448,6 +472,29 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
                 );
               })()
             )}
+            {pendingRemovedSlotIds.length > 0 && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border-b border-red-200 shrink-0">
+                <Trash2 className="w-4 h-4 text-red-500 shrink-0" />
+                <span className="text-xs text-red-700 flex-1 font-medium">
+                  {pendingRemovedSlotIds.length} địa điểm sẽ bị xóa — chưa lưu
+                </span>
+                <button
+                  onClick={() => saveRemovals(pendingRemovedSlotIds)}
+                  disabled={isSavingRemovals}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50 flex items-center gap-1"
+                >
+                  {isSavingRemovals ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  {isSavingRemovals ? 'Đang lưu…' : 'Lưu thay đổi'}
+                </button>
+                <button
+                  onClick={() => clearPendingRemovals()}
+                  disabled={isSavingRemovals}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Hủy
+                </button>
+              </div>
+            )}
             <Timeline
               onAddSlot={handleOpenAddSlot}
               onLockToggle={handleLockToggle}
@@ -494,6 +541,8 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
               slots={trip.slots}
               pendingSlots={pendingSlots}
               focusedSlotId={focusedSlotId}
+              pendingRemovedSlotIds={pendingRemovedSlotIds}
+              onRemoveSlot={handleToggleRemove}
               onMarkerClick={(slotId) => {
                 // Highlight slot tương ứng trong timeline
                 setFocus(slotId)

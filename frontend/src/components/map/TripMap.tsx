@@ -13,6 +13,8 @@ interface TripMapProps {
   /** Called when user clicks a marker — passes the slotId */
   onMarkerClick?: (slotId: string) => void
   onRemoveSlot?: (slotId: string) => void
+  /** slotIds đang chờ xóa (UI hiển thị mờ + dashed). */
+  pendingRemovedSlotIds?: ReadonlyArray<string>
   className?: string
   nearbyPlaces?: Place[]
   onNearbyClick?: (place: Place) => void
@@ -133,6 +135,7 @@ function createMarkerIcon(
   hasConflict: boolean,
   isPending: boolean,
   status: TripSlot['status'],
+  isPendingRemoved: boolean = false,
 ) {
   const baseColor = hasConflict ? '#ef4444' : DAY_COLORS[dayIdx % DAY_COLORS.length]
   const isSkipped  = status === 'skipped'
@@ -144,15 +147,21 @@ function createMarkerIcon(
     ? '0 0 0 4px rgba(59,130,246,0.35), 0 4px 12px rgba(0,0,0,0.35)'
     : '0 2px 8px rgba(0,0,0,0.28)'
 
-  const bg = isSkipped
-    ? '#94a3b8'
-    : isPending
+  const bg = isPendingRemoved
+    ? '#ef4444'
+    : isSkipped
       ? '#94a3b8'
-      : baseColor
+      : isPending
+        ? '#94a3b8'
+        : baseColor
 
   const checkmark = isComplete
     ? `<span style="position:absolute;top:-4px;right:-4px;background:#10b981;border-radius:50%;width:12px;height:12px;display:flex;align-items:center;justify-content:center;font-size:7px;color:white;border:1px solid white;">✓</span>`
     : ''
+
+  const opacity = isPendingRemoved ? 0.45 : (isSkipped ? 0.55 : 1)
+  const borderStyle = isPendingRemoved ? `${borderPx}px dashed #ef4444` : `${borderPx}px solid white`
+  const textDecoration = isPendingRemoved ? 'line-through' : 'none'
 
   return L.divIcon({
     html: `
@@ -162,10 +171,11 @@ function createMarkerIcon(
           background:${bg};color:white;
           display:flex;align-items:center;justify-content:center;
           font-size:${isFocused ? 13 : 11}px;font-weight:700;
-          border:${borderPx}px solid white;
+          border:${borderStyle};
           box-shadow:${shadow};
           transition:all 0.2s ease;
-          opacity:${isSkipped ? 0.55 : 1};
+          opacity:${opacity};
+          text-decoration:${textDecoration};
         ">${orderInDay + 1}</div>
         ${checkmark}
       </div>`,
@@ -184,6 +194,7 @@ export const TripMap = React.memo(function TripMap({
   onMapClick,
   onMarkerClick,
   onRemoveSlot,
+  pendingRemovedSlotIds,
   className = '',
   nearbyPlaces,
   onNearbyClick,
@@ -311,11 +322,12 @@ export const TripMap = React.memo(function TripMap({
         {Array.from(slotsByDay.entries()).map(([dayIdx, daySlots]) =>
           daySlots.map((slot, orderInDay) => {
             const isFocused = slot.slotId === focusedSlotId
+            const isPendingRemoved = !!pendingRemovedSlotIds?.includes(slot.slotId)
             return (
               <Marker
                 key={slot.slotId}
                 position={[slot.place!.lat, slot.place!.lng]}
-                icon={createMarkerIcon(dayIdx, orderInDay, isFocused, !!slot.conflict, !!pendingSlots && !displaySlots.includes(slot), slot.status)}
+                icon={createMarkerIcon(dayIdx, orderInDay, isFocused, !!slot.conflict, !!pendingSlots && !displaySlots.includes(slot), slot.status, isPendingRemoved)}
                 eventHandlers={{
                   click: () => onMarkerClick?.(slot.slotId),
                 }}
@@ -325,19 +337,23 @@ export const TripMap = React.memo(function TripMap({
                     <p className="text-xs text-gray-400 mb-0.5">
                       Ngày {(slot.dayIndex ?? 0) + 1} · #{orderInDay + 1}
                     </p>
-                    <p className="font-semibold text-gray-900">{slot.place!.name}</p>
+                    <p className={`font-semibold text-gray-900 ${isPendingRemoved ? 'line-through text-gray-400' : ''}`}>{slot.place!.name}</p>
                     <p className="text-xs text-gray-500 mt-1">
                       {new Date(slot.plannedStart).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                       {' → '}
                       {new Date(slot.plannedEnd).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                     </p>
-                    {onRemoveSlot && (
+                    {onRemoveSlot && slot.status !== 'skipped' && (
                       <div className="flex gap-2 mt-2">
                         <button
                           onClick={() => onRemoveSlot(slot.slotId)}
-                          className="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-bold border border-red-100 hover:bg-red-100 transition-colors"
+                          className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors ${
+                            isPendingRemoved
+                              ? 'bg-blue-50 text-blue-600 border-blue-100 hover:bg-blue-100'
+                              : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100'
+                          }`}
                         >
-                          BỎ QUA
+                          {isPendingRemoved ? 'HOÀN TÁC' : 'XÓA'}
                         </button>
                       </div>
                     )}

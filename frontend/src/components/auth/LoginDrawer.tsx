@@ -116,17 +116,18 @@ export function LoginDrawer() {
           </div>
 
           <button
+            type="button"
             onClick={handleGoogle}
             disabled={loading}
-            className="btn-secondary mx-auto py-1.5 px-4 gap-2 text-xs"
+            className="w-full inline-flex items-center justify-center gap-3 py-2.5 px-4 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <svg width="14" height="14" viewBox="0 0 48 48" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
               <path fill="#EA4335" d="M24 9.5c3.14 0 5.95 1.08 8.17 2.85l6.1-6.1C34.46 3.1 29.56 1 24 1 14.82 1 7.07 6.48 3.69 14.22l7.1 5.52C12.44 13.72 17.77 9.5 24 9.5z"/>
               <path fill="#4285F4" d="M46.1 24.5c0-1.6-.14-3.13-.4-4.62H24v8.75h12.44c-.54 2.9-2.17 5.36-4.63 7.02l7.1 5.52C43.27 37.3 46.1 31.36 46.1 24.5z"/>
               <path fill="#FBBC05" d="M10.79 28.26A14.5 14.5 0 0 1 9.5 24c0-1.48.25-2.91.69-4.26l-7.1-5.52A23 23 0 0 0 1 24c0 3.77.9 7.34 2.49 10.49l7.3-6.23z"/>
               <path fill="#34A853" d="M24 47c5.56 0 10.23-1.84 13.63-5.01l-7.1-5.52c-1.84 1.24-4.19 1.98-6.53 1.98-6.23 0-11.56-4.22-13.21-9.94l-7.3 6.23C7.07 41.52 14.82 47 24 47z"/>
             </svg>
-            Đăng nhập bằng Google
+            <span>Đăng nhập bằng Google</span>
           </button>
         </div>
       </div>

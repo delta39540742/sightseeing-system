@@ -15,6 +15,10 @@ interface DayGroupProps {
   onFocus: (id: string) => void
   onAddSlot?: (dayIndex: number) => void
   onLockToggle?: (slot: TripSlot) => void
+  /** Toggle đánh dấu xóa cho 1 slot (chờ Lưu). */
+  onToggleRemove?: (slotId: string) => void
+  /** Tập slotId đã đánh dấu xóa (chờ Lưu). */
+  pendingRemovedSlotIds?: ReadonlyArray<string>
   dayColors: string[]
   dayStart?: TripDayStart | null
   onEditDayStart?: (dayIndex: number) => void
@@ -26,6 +30,7 @@ interface DayGroupProps {
 export function DayGroup({
   dayIndex, date, slots, focusedSlotId, onFocus, onAddSlot, onLockToggle, dayColors,
   dayStart, onEditDayStart, onClearDayStart, dayStartBlockedReason,
+  onToggleRemove, pendingRemovedSlotIds,
 }: DayGroupProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayIndex}` })
@@ -181,6 +186,8 @@ export function DayGroup({
                   isActive={slot.slotId === focusedSlotId}
                   onFocus={onFocus}
                   onLockToggle={onLockToggle ? () => onLockToggle(slot) : undefined}
+                  isPendingRemoved={pendingRemovedSlotIds?.includes(slot.slotId)}
+                  onToggleRemove={onToggleRemove ? () => onToggleRemove(slot.slotId) : undefined}
                 />
               ))}
               {/* Inline add button after list */}

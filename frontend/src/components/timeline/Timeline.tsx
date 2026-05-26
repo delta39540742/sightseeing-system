@@ -34,7 +34,13 @@ export function Timeline({ onAddSlot, onLockToggle, onEditDayStart, onClearDaySt
     trip, pendingSlots, hasPending, focusedSlotId,
     movePendingSlot, movePendingToDay, commitPending, discardPending,
     setFocus, undo, redo, past, future, saveVersion, versions, restoreVersion,
+    pendingRemovedSlotIds, markSlotForRemoval, unmarkSlotForRemoval,
   } = useTripStore()
+
+  const handleToggleRemove = (slotId: string) => {
+    if (pendingRemovedSlotIds.includes(slotId)) unmarkSlotForRemoval(slotId)
+    else markSlotForRemoval(slotId)
+  }
 
   const [activeSlot, setActiveSlot] = useState<TripSlot | null>(null)
   const [showHistory, setShowHistory] = useState(false)
@@ -206,6 +212,8 @@ export function Timeline({ onAddSlot, onLockToggle, onEditDayStart, onClearDaySt
                 onFocus={setFocus}
                 onAddSlot={onAddSlot}
                 onLockToggle={onLockToggle}
+                onToggleRemove={handleToggleRemove}
+                pendingRemovedSlotIds={pendingRemovedSlotIds}
                 dayColors={DAY_COLORS}
                 dayStart={dayStart}
                 onEditDayStart={onEditDayStart}

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle, Info, Timer, Lock } from 'lucide-react'
+import { GripVertical, MapPin, Clock, DollarSign, AlertTriangle, Info, Timer, Lock, Trash2, Undo2 } from 'lucide-react'
 import type { TripSlot } from '@/types'
 import { ConflictBanner } from './ConflictBanner'
 import { format, differenceInMinutes, parseISO } from 'date-fns'
@@ -13,6 +13,10 @@ interface SlotCardProps {
   onFocus: (id: string) => void
   onClickInfo?: () => void
   onLockToggle?: () => void
+  /** Slot đã được đánh dấu xóa (chờ save). */
+  isPendingRemoved?: boolean
+  /** Toggle trạng thái xóa (mark/unmark). */
+  onToggleRemove?: () => void
 }
 
 const activityColors: Record<TripSlot['activityType'], string> = {
@@ -50,7 +54,7 @@ function formatDuration(start: string, end: string): string {
   }
 }
 
-export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockToggle }: SlotCardProps) {
+export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockToggle, isPendingRemoved, onToggleRemove }: SlotCardProps) {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [hovered, setHovered] = useState(false)
   const {
@@ -92,6 +96,7 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockTo
                 : 'border-l-transparent hover:bg-gray-50',
           isSkipped  ? 'opacity-50' : '',
           slot.pending ? 'opacity-60' : '',
+          isPendingRemoved ? 'opacity-50 bg-red-50/60 border-l-red-400' : '',
         ].join(' ')}
       >
         {/* Drag handle — hidden for locked slots */}
@@ -127,7 +132,7 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockTo
         <div className="flex-1 min-w-0">
           {/* Name row */}
           <div className="flex items-start gap-2">
-            <p className={`font-semibold text-sm text-gray-900 truncate flex-1 ${isSkipped ? 'line-through text-gray-400' : ''}`}>
+            <p className={`font-semibold text-sm text-gray-900 truncate flex-1 ${isSkipped || isPendingRemoved ? 'line-through text-gray-400' : ''}`}>
               {slot.place?.name ?? `Địa điểm ${slot.placeId}`}
             </p>
             {onClickInfo && hovered && (
@@ -147,6 +152,16 @@ export function SlotCard({ slot, index, isActive, onFocus, onClickInfo, onLockTo
                 className={`shrink-0 transition-colors ${slot.isLocked ? 'text-amber-500 hover:text-gray-400' : 'text-gray-400 hover:text-amber-500'}`}
               >
                 <Lock className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {onToggleRemove && !isSkipped && (hovered || isPendingRemoved) && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleRemove() }}
+                aria-label={isPendingRemoved ? 'Hoàn tác xóa' : 'Xóa địa điểm'}
+                title={isPendingRemoved ? 'Hoàn tác xóa' : 'Xóa địa điểm khỏi chuyến đi'}
+                className={`shrink-0 transition-colors ${isPendingRemoved ? 'text-blue-500 hover:text-blue-700' : 'text-gray-400 hover:text-red-500'}`}
+              >
+                {isPendingRemoved ? <Undo2 className="w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
               </button>
             )}
             {slot.conflict && (
