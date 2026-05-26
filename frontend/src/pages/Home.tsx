@@ -3,8 +3,9 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   Search, Camera, MapPin, Calendar, BellRing, X, ArrowRight,
-  PlusCircle, UserCircle, Bell,
+  PlusCircle, UserCircle,
 } from 'lucide-react'
+import { BellButton } from '@/components/notifications/BellButton'
 import { useAuthStore } from '@/store/authStore'
 import { tripService } from '@/services/tripService'
 import { format, parseISO, differenceInDays } from 'date-fns'
@@ -94,6 +95,7 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            {user && <BellButton />}
             {user ? (
               <button
                 onClick={() => navigate('/profile')}
@@ -346,7 +348,7 @@ export default function Home() {
         className="fixed bottom-8 right-8 bg-blue-600 text-white w-16 h-16 rounded-full shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all z-40 md:hidden"
         aria-label="Tạo chuyến đi"
       >
-        <Bell className="w-6 h-6" />
+        <PlusCircle className="w-6 h-6" />
       </button>
     </div>
   )

@@ -310,27 +310,37 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     window.open(url, '_blank', 'noopener')
   }
 
-  const tripUrl = `${window.location.origin}/trip/${trip.tripId}`
-
   const copyToClipboard = (url: string) => {
     navigator.clipboard.writeText(url)
     toast.success('Đã sao chép link')
   }
 
-  const handleOpenShare = async () => {
-    setShareModal(true)
-    if (shareUrl) return // đã có link active, không cần tạo lại
+  const ensureShareUrl = async (): Promise<string | null> => {
+    if (shareUrl) return shareUrl
     setShareLoading(true)
     try {
       const res = await tripService.share(trip.tripId, 7)
       setShareUrl(res.shareUrl)
       setShareExpiresAt(res.expiresAt)
+      return res.shareUrl
     } catch {
       toast.error('Không tạo được link chia sẻ')
-      setShareModal(false)
+      return null
     } finally {
       setShareLoading(false)
     }
+  }
+
+  const handleOpenShare = async () => {
+    setShareModal(true)
+    const url = await ensureShareUrl()
+    if (!url) setShareModal(false)
+  }
+
+  const handleOpenQr = async () => {
+    setQrModal(true)
+    const url = await ensureShareUrl()
+    if (!url) setQrModal(false)
   }
 
   const handleRefreshShare = async () => {
@@ -386,7 +396,7 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
           <button onClick={() => setLandmarkSheet(true)} aria-label="Nhận diện địa điểm" className="p-2 hover:bg-gray-100 rounded-lg" title="Nhận diện từ ảnh">
             <Camera className="w-5 h-5 text-gray-500" />
           </button>
-          <button onClick={() => setQrModal(true)} aria-label="QR Sync" className="p-2 hover:bg-gray-100 rounded-lg" title="QR Sync">
+          <button onClick={handleOpenQr} aria-label="QR Sync" className="p-2 hover:bg-gray-100 rounded-lg" title="QR Sync">
             <QrCode className="w-5 h-5 text-gray-500" />
           </button>
           <button onClick={handleOpenShare} aria-label="Chia sẻ" className="p-2 hover:bg-gray-100 rounded-lg" title="Chia sẻ kế hoạch">
@@ -499,15 +509,23 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
       {/* QR Modal */}
       <Modal open={qrModal} onClose={() => setQrModal(false)} title="QR Sync — Chuyển sang điện thoại">
         <div className="flex flex-col items-center gap-4">
-          <div className="p-4 bg-white rounded-xl border-2 border-gray-100">
-            <QRCodeSVG value={tripUrl} size={200} />
-          </div>
-          <p className="text-sm text-gray-500 text-center">
-            Quét mã QR bằng điện thoại để mở kế hoạch này ngay lập tức
-          </p>
-          <button onClick={() => copyToClipboard(tripUrl)} className="btn-secondary w-full">
-            Sao chép link
-          </button>
+          {shareLoading && !shareUrl ? (
+            <div className="py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+            </div>
+          ) : shareUrl ? (
+            <>
+              <div className="p-4 bg-white rounded-xl border-2 border-gray-100">
+                <QRCodeSVG value={shareUrl} size={200} />
+              </div>
+              <p className="text-sm text-gray-500 text-center">
+                Quét mã QR bằng điện thoại để mở kế hoạch này ngay lập tức
+              </p>
+              <button onClick={() => copyToClipboard(shareUrl)} className="btn-secondary w-full">
+                Sao chép link
+              </button>
+            </>
+          ) : null}
         </div>
       </Modal>
 

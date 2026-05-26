@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Camera, MapPin, Star, ArrowRight, PlusCircle, Bell, BookmarkIcon, Map, User } from 'lucide-react'
+import { Camera, MapPin, Star, ArrowRight, PlusCircle, BookmarkIcon, Map, User } from 'lucide-react'
+import { BellButton } from '@/components/notifications/BellButton'
 import { landmarkService } from '@/services/landmarkService'
 import type { LandmarkRecognitionResult } from '@/types'
 
@@ -51,7 +52,7 @@ export default function LandmarkPage() {
             <button onClick={() => navigate('/trips')} className="text-slate-600 font-semibold hover:text-blue-500">Chuyến đi</button>
           </nav>
           <div className="flex items-center space-x-4">
-            <button className="hover:text-blue-500 transition-colors"><Bell className="w-5 h-5 text-blue-600" /></button>
+            <BellButton className="hover:text-blue-500 transition-colors relative" iconClassName="w-5 h-5 text-blue-600" />
             <button onClick={() => navigate('/profile')} className="hover:text-blue-500 transition-colors"><User className="w-5 h-5 text-blue-600" /></button>
           </div>
         </div>

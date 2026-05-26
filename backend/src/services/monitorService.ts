@@ -1,5 +1,13 @@
 import axios from 'axios'
 import { pool } from '../lib/prisma'
+import { notificationService } from './notificationService'
+
+const EVENT_TYPE_LABEL: Record<string, string> = {
+  rain_heavy: 'Mưa lớn',
+  traffic_jam: 'Kẹt xe',
+  closing_soon: 'Sắp đóng cửa',
+  user_tired: 'Bạn cần nghỉ ngơi',
+}
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -145,6 +153,14 @@ export class MonitorService {
         ]
       )
       eventId = res.rows[0]?.event_id
+      if (eventId) {
+        void notificationService.createForTrip(this.currentTrip.tripId, {
+          type: 'incident_detected',
+          title: EVENT_TYPE_LABEL[type] ?? 'Phát hiện sự cố',
+          message: reason,
+          data: { eventId, eventType: type, severity, affectedSlotIds: affectedIds },
+        })
+      }
     } catch (err) {
       console.error('[MonitorService] Failed to persist trip_event:', err)
     }
@@ -265,6 +281,12 @@ export class MonitorService {
       )
       if (res.rowCount && res.rowCount > 0) {
         console.log(`[MonitorService] Created ${type} event for trip ${tripId} — ${affectedIds.length} affected slots`)
+        void notificationService.createForTrip(tripId, {
+          type: 'incident_detected',
+          title: EVENT_TYPE_LABEL[type] ?? 'Phát hiện sự cố',
+          message: reason,
+          data: { eventType: type, severity, affectedSlotIds: affectedIds },
+        })
       }
     } catch (err) {
       console.error('[MonitorService] Failed to create trip_event:', err)

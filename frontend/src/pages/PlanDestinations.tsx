@@ -4,9 +4,10 @@ import { useSessionState } from '@/hooks/useSessionState'
 import { useQuery } from '@tanstack/react-query'
 import {
   MapPin, Send, X, ArrowRight, Route, Calendar, Wallet,
-  Trash2, Check, Loader2, Bell, User,
+  Trash2, Check, Loader2, User,
   PersonStanding,
 } from 'lucide-react'
+import { BellButton } from '@/components/notifications/BellButton'
 import { TripMap } from '@/components/map/TripMap'
 import { NluSlotEditor } from '@/components/planning/NluSlotEditor'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
@@ -254,9 +255,7 @@ export default function PlanDestinations() {
           <button className="hover:text-slate-900 transition-colors">Cộng đồng</button>
         </nav>
         <div className="ml-auto flex items-center gap-3">
-          <button className="p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors">
-            <Bell className="w-5 h-5" />
-          </button>
+          <BellButton />
           <button
             onClick={() => (user ? navigate('/profile') : openLoginDrawer())}
             className="p-2 rounded-full hover:bg-slate-100 text-slate-500 transition-colors"

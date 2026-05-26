@@ -35,6 +35,7 @@ import {
   classifyTrafficSeverity,
 } from '../../replanner/EffectivenessEvaluator';
 import { EffectivenessLogger } from '../../replanner/EffectivenessLogger';
+import { notificationService } from '../../services/notificationService';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1446,6 +1447,16 @@ export function makeReplanHandler(deps: ReplanDeps) {
 
     await deps.proposalStore.save(proposal, causalTrace);
 
+    // Tạo notification cho user — hiển thị trong bell drawer
+    void notificationService.createForTrip(tripId, {
+      type: 'replan_proposal',
+      title: 'Đề xuất lịch trình mới',
+      message: triggerEventRow
+        ? `Phát hiện ${triggerEventRow.event_type} — có đề xuất điều chỉnh lịch trình`
+        : 'Có đề xuất điều chỉnh lịch trình cho chuyến đi của bạn',
+      data: { proposalId, scoreDelta: newScore - oldScore, triggeredByEventId: triggeredByEventId ?? null },
+    });
+
       // ── 8. Publish event ───────────────────────────────────────────────────
     deps.publish?.('trip.replan.proposed', {
       userId,
@@ -1549,6 +1560,13 @@ export function makeAcceptHandler(deps: ReplanDeps) {
     if (armId != null) {
       notifyPreferenceReward({ userId, tripId, armId, interactionType: 'replan_accepted' });
     }
+
+    void notificationService.createForTrip(tripId, {
+      type: 'replan_accepted',
+      title: 'Đã áp dụng đề xuất mới',
+      message: 'Lịch trình của bạn đã được cập nhật theo đề xuất',
+      data: { proposalId },
+    });
 
     // Load and return the refreshed trip
     const updatedTrip = await fetchUpdatedTrip(deps.pool, tripId);

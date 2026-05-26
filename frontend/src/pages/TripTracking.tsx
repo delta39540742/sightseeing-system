@@ -4,9 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, Lightbulb, MapPin, Utensils, CheckCircle,
   Building2, Search, LocateFixed, Plus, Minus,
-  Navigation, Bell, Settings, UserCircle, GitBranch, Zap,
+  Navigation, Settings, UserCircle, GitBranch, Zap,
   ChevronDown, ChevronUp, Frown, Clock,
 } from 'lucide-react'
+import { BellButton } from '@/components/notifications/BellButton'
 import { tripService } from '@/services/tripService'
 import { toast } from '@/store/toastStore'
 import { monitorService, type MonitorAlert } from '@/services/monitorService'
@@ -208,9 +209,7 @@ export default function TripTracking() {
           </nav>
         </div>
         <div className="flex items-center gap-4">
-          <button className="p-2 hover:bg-slate-50 rounded-full">
-            <Bell className="w-5 h-5 text-slate-600" />
-          </button>
+          <BellButton className="p-2 hover:bg-slate-50 rounded-full relative" iconClassName="w-5 h-5 text-slate-600" />
           <button className="p-2 hover:bg-slate-50 rounded-full">
             <Settings className="w-5 h-5 text-slate-600" />
           </button>

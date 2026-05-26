@@ -9,6 +9,7 @@ import { internalEventsPlugin } from './routes/internalEvents';
 import { authPlugin } from './routes/auth';
 import { nluPlugin } from './routes/nlu';
 import { landmarkPlugin } from './routes/landmark';
+import { notificationsPlugin } from './routes/notifications';
 import tripRoutes from './api/plan/routes';
 
 import { replanPlugin } from './api/replan/routes';
@@ -139,6 +140,7 @@ async function start() {
   await fastify.register(replanPlugin, { prefix: '/api', deps: replanDeps });
   await fastify.register(tripRoutes, { prefix: '/api/plan' });
   await fastify.register(monitorPlugin, { prefix: '/api/monitor' });
+  await fastify.register(notificationsPlugin, { prefix: '/api/notifications' });
   await fastify.register(demoSimulatePlugin, { prefix: '/api/demo', pool });
   await fastify.register(demoHistoryPlugin, { prefix: '/api/demo', pool });
 

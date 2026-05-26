@@ -4,6 +4,8 @@ import { ToastContainer } from './components/ui/Toast'
 import { LoginDrawer } from './components/auth/LoginDrawer'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
+import { NotificationDrawer } from './components/notifications/NotificationDrawer'
+import { useNotificationDrawer } from './store/notificationDrawerStore'
 import Home from './pages/Home'
 import Welcome from './pages/Welcome'
 import Dashboard from './pages/Dashboard'
@@ -26,6 +28,11 @@ import SharedTripView from './pages/SharedTripView'
 function AuthInit() {
   useAuthInit()
   return null
+}
+
+function GlobalNotificationDrawer() {
+  const { open, hide } = useNotificationDrawer()
+  return <NotificationDrawer open={open} onClose={hide} />
 }
 
 export default function App() {
@@ -60,6 +67,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <LoginDrawer />
+      <GlobalNotificationDrawer />
       <ToastContainer />
     </BrowserRouter>
   )
