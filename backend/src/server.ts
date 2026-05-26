@@ -27,6 +27,7 @@ import {
 } from './replanner/index';
 import { pool } from './lib/prisma';
 import { warmUpEmbedding } from './services/embeddingService';
+import { startNotificationCron } from './jobs/notificationCron';
 
 // Fix BigInt JSON serialization globally
 (BigInt.prototype as any).toJSON = function () {
@@ -167,6 +168,7 @@ async function start() {
     }
     // Tải model embedding ở background để request đầu không bị lag ~30s.
     void warmUpEmbedding();
+    startNotificationCron();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

@@ -6,6 +6,7 @@ export type NotificationType =
   | 'replan_rejected'
   | 'incident_detected'    // weather/traffic/event
   | 'trip_starting_soon'
+  | 'share_expiring_soon'
   | 'system'
 
 export interface CreateNotificationInput {

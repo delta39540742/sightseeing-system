@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, Bell, CheckCheck, Trash2, AlertTriangle, Calendar, RefreshCw, CheckCircle2, Info } from 'lucide-react'
+import { X, Bell, CheckCheck, Trash2, AlertTriangle, Calendar, RefreshCw, CheckCircle2, Info, Link2 } from 'lucide-react'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { useNotifications } from '@/hooks/useNotifications'
@@ -18,6 +18,7 @@ const iconFor = (type: NotificationType) => {
     case 'replan_accepted':     return <CheckCircle2 className="w-5 h-5 text-green-500" />
     case 'replan_rejected':     return <X className="w-5 h-5 text-gray-400" />
     case 'trip_starting_soon':  return <Calendar className="w-5 h-5 text-blue-500" />
+    case 'share_expiring_soon': return <Link2 className="w-5 h-5 text-amber-500" />
     default:                    return <Info className="w-5 h-5 text-gray-400" />
   }
 }
