@@ -18,7 +18,7 @@ import { PlaceSearchBar } from '@/components/planning/PlaceSearchBar'
 import { ConflictBanner } from '@/components/timeline/ConflictBanner'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from '@/store/toastStore'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, isBefore } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import type { ReplanScope } from '@/types'
 import type { Place as ReplanPlace } from '@/components/replan/types'
@@ -266,6 +266,33 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
   const slots = pendingSlots ?? trip.slots
   const conflictCount = slots.filter((s) => s.conflict).length
 
+  // Gate banner: chỉ hiện khi sự cố thực sự ảnh hưởng đến slot đang/sắp diễn ra.
+  // Một số nguồn (script pump-rain) ghi affected_slot_ids = toàn bộ planned slot,
+  // không lọc indoor/outdoor → phải lọc lại ở client theo event type.
+  const incidentAffectsActiveSlots = (() => {
+    if (!incidentData || !('type' in incidentData) || !incidentData.type) return false
+    const ids = (incidentData as MonitorAlert).affectedSlotIds ?? []
+    if (ids.length === 0) return false
+    const eventType = incidentData.type
+    const expiresAt = (incidentData as MonitorAlert).expiresAt
+      ? new Date((incidentData as MonitorAlert).expiresAt!)
+      : null
+    const nowDate = new Date()
+    return ids.some((id) => {
+      const slot = trip.slots.find((s) => s.slotId === id)
+      if (!slot) return false
+      if (slot.status === 'completed' || slot.status === 'skipped') return false
+      // Rain chỉ ảnh hưởng outdoor (mixed coi như có rủi ro). Indoor → bỏ qua.
+      if (eventType === 'rain_heavy') {
+        const io = slot.place?.indoorOutdoor
+        if (io === 'indoor') return false
+      }
+      const slotStart = parseISO(slot.plannedStart)
+      const withinWindow = !expiresAt || isBefore(slotStart, expiresAt)
+      return withinWindow && !isBefore(parseISO(slot.plannedEnd), nowDate)
+    })
+  })()
+
   const handleGoogleMaps = () => {
     const waypoints = slots
       .filter((s) => s.place)
@@ -347,7 +374,7 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
         <div className="h-full flex">
           {/* Timeline (left on desktop) */}
           <div className={`w-full md:w-[380px] md:flex flex-col h-full bg-white border-r border-gray-100 ${mobileTab === 'list' ? 'flex' : 'hidden'}`}>
-            {incidentData && 'type' in incidentData && incidentData.type && (
+            {incidentAffectsActiveSlots && incidentData && 'type' in incidentData && incidentData.type && (
               (() => {
                 const eventId = 'eventId' in incidentData ? incidentData.eventId : (incidentData as any).timestamp;
                 if (dismissedIncidentId === eventId) return null;

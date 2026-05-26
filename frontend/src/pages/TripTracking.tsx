@@ -166,10 +166,16 @@ export default function TripTracking() {
   const incidentAffectedIds: string[] = incidentAlert?.affectedSlotIds ?? []
   const incidentExpiresAt: Date | null = incidentAlert?.expiresAt ? new Date(incidentAlert.expiresAt) : null
 
-  // Only show if there's at least one affected slot that is active and within the incident window
+  // Only show if there's at least one affected slot that is active and within the incident window.
+  // Filter out indoor slots for rain_heavy (some event sources don't pre-filter by indoor/outdoor).
+  const slotMatchesEventSemantics = (slot: typeof sortedSlots[0]) => {
+    if (incidentAlert?.type === 'rain_heavy' && slot.place?.indoorOutdoor === 'indoor') return false
+    return true
+  }
   const incidentAffectsActiveSlots = hasIncident && incidentAffectedIds.length > 0 && incidentAffectedIds.some(id => {
     const slot = sortedSlots.find(s => s.slotId === id)
     if (!slot) return false
+    if (!slotMatchesEventSemantics(slot)) return false
     const slotStart = parseISO(slot.plannedStart)
     const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
     return withinWindow && !isBefore(parseISO(slot.plannedEnd), now)
@@ -178,6 +184,7 @@ export default function TripTracking() {
   const affectedUpcomingSlots = incidentAffectsActiveSlots
     ? sortedSlots.filter(slot => {
         if (!incidentAffectedIds.includes(slot.slotId)) return false
+        if (!slotMatchesEventSemantics(slot)) return false
         const slotStart = parseISO(slot.plannedStart)
         const withinWindow = !incidentExpiresAt || isBefore(slotStart, incidentExpiresAt)
         return withinWindow && !isBefore(parseISO(slot.plannedEnd), now)
