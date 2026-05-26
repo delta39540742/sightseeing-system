@@ -8,7 +8,7 @@ import {
   Loader2, Plus, X, Sparkles, AlertTriangle, Coffee, Map, Trash2, Pin, Flag,
 } from 'lucide-react'
 import { format, addMinutes, addDays, differenceInDays, parseISO } from 'date-fns'
-import { TripMap } from '@/components/map/TripMap'
+import { TripMap, DAY_COLORS } from '@/components/map/TripMap'
 import { DestinationDetailPanel } from '@/components/planning/DestinationDetailPanel'
 import { DayStartsPicker, type DayStartEntry } from '@/components/planning/DayStartsPicker'
 import { tripService } from '@/services/tripService'
@@ -629,12 +629,21 @@ export default function PlanRoute() {
 
   function computeSchedule() {
     const [h, m] = startTime.split(':').map(Number)
-    const base = new Date(startDate)
-    base.setHours(h, m, 0, 0)
-    let cursor = base
+    const day0 = new Date(startDate)
+    day0.setHours(h, m, 0, 0)
+    let dayIdx = 0
+    let dayUsedMin = 0
+    let cursor = day0
     return routePlaces.map((rp, i) => {
+      // Vượt qũy ngày → reset sang ngày kế (cùng giờ bắt đầu). Không reset slot đầu tiên.
+      if (i > 0 && dayUsedMin + rp.visitMinutes > DAILY_TIME_BUDGET_MIN) {
+        dayIdx += 1
+        cursor = addDays(day0, dayIdx)
+        dayUsedMin = 0
+      }
       const start = new Date(cursor)
       const end = addMinutes(start, rp.visitMinutes)
+      dayUsedMin += rp.visitMinutes
       if (i < routePlaces.length - 1) {
         const leg = osrmRoute?.legs?.[i]
         let travelMin = 0
@@ -648,10 +657,11 @@ export default function PlanRoute() {
           }
         }
         cursor = addMinutes(end, travelMin)
+        dayUsedMin += travelMin
       } else {
         cursor = end
       }
-      return { start, end }
+      return { start, end, dayIndex: dayIdx }
     })
   }
 
@@ -662,7 +672,7 @@ export default function PlanRoute() {
   const mapSlots: TripSlot[] = routePlaces.map((rp, i) => ({
     slotId: `route-${rp.place.placeId}`,
     tripId: '',
-    dayIndex: 0,
+    dayIndex: schedule[i].dayIndex,
     slotOrder: i,
     placeId: rp.place.placeId,
     place: rp.place,
@@ -1057,8 +1067,38 @@ export default function PlanRoute() {
             {/* Vertical connector line */}
             <div className="absolute left-[22px] top-3 bottom-3 w-0.5 bg-slate-200" />
 
-            {routePlaces.map((rp, i) => (
-              <div key={rp.place.placeId} className="relative flex gap-3 mb-1">
+            {routePlaces.map((rp, i) => {
+              const dayIdx = schedule[i].dayIndex
+              const showDayHeader = i === 0 || dayIdx !== schedule[i - 1].dayIndex
+              const dayColor = DAY_COLORS[dayIdx % DAY_COLORS.length]
+              return (
+              <div key={rp.place.placeId}>
+                {showDayHeader && (
+                  <div className="relative flex items-center gap-2 mb-2 mt-1 z-20">
+                    <div
+                      className="w-11 shrink-0 flex justify-center"
+                    >
+                      <div
+                        className="w-2.5 h-2.5 rounded-full border-2 border-white shadow"
+                        style={{ background: dayColor }}
+                      />
+                    </div>
+                    <div
+                      className="flex-1 flex items-center gap-2 px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-widest"
+                      style={{
+                        background: `${dayColor}15`,
+                        color: dayColor,
+                        borderLeft: `3px solid ${dayColor}`,
+                      }}
+                    >
+                      Ngày {dayIdx + 1}
+                      <span className="text-[10px] font-medium opacity-70 normal-case tracking-normal">
+                        · {format(addDays(new Date(startDate), dayIdx), 'dd/MM')}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              <div className="relative flex gap-3 mb-1">
                 {/* Numbered dot */}
                 <div className="w-11 shrink-0 flex flex-col items-center pt-1 z-10">
                   <div className={`rounded-full border-2 border-white shadow-md flex items-center justify-center text-white text-[10px] font-bold ${i === 0 ? 'w-6 h-6 bg-green-500' : 'w-5 h-5 bg-blue-600'}`}>
@@ -1190,8 +1230,8 @@ export default function PlanRoute() {
                     })()}
                   </div>
 
-                  {/* Transit gap */}
-                  {i < routePlaces.length - 1 && (() => {
+                  {/* Transit gap — ẩn khi sang ngày mới (đã có header "Ngày N" thay) */}
+                  {i < routePlaces.length - 1 && schedule[i].dayIndex === schedule[i + 1].dayIndex && (() => {
                     const a = rp.place
                     const b = routePlaces[i + 1].place
                     
@@ -1219,7 +1259,9 @@ export default function PlanRoute() {
                   })()}
                 </div>
               </div>
-            ))}
+              </div>
+              )
+            })}
           </div>
 
           {/* Summary card */}

@@ -103,7 +103,7 @@ function RoutingPolyline({
 }
 
 // ── Day accent palette ────────────────────────────────────────────────────────
-const DAY_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
+export const DAY_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
 
 // ── Old-plan marker icon (used in comparison mode) ───────────────────────────
 function createOldMarkerIcon(dayIdx: number, orderInDay: number): L.DivIcon {
