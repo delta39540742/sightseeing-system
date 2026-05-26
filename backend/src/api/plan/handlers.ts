@@ -465,13 +465,35 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         const placeInclude = { place_tag_map: true, place_opening_hour: true, place_peak_time: true } as const;
         const CANDIDATE_DB_LIMIT = 300; // hạn chế load: top 300 theo popularity rồi rerank in-mem
 
-        // Build filter: strict → only anchor places. Còn lại filter theo city + mobility ở DB.
+        // Suy ra "tỉnh hiệu lực" cho chuyến đi:
+        //   1) destinationProvince explicit (ưu tiên cao nhất)
+        //   2) Nếu user đã chọn anchor → lấy tỉnh xuất hiện nhiều nhất trong các anchor
+        //   3) Không có ngữ cảnh nào → tự do (không filter tỉnh)
+        // Mục tiêu: gói gọn 1 chuyến đi trong 1 tỉnh để cluster theo địa lý hợp lí.
+        let effectiveProvince: string | undefined = destinationProvince?.trim() || undefined;
+        if (!effectiveProvince && anchorPlaceIds.length > 0) {
+            const anchorRows = await prisma.place.findMany({
+                where: { place_id: { in: anchorPlaceIds.map(BigInt) } },
+                select: { province: true },
+            });
+            const counts = new Map<string, number>();
+            for (const row of anchorRows) {
+                const p = row.province?.trim();
+                if (!p) continue;
+                counts.set(p, (counts.get(p) ?? 0) + 1);
+            }
+            if (counts.size > 0) {
+                effectiveProvince = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+            }
+        }
+
+        // Build filter: strict → only anchor places. Còn lại filter theo province + mobility ở DB.
         const buildWhere = (): any => {
             if (strictMode && anchorPlaceIds.length > 0) {
                 return { place_id: { in: anchorPlaceIds.map(BigInt) } };
             }
             const ands: any[] = [];
-            const provinceFilter = buildProvinceFilter(destinationProvince);
+            const provinceFilter = buildProvinceFilter(effectiveProvince);
             if (provinceFilter) {
                 ands.push(provinceFilter);
             } else if (destinationCity) {
@@ -502,8 +524,18 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         });
         places = filterByRadius(places, destinationLat, destinationLng, destinationRadiusKm);
 
-        // Fallback: city filter quá hẹp → bỏ filter, giữ mobility
-        if (places.length === 0 && !strictMode && (destinationCity || destinationProvince)) {
+        // Khi đã có ngữ cảnh tỉnh (explicit hoặc suy từ anchor) nhưng DB không có
+        // place nào trong tỉnh → báo lỗi rõ ràng thay vì fallback sang tỉnh khác.
+        // Người dùng yêu cầu gói gọn chuyến đi trong 1 tỉnh.
+        if (places.length === 0 && !strictMode && effectiveProvince) {
+            return reply.status(404).send({
+                error: 'NO_PLACES_FOR_PROVINCE',
+                message: `Chưa có địa điểm nào ở tỉnh "${effectiveProvince}". Hãy chọn tỉnh khác hoặc xoá điểm neo.`,
+                province: effectiveProvince,
+            });
+        }
+        // Legacy: chỉ có destinationCity (text) mà không match → bỏ filter, giữ mobility.
+        if (places.length === 0 && !strictMode && destinationCity && !effectiveProvince) {
             places = await prisma.place.findMany({
                 where: mobilityRestrictions?.includes('xe_lan') ? { wheelchair_access: true } : {},
                 include: placeInclude,
@@ -549,8 +581,9 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // bỏ qua greedy planner để tránh mất slot do thiếu lat/lng hoặc lọc sai
         let optimizedPlan: any[];
         if (strictMode && anchorPlaceIds.length > 0) {
-            // Cluster các điểm user chọn theo địa lý (split tại leg dài nhất) rồi pack
-            // với travel-time thực — tránh case nhồi 2 cụm cách 80 km vào cùng ngày.
+            // Cluster các điểm user chọn theo địa lý bằng k-means (mỗi điểm về
+            // cluster có centroid gần nhất). Khi planningAlgorithm='i3ch' thì
+            // chạy thêm best-improvement local search trên cluster assignment.
             optimizedPlan = buildStrictModeSlots(
                 anchorPlaceIds,
                 candidates as any,
@@ -558,6 +591,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 {
                     startDate,
                     dayStarts: dayStarts.length > 0 ? dayStarts : undefined,
+                    algorithm: planningAlgorithm === 'i3ch' ? 'i3ch_strict' : 'kmeans',
                 },
             );
         } else {

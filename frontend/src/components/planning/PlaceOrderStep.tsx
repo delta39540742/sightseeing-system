@@ -12,6 +12,19 @@ import type { Place, PlaceOrderItem } from '@/types'
 
 const DAILY_MINUTES = 600 // 10h/ngày hoạt động
 const TRAVEL_PER_STOP = 25 // phút di chuyển trung bình giữa 2 điểm
+const SPREAD_WARN_KM = 80   // khoảng cách max-pairwise vượt → cảnh báo nhẹ
+const SPREAD_HARD_KM = 200  // vượt → cảnh báo mạnh (nên tách chuyến)
+
+function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371
+  const toRad = (x: number) => (x * Math.PI) / 180
+  const dLat = toRad(bLat - aLat)
+  const dLng = toRad(bLng - aLng)
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
+}
 
 interface SortablePlaceProps {
   item: PlaceOrderItem
@@ -168,6 +181,25 @@ export function PlaceOrderStep({
     return { feasible, totalRequired, totalAvailable, overMinutes, suggestions, mustConflict }
   }, [items, tripDays])
 
+  // Cảnh báo phân tán địa lý: max pairwise distance giữa các điểm đã chọn.
+  // Khi vượt SPREAD_WARN_KM → k-means vẫn cluster đúng nhưng kết quả có thể trông
+  // phi lý (vd Phan Thiết + Đà Nẵng cùng chuyến). > SPREAD_HARD_KM → khuyến nghị tách.
+  const spread = useMemo(() => {
+    if (items.length < 2) return { maxKm: 0, pair: null as null | [string, string] }
+    let maxKm = 0
+    let pair: [string, string] | null = null
+    for (let i = 0; i < items.length; i++) {
+      const a = items[i]!.place
+      for (let j = i + 1; j < items.length; j++) {
+        const b = items[j]!.place
+        if (a.lat == null || a.lng == null || b.lat == null || b.lng == null) continue
+        const d = haversineKm(a.lat, a.lng, b.lat, b.lng)
+        if (d > maxKm) { maxKm = d; pair = [a.name, b.name] }
+      }
+    }
+    return { maxKm, pair }
+  }, [items])
+
   const suggestedIds = new Set(feasibility.suggestions.map((s) => s.placeId))
 
   const fmtTime = (mins: number) => {
@@ -235,6 +267,35 @@ export function PlaceOrderStep({
           )}
         </div>
       </div>
+
+      {/* Cảnh báo phân tán địa lý */}
+      {spread.maxKm >= SPREAD_WARN_KM && spread.pair && (
+        <div
+          className={[
+            'rounded-xl px-4 py-3 flex items-start gap-3 border',
+            spread.maxKm >= SPREAD_HARD_KM
+              ? 'bg-red-50 border-red-300'
+              : 'bg-amber-50 border-amber-200',
+          ].join(' ')}
+        >
+          <AlertTriangle
+            className={`w-4 h-4 mt-0.5 shrink-0 ${spread.maxKm >= SPREAD_HARD_KM ? 'text-red-600' : 'text-amber-500'}`}
+          />
+          <div className="flex-1 min-w-0">
+            <p className={`text-xs font-semibold ${spread.maxKm >= SPREAD_HARD_KM ? 'text-red-700' : 'text-amber-700'}`}>
+              {spread.maxKm >= SPREAD_HARD_KM
+                ? `Các điểm cách nhau quá xa (${Math.round(spread.maxKm)} km) — nên tách thành nhiều chuyến`
+                : `Các điểm khá phân tán (${Math.round(spread.maxKm)} km giữa 2 điểm xa nhất)`}
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5 truncate">
+              Xa nhất: <span className="font-medium">{spread.pair[0]}</span> ↔ <span className="font-medium">{spread.pair[1]}</span>
+              {spread.maxKm >= SPREAD_HARD_KM
+                ? ' · 1 ngày di chuyển có thể ăn hết thời gian tham quan'
+                : ' · cân nhắc dùng chế độ Tối ưu (I3CH) để phân cụm tốt hơn'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Danh sách kéo thả */}
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
