@@ -95,6 +95,15 @@ export interface Trip {
   createdAt: string
   updatedAt: string
   deletedAt?: string | null
+  dayStarts?: TripDayStart[]
+}
+
+export interface TripDayStart {
+  dayIndex: number
+  lat: number
+  lng: number
+  name: string
+  updatedAt?: string
 }
 
 export interface PlanRequest {

@@ -278,9 +278,23 @@ model trip {
   trip_event           trip_event[]
   trip_slot            trip_slot[]
   trip_state_snapshot  trip_state_snapshot[]
+  trip_day_start       trip_day_start[]
 
   @@index([status], map: "idx_trip_status", where: raw("(status = ANY (ARRAY['active'::text, 'draft'::text]))"))
   @@index([user_id, created_at(sort: Desc)], map: "idx_trip_user")
+}
+
+model trip_day_start {
+  trip_id    String   @db.Uuid
+  day_index  Int
+  lat        Float
+  lng        Float
+  name       String
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  trip       trip     @relation(fields: [trip_id], references: [trip_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([trip_id, day_index])
+  @@index([trip_id], map: "idx_trip_day_start_trip")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

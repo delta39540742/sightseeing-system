@@ -76,6 +76,12 @@ export const tripService = {
   unlockSlot: (tripId: string, slotId: string) =>
     api.patch(`/trips/${tripId}/slots/${slotId}`, { isLocked: false }).then((r) => r.data),
 
+  setDayStart: (tripId: string, dayIndex: number, payload: { lat: number; lng: number; name: string }) =>
+    api.put<Trip>(`/trips/${tripId}/day-starts/${dayIndex}`, payload).then((r) => r.data),
+
+  clearDayStart: (tripId: string, dayIndex: number) =>
+    api.delete<Trip>(`/trips/${tripId}/day-starts/${dayIndex}`).then((r) => r.data),
+
   generate: (req: PlanRequest) =>
     api.post<Trip>('/plan/generate', toIsoDateTimeRange(req)).then((r) => r.data),
 

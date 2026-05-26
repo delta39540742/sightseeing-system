@@ -45,6 +45,8 @@ export default function TripDetail() {
   const [lockSheet, setLockSheet] = useState(false)
   const [lockingSlot, setLockingSlot] = useState<TripSlot | null>(null)
   const [lockTime, setLockTime] = useState('')
+  const [dayStartSheet, setDayStartSheet] = useState(false)
+  const [dayStartDayIdx, setDayStartDayIdx] = useState<number | null>(null)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['trip', tripId],
@@ -98,6 +100,39 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
     },
     onError: () => toast.error('Không thể bỏ cố định giờ, thử lại sau'),
   })
+
+  const { mutate: doSetDayStart, isPending: isSettingDayStart } = useMutation({
+    mutationFn: (args: { dayIndex: number; lat: number; lng: number; name: string }) =>
+      tripService.setDayStart(tripId!, args.dayIndex, { lat: args.lat, lng: args.lng, name: args.name }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+      toast.success('Đã cập nhật điểm bắt đầu và sắp xếp lại ngày')
+      setDayStartSheet(false)
+      setDayStartDayIdx(null)
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { status?: number; data?: { message?: string } } }
+      if (e?.response?.status === 409) {
+        toast.error(e.response.data?.message ?? 'Không thể đổi điểm bắt đầu')
+      } else {
+        toast.error('Không thể đổi điểm bắt đầu, thử lại sau')
+      }
+    },
+  })
+
+  const { mutate: doClearDayStart } = useMutation({
+    mutationFn: (dayIndex: number) => tripService.clearDayStart(tripId!, dayIndex),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trip', tripId] })
+      toast.success('Đã xoá điểm bắt đầu')
+    },
+    onError: () => toast.error('Không thể xoá, thử lại sau'),
+  })
+
+  const openDayStartSheet = (dayIndex: number) => {
+    setDayStartDayIdx(dayIndex)
+    setDayStartSheet(true)
+  }
 
   const handleLockToggle = (slot: TripSlot) => {
     setLockingSlot(slot)
@@ -335,7 +370,12 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
                 );
               })()
             )}
-            <Timeline onAddSlot={handleOpenAddSlot} onLockToggle={handleLockToggle} />
+            <Timeline
+              onAddSlot={handleOpenAddSlot}
+              onLockToggle={handleLockToggle}
+              onEditDayStart={openDayStartSheet}
+              onClearDayStart={(d) => doClearDayStart(d)}
+            />
 
             {/* Bottom action bar */}
             <div className="border-t border-gray-100 p-3 shrink-0 space-y-2">
@@ -552,6 +592,69 @@ const { data: incidentData } = useQuery<MonitorAlert | { status: string }>({
                 {isLocking ? 'Đang lưu…' : 'Cố định giờ này'}
               </button>
             </>
+          )}
+        </div>
+      </BottomSheet>
+
+      {/* Day-start picker BottomSheet */}
+      <BottomSheet
+        open={dayStartSheet}
+        onClose={() => { setDayStartSheet(false); setDayStartDayIdx(null) }}
+        title={dayStartDayIdx !== null ? `Điểm bắt đầu — Ngày ${dayStartDayIdx + 1}` : 'Điểm bắt đầu'}
+      >
+        <div className="px-4 pb-6 space-y-3">
+          <p className="text-xs text-gray-500">
+            Chọn nơi xuất phát buổi sáng (khách sạn, quán cafe, nhà ga…). Hệ thống sẽ tự sắp xếp lại các điểm trong ngày theo khoảng cách gần nhất từ đây.
+          </p>
+
+          {/* Quick pick từ các slot của ngày */}
+          {dayStartDayIdx !== null && (() => {
+            const daySlots = trip?.slots.filter((s) => s.dayIndex === dayStartDayIdx && s.place) ?? []
+            if (daySlots.length === 0) return null
+            return (
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-semibold text-gray-600">Chọn nhanh từ các điểm trong ngày:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {daySlots.map((s) => (
+                    <button
+                      key={s.slotId}
+                      type="button"
+                      disabled={isSettingDayStart}
+                      onClick={() => doSetDayStart({
+                        dayIndex: dayStartDayIdx!,
+                        lat: s.place!.lat,
+                        lng: s.place!.lng,
+                        name: s.place!.name,
+                      })}
+                      className="text-xs px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 disabled:opacity-50 truncate max-w-[180px]"
+                      title={s.place!.name}
+                    >
+                      {s.place!.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          <div className="border-t border-gray-100 pt-3">
+            <p className="text-[11px] font-semibold text-gray-600 mb-1.5">Hoặc tìm địa điểm khác:</p>
+            <PlaceSearchBar
+              placeholder="Khách sạn, quán cafe, hoặc dán link Google Maps..."
+              onPlaceSelect={(place) => {
+                if (dayStartDayIdx === null) return
+                doSetDayStart({
+                  dayIndex: dayStartDayIdx,
+                  lat: place.lat,
+                  lng: place.lng,
+                  name: place.name,
+                })
+              }}
+            />
+          </div>
+
+          {isSettingDayStart && (
+            <p className="text-xs text-center text-gray-400">Đang cập nhật và sắp xếp lại…</p>
           )}
         </div>
       </BottomSheet>

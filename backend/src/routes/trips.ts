@@ -66,7 +66,30 @@ function serializeTrip(t: any) {
     updatedAt: t.updated_at,
     deletedAt: t.deleted_at ?? null,
     slots: (t.trip_slot ?? []).map(serializeSlot),
+    dayStarts: (t.trip_day_start ?? []).map((d: any) => ({
+      dayIndex: d.day_index,
+      lat: d.lat,
+      lng: d.lng,
+      name: d.name,
+      updatedAt: d.updated_at,
+    })),
   };
+}
+
+// ─── Day-start reorder helpers ──────────────────────────────────────────────
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+// 25 km/h trung bình + 5 phút buffer (giống URBAN_KMH/TRAVEL_BUFFER trong solver.ts)
+function travelMin(km: number): number {
+  return Math.ceil((km / 25) * 60) + 5;
 }
 
 const slotInclude = {
@@ -83,6 +106,11 @@ const slotInclude = {
   orderBy: [{ day_index: 'asc' as const }, { slot_order: 'asc' as const }],
 };
 
+const tripInclude = {
+  trip_slot: slotInclude,
+  trip_day_start: { orderBy: { day_index: 'asc' as const } },
+};
+
 // ─── Plugin ─────────────────────────────────────────────────────────────────
 
 export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
@@ -97,7 +125,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
 
       const trips = await prisma.trip.findMany({
         where: { user_id: appUser.user_id, deleted_at: null },
-        include: { trip_slot: slotInclude },
+        include: tripInclude,
         orderBy: { created_at: 'desc' },
       });
 
@@ -118,7 +146,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
 
       const trips = await prisma.trip.findMany({
         where: { user_id: appUser.user_id, deleted_at: { not: null } },
-        include: { trip_slot: slotInclude },
+        include: tripInclude,
         orderBy: { deleted_at: 'desc' },
       });
 
@@ -142,7 +170,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
 
         const trip = await prisma.trip.findFirst({
           where: { trip_id: request.params.tripId, user_id: appUser.user_id, deleted_at: null },
-          include: { trip_slot: slotInclude },
+          include: tripInclude,
         });
         if (!trip) return reply.status(404).send({ error: 'Trip not found' });
 
@@ -245,7 +273,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
             ...(body.budget_total !== undefined && { budget_total: parseInt(body.budget_total) }),
             updated_at: new Date(),
           },
-          include: { trip_slot: slotInclude },
+          include: tripInclude,
         });
 
         return reply.send(serializeTrip(updated));
@@ -304,7 +332,7 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
         const restored = await prisma.trip.update({
           where: { trip_id: request.params.tripId },
           data: { deleted_at: null, updated_at: new Date() },
-          include: { trip_slot: slotInclude },
+          include: tripInclude,
         });
 
         return reply.send(serializeTrip(restored));
@@ -476,4 +504,183 @@ export async function tripsPlugin(fastify: FastifyInstance): Promise<void> {
       }
     },
   )
+
+  // PUT /api/trips/:tripId/day-starts/:dayIndex — set/update điểm bắt đầu
+  // của 1 ngày trên trip đã lưu, sau đó re-order slot trong ngày đó (NN từ điểm
+  // mới) và recompute planned_start/planned_end. Cấm: ngày có slot completed
+  // hoặc is_locked → 409.
+  fastify.put<{
+    Params: { tripId: string; dayIndex: string };
+    Body:   { lat: number; lng: number; name: string };
+  }>(
+    '/:tripId/day-starts/:dayIndex',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const tripId = request.params.tripId;
+        const dayIndex = parseInt(request.params.dayIndex, 10);
+        if (!Number.isFinite(dayIndex) || dayIndex < 0) {
+          return reply.status(400).send({ error: 'Invalid dayIndex' });
+        }
+
+        const { lat, lng, name } = request.body;
+        if (typeof lat !== 'number' || typeof lng !== 'number' || !name) {
+          return reply.status(400).send({ error: 'lat, lng, name là bắt buộc' });
+        }
+
+        const trip = await prisma.trip.findFirst({
+          where: { trip_id: tripId, user_id: appUser.user_id, deleted_at: null },
+        });
+        if (!trip) return reply.status(404).send({ error: 'Trip not found' });
+
+        // Load slots của ngày, include place để lấy toạ độ + duration
+        const slots = await prisma.trip_slot.findMany({
+          where: { trip_id: tripId, day_index: dayIndex, status: { not: 'replaced' } },
+          include: { place: true },
+          orderBy: { slot_order: 'asc' },
+        });
+
+        if (slots.some((s) => s.status === 'completed')) {
+          return reply.status(409).send({
+            error: 'DAY_HAS_COMPLETED_SLOT',
+            message: 'Ngày này đã có điểm hoàn thành — không thể đổi điểm bắt đầu',
+          });
+        }
+        if (slots.some((s) => s.is_locked)) {
+          return reply.status(409).send({
+            error: 'DAY_HAS_LOCKED_SLOT',
+            message: 'Ngày này có slot đã cố định giờ — bỏ cố định trước khi đổi điểm bắt đầu',
+          });
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.trip_day_start.upsert({
+            where:  { trip_id_day_index: { trip_id: tripId, day_index: dayIndex } },
+            update: { lat, lng, name, updated_at: new Date() },
+            create: { trip_id: tripId, day_index: dayIndex, lat, lng, name },
+          });
+
+          if (slots.length === 0) return;
+
+          // NN order từ (lat, lng) — slot không có toạ độ rớt về cuối theo thứ tự gốc
+          const withCoords = slots.filter(
+            (s) => s.place?.lat != null && s.place?.lng != null,
+          );
+          const noCoords = slots.filter(
+            (s) => !(s.place?.lat != null && s.place?.lng != null),
+          );
+
+          const ordered: typeof slots = [];
+          const remaining = [...withCoords];
+          let curLat = lat;
+          let curLng = lng;
+          while (remaining.length > 0) {
+            let bestIdx = 0;
+            let bestD = Infinity;
+            for (let i = 0; i < remaining.length; i++) {
+              const p = remaining[i]!.place!;
+              const d = haversineKm(curLat, curLng, p.lat!, p.lng!);
+              if (d < bestD) { bestD = d; bestIdx = i; }
+            }
+            const picked = remaining.splice(bestIdx, 1)[0]!;
+            ordered.push(picked);
+            curLat = picked.place!.lat!;
+            curLng = picked.place!.lng!;
+          }
+          ordered.push(...noCoords);
+
+          // Day base time = giờ:phút của slot có planned_start nhỏ nhất, giữ nguyên
+          // ngày tháng theo slot đầu để khỏi shift timezone.
+          const earliest = slots.reduce((a, b) =>
+            a.planned_start < b.planned_start ? a : b,
+          );
+          let cursor = new Date(earliest.planned_start);
+
+          // Áp dụng update: bump version để né unique (trip_id, day_index, slot_order, version)
+          for (let i = 0; i < ordered.length; i++) {
+            const s = ordered[i]!;
+            if (i > 0) {
+              const prev = ordered[i - 1]!;
+              if (prev.place?.lat != null && prev.place?.lng != null &&
+                  s.place?.lat != null && s.place?.lng != null) {
+                const km = haversineKm(prev.place.lat, prev.place.lng, s.place.lat, s.place.lng);
+                cursor = new Date(cursor.getTime() + travelMin(km) * 60_000);
+              }
+            }
+            const start = new Date(cursor);
+            const end   = new Date(start.getTime() + (s.place?.avg_visit_duration_min ?? 60) * 60_000);
+            cursor = end;
+
+            await tx.trip_slot.update({
+              where: { slot_id: s.slot_id },
+              data: {
+                slot_order:    i,
+                planned_start: start,
+                planned_end:   end,
+                version:       s.version + 1,
+              },
+            });
+          }
+
+          await tx.trip.update({
+            where: { trip_id: tripId },
+            data:  { updated_at: new Date() },
+          });
+        });
+
+        const refreshed = await prisma.trip.findUnique({
+          where: { trip_id: tripId },
+          include: tripInclude,
+        });
+        return reply.send(serializeTrip(refreshed));
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // DELETE /api/trips/:tripId/day-starts/:dayIndex — bỏ điểm bắt đầu cho 1 ngày.
+  // KHÔNG đụng tới slot_order/planned_start hiện có (user đã chấp nhận thứ tự đó).
+  fastify.delete<{ Params: { tripId: string; dayIndex: string } }>(
+    '/:tripId/day-starts/:dayIndex',
+    { preHandler: verifyToken },
+    async (request, reply) => {
+      try {
+        const appUser = await prisma.app_user.findUnique({
+          where: { firebase_uid: request.user!.uid },
+        });
+        if (!appUser) return reply.status(401).send({ error: 'User not found' });
+
+        const tripId = request.params.tripId;
+        const dayIndex = parseInt(request.params.dayIndex, 10);
+        if (!Number.isFinite(dayIndex) || dayIndex < 0) {
+          return reply.status(400).send({ error: 'Invalid dayIndex' });
+        }
+
+        const trip = await prisma.trip.findFirst({
+          where: { trip_id: tripId, user_id: appUser.user_id, deleted_at: null },
+        });
+        if (!trip) return reply.status(404).send({ error: 'Trip not found' });
+
+        await prisma.trip_day_start.deleteMany({
+          where: { trip_id: tripId, day_index: dayIndex },
+        });
+
+        const refreshed = await prisma.trip.findUnique({
+          where: { trip_id: tripId },
+          include: tripInclude,
+        });
+        return reply.send(serializeTrip(refreshed));
+      } catch (error) {
+        fastify.log.error(error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
 }

@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useDroppable } from '@dnd-kit/core'
-import { ChevronDown, ChevronUp, Calendar, Clock, DollarSign, Plus } from 'lucide-react'
+import { ChevronDown, ChevronUp, Calendar, Clock, DollarSign, Plus, MapPin, X, Pencil } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { vi } from 'date-fns/locale'
-import type { TripSlot } from '@/types'
+import type { TripSlot, TripDayStart } from '@/types'
 import { SlotCard } from './SlotCard'
 
 interface DayGroupProps {
@@ -16,9 +16,17 @@ interface DayGroupProps {
   onAddSlot?: (dayIndex: number) => void
   onLockToggle?: (slot: TripSlot) => void
   dayColors: string[]
+  dayStart?: TripDayStart | null
+  onEditDayStart?: (dayIndex: number) => void
+  onClearDayStart?: (dayIndex: number) => void
+  /** "completed" | "locked" | null. Khi != null, không cho sửa điểm bắt đầu — show lý do. */
+  dayStartBlockedReason?: 'completed' | 'locked' | 'past' | null
 }
 
-export function DayGroup({ dayIndex, date, slots, focusedSlotId, onFocus, onAddSlot, onLockToggle, dayColors }: DayGroupProps) {
+export function DayGroup({
+  dayIndex, date, slots, focusedSlotId, onFocus, onAddSlot, onLockToggle, dayColors,
+  dayStart, onEditDayStart, onClearDayStart, dayStartBlockedReason,
+}: DayGroupProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayIndex}` })
 
@@ -92,6 +100,60 @@ export function DayGroup({ dayIndex, date, slots, focusedSlotId, onFocus, onAddS
           </button>
         )}
       </div>
+
+      {/* Day-start editor — chỉ render khi caller cung cấp onEditDayStart */}
+      {!collapsed && onEditDayStart && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-xs">
+          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <span className="text-slate-500 shrink-0">Bắt đầu:</span>
+          {dayStart ? (
+            <span className="flex-1 truncate text-slate-700 font-medium" title={dayStart.name}>
+              {dayStart.name}
+            </span>
+          ) : (
+            <span className="flex-1 italic text-slate-400">
+              Mặc định (theo slot đầu)
+            </span>
+          )}
+
+          {dayStartBlockedReason ? (
+            <span
+              className="text-[10px] text-slate-400 italic shrink-0"
+              title={
+                dayStartBlockedReason === 'completed' ? 'Có slot đã hoàn thành' :
+                dayStartBlockedReason === 'locked'    ? 'Có slot đã cố định giờ' :
+                                                       'Ngày đã qua'
+              }
+            >
+              {dayStartBlockedReason === 'completed' ? 'Đã có hoàn thành' :
+               dayStartBlockedReason === 'locked'    ? 'Có slot cố định' :
+                                                      'Ngày đã qua'}
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => onEditDayStart(dayIndex)}
+                className="text-blue-600 hover:text-blue-800 flex items-center gap-1 shrink-0"
+                title={dayStart ? 'Đổi điểm bắt đầu' : 'Đặt điểm bắt đầu'}
+              >
+                <Pencil className="w-3 h-3" />
+                {dayStart ? 'Đổi' : 'Đặt'}
+              </button>
+              {dayStart && onClearDayStart && (
+                <button
+                  type="button"
+                  onClick={() => onClearDayStart(dayIndex)}
+                  className="text-slate-400 hover:text-red-500 shrink-0"
+                  aria-label={`Xoá điểm bắt đầu ngày ${dayIndex + 1}`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Slot list */}
       {!collapsed && (

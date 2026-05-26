@@ -23,9 +23,13 @@ interface TimelineProps {
   onAddSlot?: (dayIndex: number) => void
   /** Callback triggered when user clicks lock/unlock on a slot */
   onLockToggle?: (slot: TripSlot) => void
+  /** Open the day-start editor sheet for a specific day */
+  onEditDayStart?: (dayIndex: number) => void
+  /** Clear the persisted day-start for a specific day */
+  onClearDayStart?: (dayIndex: number) => void
 }
 
-export function Timeline({ onAddSlot, onLockToggle }: TimelineProps) {
+export function Timeline({ onAddSlot, onLockToggle, onEditDayStart, onClearDayStart }: TimelineProps) {
   const {
     trip, pendingSlots, hasPending, focusedSlotId,
     movePendingSlot, movePendingToDay, commitPending, discardPending,
@@ -181,19 +185,35 @@ export function Timeline({ onAddSlot, onLockToggle }: TimelineProps) {
           onDragOver={onDragOver}
           onDragEnd={onDragEnd}
         >
-          {Array.from({ length: days }, (_, d) => (
-            <DayGroup
-              key={d}
-              dayIndex={d}
-              date={format(addDays(parseISO(startDate), d), 'yyyy-MM-dd')}
-              slots={slotsByDay[d] ?? []}
-              focusedSlotId={focusedSlotId}
-              onFocus={setFocus}
-              onAddSlot={onAddSlot}
-              onLockToggle={onLockToggle}
-              dayColors={DAY_COLORS}
-            />
-          ))}
+          {Array.from({ length: days }, (_, d) => {
+            const daySlots = slotsByDay[d] ?? []
+            const dayDate = parseISO(format(addDays(parseISO(startDate), d), 'yyyy-MM-dd'))
+            const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+            const isPast = dayDate.getTime() < todayStart.getTime()
+            const dayStart = (trip?.dayStarts ?? []).find((x) => x.dayIndex === d) ?? null
+            const blocked: 'completed' | 'locked' | 'past' | null =
+              isPast                                       ? 'past'      :
+              daySlots.some((s) => s.status === 'completed') ? 'completed' :
+              daySlots.some((s) => s.isLocked)             ? 'locked'    :
+                                                             null
+            return (
+              <DayGroup
+                key={d}
+                dayIndex={d}
+                date={format(addDays(parseISO(startDate), d), 'yyyy-MM-dd')}
+                slots={daySlots}
+                focusedSlotId={focusedSlotId}
+                onFocus={setFocus}
+                onAddSlot={onAddSlot}
+                onLockToggle={onLockToggle}
+                dayColors={DAY_COLORS}
+                dayStart={dayStart}
+                onEditDayStart={onEditDayStart}
+                onClearDayStart={onClearDayStart}
+                dayStartBlockedReason={blocked}
+              />
+            )
+          })}
 
           <DragOverlay>
             {activeSlot && (

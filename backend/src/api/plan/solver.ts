@@ -883,13 +883,101 @@ export function optimizeWith2Opt(
 
 // ─── Strict-mode planner (user-picked places, geo-clustered per day) ────────
 
+// Cap số điểm theo loại hoạt động cho mỗi ngày. Khoá là tag_id (xem bảng
+// place_tag): 1=beach, 2=mountain, 3=culture, 4=food, 5=spiritual, 6=shopping,
+// 7=entertainment, 8=nature, 9=sport, 10=landmark.
+const STRICT_MODE_TAG_CAPS_BY_ID: Record<number, number> = {
+  1: 2,   // beach — phơi nắng nhiều quá mệt
+  2: 1,   // mountain — leo núi tốn cả ngày
+  3: 3,   // culture
+  4: 3,   // food — 3 bữa chính
+  5: 3,   // spiritual
+  6: 2,   // shopping
+  7: 2,   // entertainment
+  8: 2,   // nature
+  9: 1,   // sport
+  10: 4,  // landmark — chụp ảnh nhanh, có thể nhiều
+};
+const STRICT_MODE_DEFAULT_TAG_CAP = 3;
+// Phạt mỗi lần vượt cap = bao nhiêu km travel tương đương trong cost function
+const STRICT_MODE_VIOLATION_PENALTY_KM = 50;
+
+function countCapViolations(places: Place[]): number {
+  const counts: Record<number, number> = {};
+  for (const p of places) {
+    const tagIds = ((p as { tagIds?: number[] }).tagIds) ?? [];
+    for (const t of tagIds) counts[t] = (counts[t] || 0) + 1;
+  }
+  let v = 0;
+  for (const t of Object.keys(counts)) {
+    const cap = STRICT_MODE_TAG_CAPS_BY_ID[Number(t)] ?? STRICT_MODE_DEFAULT_TAG_CAP;
+    const c = counts[Number(t)]!;
+    if (c > cap) v += c - cap;
+  }
+  return v;
+}
+
+function dayPartitionCost(ordered: Place[], start: number, end: number): number {
+  // end is exclusive
+  let travel = 0;
+  for (let i = start + 1; i < end; i++) {
+    travel += haversineKm(
+      ordered[i - 1]!.lat, ordered[i - 1]!.lng,
+      ordered[i]!.lat, ordered[i]!.lng,
+    );
+  }
+  const violations = countCapViolations(ordered.slice(start, end));
+  return travel + violations * STRICT_MODE_VIOLATION_PENALTY_KM;
+}
+
+/**
+ * DP partition NN-ordered places thành đúng `days` ngày sao cho tổng cost
+ * (travel nội ngày + violation penalty) là nhỏ nhất. Cho phép ngày trống nếu
+ * places ít hơn days. Trả về mảng cut indices [c1, c2, ...] có độ dài days+1
+ * với c0=0 và c_{days}=N; ngày d = ordered[c_d..c_{d+1}-1].
+ */
+function partitionByDP(ordered: Place[], days: number): number[] {
+  const N = ordered.length;
+  if (days <= 1) return [0, N];
+
+  const INF = Number.POSITIVE_INFINITY;
+  const dp: number[][] = Array.from({ length: N + 1 }, () => new Array(days + 1).fill(INF));
+  const parent: number[][] = Array.from({ length: N + 1 }, () => new Array(days + 1).fill(-1));
+  dp[0]![0] = 0;
+
+  for (let d = 1; d <= days; d++) {
+    for (let i = 0; i <= N; i++) {
+      // ngày thứ d chứa ordered[j..i-1], các ngày trước chứa ordered[0..j-1]
+      for (let j = 0; j <= i; j++) {
+        const prev = dp[j]![d - 1];
+        if (prev === INF) continue;
+        const cost = prev + dayPartitionCost(ordered, j, i);
+        if (cost < dp[i]![d]!) {
+          dp[i]![d] = cost;
+          parent[i]![d] = j;
+        }
+      }
+    }
+  }
+
+  const cuts: number[] = new Array(days + 1);
+  cuts[days] = N;
+  let i = N;
+  for (let d = days; d > 0; d--) {
+    const j = parent[i]![d]!;
+    cuts[d - 1] = j;
+    i = j;
+  }
+  return cuts;
+}
+
 /**
  * Khi user da chon san anchorPlaceIds, không cần greedy scoring. Nhưng phải:
  *  1. Tính travel-time thật theo haversine (không phải 30 phut hard-code) — tránh
  *     case 2 slot kề nhau cách nhau 80 km mà chỉ buffer 30 phút.
- *  2. Cluster các điểm theo địa lý rồi phân ra `days` ngày — split tại các leg dài
- *     nhất nên các cụm tự nhiên (vd Nha Trang vs Phan Rang) tách ngày khác nhau,
- *     không nhồi cả cụm xa vào cuối ngày.
+ *  2. Cluster các điểm theo địa lý + cap-per-tag rồi phân ra `days` ngày — DP
+ *     chọn split tối thiểu hoá (travel nội ngày + violation penalty). Tag cap
+ *     tránh nhồi 4 bữa ăn vào 1 ngày, đồng thời geometry giữ các cụm gần nhau.
  *  3. Trong từng ngày, sort lại theo nearest-neighbor từ dayStart để rút quãng đi.
  *  4. Roll over nếu vượt DAY_END_MIN — phòng case cụm quá to.
  *
@@ -945,27 +1033,18 @@ export function buildStrictModeSlots(
     curLng = next.lng;
   }
 
-  // ── Step 2: Split tại `days - 1` leg dài nhất → mỗi cụm địa lý = 1 ngày ───
-  // ordered[i] → ordered[i+1] là leg[i]. Cut ở leg[k] nghĩa là ordered[k+1] mở
-  // ngày mới.
-  const legs = ordered.slice(0, -1).map((p, i) =>
-    haversineKm(p.lat, p.lng, ordered[i + 1]!.lat, ordered[i + 1]!.lng),
-  );
-  const numCuts = Math.min(Math.max(0, days - 1), legs.length);
-  const cutSet = new Set<number>(
-    legs
-      .map((dist, idx) => ({ dist, idx }))
-      .sort((a, b) => b.dist - a.dist)
-      .slice(0, numCuts)
-      .map((x) => x.idx),
-  );
-
+  // ── Step 2: DP partition theo geometry + tag cap ─────────────────────────
+  // Tìm cách chia ordered thành `days` ngày sao cho tổng (travel nội ngày +
+  // violation penalty cho từng tag vượt cap) là nhỏ nhất. Tự nhiên sẽ:
+  //  • cắt ở leg dài để cụm địa lý gần nhau ở cùng ngày
+  //  • spread các điểm cùng tag (vd 4 food) ra nhiều ngày khi geometry cho phép
+  const targetDays = Math.max(1, days);
+  const cuts = partitionByDP(ordered, targetDays);
   const dayOf: number[] = new Array(ordered.length);
-  let dIdx = 0;
-  for (let i = 0; i < ordered.length; i++) {
-    dayOf[i] = dIdx;
-    if (cutSet.has(i)) dIdx++;
+  for (let d = 0; d < targetDays; d++) {
+    for (let i = cuts[d]!; i < cuts[d + 1]!; i++) dayOf[i] = d;
   }
+  const dIdx = targetDays - 1;
 
   // ── Step 3: Group theo day, sort NN từ dayStart, pack với travel-time thực ─
   const slots: ReturnType<typeof buildStrictModeSlots> = [];
