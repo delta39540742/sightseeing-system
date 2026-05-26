@@ -917,69 +917,216 @@ function countCapViolations(places: Place[]): number {
   return v;
 }
 
-function dayPartitionCost(ordered: Place[], start: number, end: number): number {
-  // end is exclusive
-  let travel = 0;
-  for (let i = start + 1; i < end; i++) {
-    travel += haversineKm(
-      ordered[i - 1]!.lat, ordered[i - 1]!.lng,
-      ordered[i]!.lat, ordered[i]!.lng,
-    );
+// K-means clustering for strict mode. Trả về mảng cluster index (0..K-1) cho mỗi place.
+// Seed bằng farthest-first (deterministic) để cluster phân tách rõ về địa lý;
+// Lloyd's iteration tới khi assignment ổn định.
+function farthestFirstSeed(places: Place[], K: number): number[] {
+  const seeds: number[] = [];
+  if (places.length === 0 || K === 0) return seeds;
+  // Seed đầu: điểm có index 0 (deterministic; assignment sẽ tự cân lại)
+  seeds.push(0);
+  while (seeds.length < K && seeds.length < places.length) {
+    let bestIdx = -1;
+    let bestMinDist = -1;
+    for (let i = 0; i < places.length; i++) {
+      if (seeds.includes(i)) continue;
+      let minDist = Infinity;
+      for (const s of seeds) {
+        const d = haversineKm(places[i]!.lat, places[i]!.lng, places[s]!.lat, places[s]!.lng);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist > bestMinDist) { bestMinDist = minDist; bestIdx = i; }
+    }
+    if (bestIdx === -1) break;
+    seeds.push(bestIdx);
   }
-  const violations = countCapViolations(ordered.slice(start, end));
-  return travel + violations * STRICT_MODE_VIOLATION_PENALTY_KM;
+  return seeds;
 }
 
-/**
- * DP partition NN-ordered places thành đúng `days` ngày sao cho tổng cost
- * (travel nội ngày + violation penalty) là nhỏ nhất. Cho phép ngày trống nếu
- * places ít hơn days. Trả về mảng cut indices [c1, c2, ...] có độ dài days+1
- * với c0=0 và c_{days}=N; ngày d = ordered[c_d..c_{d+1}-1].
- */
-function partitionByDP(ordered: Place[], days: number): number[] {
-  const N = ordered.length;
-  if (days <= 1) return [0, N];
+function kMeansCluster(places: Place[], K: number, maxIter = 30): number[] {
+  const N = places.length;
+  if (N === 0) return [];
+  if (K <= 1) return new Array(N).fill(0);
+  if (K >= N) return places.map((_, i) => i);
 
-  const INF = Number.POSITIVE_INFINITY;
-  const dp: number[][] = Array.from({ length: N + 1 }, () => new Array(days + 1).fill(INF));
-  const parent: number[][] = Array.from({ length: N + 1 }, () => new Array(days + 1).fill(-1));
-  dp[0]![0] = 0;
+  const seedIdx = farthestFirstSeed(places, K);
+  let centroids = seedIdx.map((i) => ({ lat: places[i]!.lat, lng: places[i]!.lng }));
+  const assign = new Array<number>(N).fill(0);
 
-  for (let d = 1; d <= days; d++) {
-    for (let i = 0; i <= N; i++) {
-      // ngày thứ d chứa ordered[j..i-1], các ngày trước chứa ordered[0..j-1]
-      for (let j = 0; j <= i; j++) {
-        const prev = dp[j]![d - 1];
-        if (prev === INF) continue;
-        const cost = prev + dayPartitionCost(ordered, j, i);
-        if (cost < dp[i]![d]!) {
-          dp[i]![d] = cost;
-          parent[i]![d] = j;
-        }
+  for (let iter = 0; iter < maxIter; iter++) {
+    let changed = false;
+    for (let i = 0; i < N; i++) {
+      let bestK = 0;
+      let bestD = Infinity;
+      for (let k = 0; k < K; k++) {
+        const d = haversineKm(places[i]!.lat, places[i]!.lng, centroids[k]!.lat, centroids[k]!.lng);
+        if (d < bestD) { bestD = d; bestK = k; }
       }
+      if (assign[i] !== bestK) { assign[i] = bestK; changed = true; }
+    }
+    if (!changed) break;
+    const sums = Array.from({ length: K }, () => ({ lat: 0, lng: 0, n: 0 }));
+    for (let i = 0; i < N; i++) {
+      const k = assign[i]!;
+      sums[k]!.lat += places[i]!.lat;
+      sums[k]!.lng += places[i]!.lng;
+      sums[k]!.n++;
+    }
+    centroids = sums.map((s, k) =>
+      s.n > 0 ? { lat: s.lat / s.n, lng: s.lng / s.n } : centroids[k]!
+    );
+  }
+
+  // Rebalance: cluster rỗng → lấy điểm xa nhất từ cluster lớn nhất sang lấp
+  const counts = new Array(K).fill(0);
+  for (const k of assign) counts[k]++;
+  for (let k = 0; k < K; k++) {
+    if (counts[k] > 0) continue;
+    let biggestK = 0;
+    for (let kk = 0; kk < K; kk++) if (counts[kk] > counts[biggestK]) biggestK = kk;
+    if (counts[biggestK] <= 1) continue;
+    let farthestI = -1;
+    let farthestD = -1;
+    for (let i = 0; i < N; i++) {
+      if (assign[i] !== biggestK) continue;
+      const d = haversineKm(
+        places[i]!.lat, places[i]!.lng,
+        centroids[biggestK]!.lat, centroids[biggestK]!.lng,
+      );
+      if (d > farthestD) { farthestD = d; farthestI = i; }
+    }
+    if (farthestI >= 0) {
+      assign[farthestI] = k;
+      counts[biggestK]--;
+      counts[k]++;
     }
   }
+  return assign;
+}
 
-  const cuts: number[] = new Array(days + 1);
-  cuts[days] = N;
-  let i = N;
-  for (let d = days; d > 0; d--) {
-    const j = parent[i]![d]!;
-    cuts[d - 1] = j;
-    i = j;
+// Cost của một assignment: tổng (NN-travel nội cụm) + (violation penalty per cụm).
+// Dùng cho i3ch-strict improve để so sánh các cluster assignment khác nhau.
+function strictAssignmentCost(places: Place[], assign: number[], K: number): number {
+  let total = 0;
+  for (let k = 0; k < K; k++) {
+    const day = places.filter((_, i) => assign[i] === k);
+    if (day.length === 0) continue;
+    const pool = [...day];
+    let cur = pool.shift()!;
+    while (pool.length > 0) {
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < pool.length; i++) {
+        const d = haversineKm(cur.lat, cur.lng, pool[i]!.lat, pool[i]!.lng);
+        if (d < bd) { bd = d; bi = i; }
+      }
+      total += bd;
+      cur = pool.splice(bi, 1)[0]!;
+    }
+    total += countCapViolations(day) * STRICT_MODE_VIOLATION_PENALTY_KM;
   }
-  return cuts;
+  return total;
+}
+
+// I3CH cho strict mode: bắt đầu từ k-means assignment, áp dụng best-improvement
+// move (đổi cluster của 1 điểm sang cluster khác) tới khi không cải thiện hoặc
+// hết time budget. Không thêm/bỏ điểm — anchor luôn được giữ.
+function i3chStrictImprove(
+  places: Place[],
+  initialAssign: number[],
+  K: number,
+  timeBudgetMs: number,
+): number[] {
+  const N = places.length;
+  if (N <= 1 || K <= 1) return [...initialAssign];
+
+  let assign = [...initialAssign];
+  let bestCost = strictAssignmentCost(places, assign, K);
+  const startTime = Date.now();
+  let improved = true;
+
+  while (improved && Date.now() - startTime < timeBudgetMs) {
+    improved = false;
+    let bestMove: { i: number; from: number; to: number; cost: number } | null = null;
+    for (let i = 0; i < N; i++) {
+      const orig = assign[i]!;
+      for (let kp = 0; kp < K; kp++) {
+        if (kp === orig) continue;
+        const cntOrig = assign.filter((x) => x === orig).length;
+        if (cntOrig <= 1) continue; // không để cluster rỗng
+        assign[i] = kp;
+        const c = strictAssignmentCost(places, assign, K);
+        if (c < bestCost - 0.01 && (!bestMove || c < bestMove.cost)) {
+          bestMove = { i, from: orig, to: kp, cost: c };
+        }
+        assign[i] = orig;
+      }
+    }
+    if (bestMove) {
+      assign[bestMove.i] = bestMove.to;
+      bestCost = bestMove.cost;
+      improved = true;
+    }
+  }
+  return assign;
+}
+
+// Sắp xếp các cluster theo thứ tự đi (NN từ start) để cluster gần start = day 0,
+// cluster xa nhất = day cuối. Trả về mapping clusterId → dayIndex.
+function orderClustersByFlow(
+  places: Place[],
+  assign: number[],
+  K: number,
+  start: { lat: number; lng: number },
+): number[] {
+  const centroids: Array<{ lat: number; lng: number } | null> = new Array(K).fill(null);
+  const sums = Array.from({ length: K }, () => ({ lat: 0, lng: 0, n: 0 }));
+  for (let i = 0; i < places.length; i++) {
+    const k = assign[i]!;
+    sums[k]!.lat += places[i]!.lat;
+    sums[k]!.lng += places[i]!.lng;
+    sums[k]!.n++;
+  }
+  for (let k = 0; k < K; k++) {
+    if (sums[k]!.n > 0) centroids[k] = { lat: sums[k]!.lat / sums[k]!.n, lng: sums[k]!.lng / sums[k]!.n };
+  }
+  const remaining = new Set<number>();
+  for (let k = 0; k < K; k++) if (centroids[k]) remaining.add(k);
+  const order: number[] = [];
+  let curLat = start.lat;
+  let curLng = start.lng;
+  while (remaining.size > 0) {
+    let bestK = -1;
+    let bestD = Infinity;
+    for (const k of remaining) {
+      const c = centroids[k]!;
+      const d = haversineKm(curLat, curLng, c.lat, c.lng);
+      if (d < bestD) { bestD = d; bestK = k; }
+    }
+    order.push(bestK);
+    remaining.delete(bestK);
+    curLat = centroids[bestK]!.lat;
+    curLng = centroids[bestK]!.lng;
+  }
+  // Cluster id → day index
+  const clusterToDay = new Array<number>(K).fill(-1);
+  for (let d = 0; d < order.length; d++) clusterToDay[order[d]!] = d;
+  // Empty cluster (no points) — gán vào day cuối còn trống
+  let nextDay = order.length;
+  for (let k = 0; k < K; k++) if (clusterToDay[k] === -1) clusterToDay[k] = nextDay++;
+  return clusterToDay;
 }
 
 /**
  * Khi user da chon san anchorPlaceIds, không cần greedy scoring. Nhưng phải:
- *  1. Tính travel-time thật theo haversine (không phải 30 phut hard-code) — tránh
- *     case 2 slot kề nhau cách nhau 80 km mà chỉ buffer 30 phút.
- *  2. Cluster các điểm theo địa lý + cap-per-tag rồi phân ra `days` ngày — DP
- *     chọn split tối thiểu hoá (travel nội ngày + violation penalty). Tag cap
- *     tránh nhồi 4 bữa ăn vào 1 ngày, đồng thời geometry giữ các cụm gần nhau.
- *  3. Trong từng ngày, sort lại theo nearest-neighbor từ dayStart để rút quãng đi.
- *  4. Roll over nếu vượt DAY_END_MIN — phòng case cụm quá to.
+ *  1. Tính travel-time thật theo haversine (không phải 30 phut hard-code).
+ *  2. Cluster các điểm theo địa lý: k-means(K=days) với farthest-first seeding —
+ *     mỗi điểm gán vào cluster có centroid gần nhất (đúng tiêu chí geographic
+ *     clustering, không như NN+DP-partition cũ có thể gán sai cụm).
+ *     Nếu algorithm='i3ch_strict' thì chạy thêm best-improvement local search
+ *     để escape local optima của k-means.
+ *  3. Sắp cluster theo thứ tự đi (NN centroid từ dayStart[0]) → day 0..K-1.
+ *  4. Trong từng ngày, sort lại theo nearest-neighbor từ dayStart để rút quãng đi.
+ *  5. Roll over nếu vượt DAY_END_MIN — phòng case cụm quá to.
  *
  * Trả về danh sách slot đã sẵn sàng để insert vào DB.
  */
@@ -987,7 +1134,7 @@ export function buildStrictModeSlots(
   anchorPlaceIds: number[],
   candidates: Place[],
   days: number,
-  ctx: { startDate: Date; dayStarts?: DayStart[]; hotelPlace?: Place },
+  ctx: { startDate: Date; dayStarts?: DayStart[]; hotelPlace?: Place; algorithm?: 'kmeans' | 'i3ch_strict' },
 ): Array<{
   slotId: string;
   tripId: string;
@@ -1012,38 +1159,25 @@ export function buildStrictModeSlots(
   startDateUTC.setUTCHours(0, 0, 0, 0);
   const startVNMidnightUTC = new Date(startDateUTC.getTime() - VN_OFFSET_MS);
 
-  // ── Step 1: Nearest-neighbor order toàn cục từ điểm xuất phát ngày 0 ──────
+  // ── Step 1: K-means clustering trên (lat, lng) ───────────────────────────
+  // Mỗi điểm gán vào cluster có centroid gần nhất theo haversine. Khác với cách
+  // cũ (NN-walk + DP cut) — k-means đảm bảo tiêu chí "điểm thuộc cụm gần nhất".
   const start0 = resolveDayStart({ dayStarts: ctx.dayStarts, hotelPlace: ctx.hotelPlace } as SolverContext, 0)
     ?? { lat: places[0]!.lat, lng: places[0]!.lng };
-
-  const ordered: Place[] = [];
-  const pool = [...places];
-  let curLat = start0.lat;
-  let curLng = start0.lng;
-  while (pool.length > 0) {
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < pool.length; i++) {
-      const d = haversineKm(curLat, curLng, pool[i]!.lat, pool[i]!.lng);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    const next = pool.splice(bestIdx, 1)[0]!;
-    ordered.push(next);
-    curLat = next.lat;
-    curLng = next.lng;
-  }
-
-  // ── Step 2: DP partition theo geometry + tag cap ─────────────────────────
-  // Tìm cách chia ordered thành `days` ngày sao cho tổng (travel nội ngày +
-  // violation penalty cho từng tag vượt cap) là nhỏ nhất. Tự nhiên sẽ:
-  //  • cắt ở leg dài để cụm địa lý gần nhau ở cùng ngày
-  //  • spread các điểm cùng tag (vd 4 food) ra nhiều ngày khi geometry cho phép
   const targetDays = Math.max(1, days);
-  const cuts = partitionByDP(ordered, targetDays);
-  const dayOf: number[] = new Array(ordered.length);
-  for (let d = 0; d < targetDays; d++) {
-    for (let i = cuts[d]!; i < cuts[d + 1]!; i++) dayOf[i] = d;
+
+  let assign = kMeansCluster(places, targetDays);
+
+  // ── Step 2 (optional): I3CH best-improvement local search ───────────────
+  // Khám phá các cluster assignment lân cận để giảm thêm (travel + violation).
+  if (ctx.algorithm === 'i3ch_strict') {
+    assign = i3chStrictImprove(places, assign, targetDays, 3000);
   }
+
+  // ── Step 3: Map cluster id → day index theo thứ tự đi từ start0 ─────────
+  const clusterToDay = orderClustersByFlow(places, assign, targetDays, start0);
+  const ordered: Place[] = places;
+  const dayOf: number[] = places.map((_, i) => clusterToDay[assign[i]!]!);
   const dIdx = targetDays - 1;
 
   // ── Step 3: Group theo day, sort NN từ dayStart, pack với travel-time thực ─

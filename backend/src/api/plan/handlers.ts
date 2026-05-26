@@ -549,8 +549,9 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
         // bỏ qua greedy planner để tránh mất slot do thiếu lat/lng hoặc lọc sai
         let optimizedPlan: any[];
         if (strictMode && anchorPlaceIds.length > 0) {
-            // Cluster các điểm user chọn theo địa lý (split tại leg dài nhất) rồi pack
-            // với travel-time thực — tránh case nhồi 2 cụm cách 80 km vào cùng ngày.
+            // Cluster các điểm user chọn theo địa lý bằng k-means (mỗi điểm về
+            // cluster có centroid gần nhất). Khi planningAlgorithm='i3ch' thì
+            // chạy thêm best-improvement local search trên cluster assignment.
             optimizedPlan = buildStrictModeSlots(
                 anchorPlaceIds,
                 candidates as any,
@@ -558,6 +559,7 @@ export const createTrip = async (req: FastifyRequest, reply: FastifyReply) => {
                 {
                     startDate,
                     dayStarts: dayStarts.length > 0 ? dayStarts : undefined,
+                    algorithm: planningAlgorithm === 'i3ch' ? 'i3ch_strict' : 'kmeans',
                 },
             );
         } else {
